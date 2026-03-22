@@ -1,0 +1,4 @@
+node_modules
+.env
+.DS_Store
+twilio_2FA_recovery_code.txt
