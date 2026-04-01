@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { createLead } from '../api';
 
-export default function TranscriptForm({ onLeadCreated }) {
+export default function TranscriptForm({ onLeadCreated, language }) {
   const [transcript, setTranscript] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -16,7 +16,7 @@ export default function TranscriptForm({ onLeadCreated }) {
     setSuccess(false);
 
     try {
-      const lead = await createLead(transcript);
+      const lead = await createLead(transcript, language);
       onLeadCreated(lead);
       setTranscript('');
       setSuccess(true);

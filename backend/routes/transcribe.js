@@ -51,6 +51,7 @@ router.post('/', upload.single('audio'), async (req, res) => {
     const newLead = await createLeadFromTranscript({
       transcript,
       rawText: transcript,
+      language: req.body.language || undefined,
     });
 
     return res.status(201).json({ transcript, lead: newLead });

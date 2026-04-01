@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { getCalls } from '../api';
+import { getCalls, getVoicemailLeads } from '../api';
+import PhoneActionSheet from './PhoneActionSheet';
 
 const KEYPAD = [
   { digit: '1', sub: '' },
@@ -38,6 +39,25 @@ function formatPhone(num) {
   return num;
 }
 
+// Mirrors the same logic in TimelinePage — outcome-aware label for any call row.
+function getCallMeta(call) {
+  const isOutbound = call.classification === 'Outbound';
+  if (isOutbound) {
+    switch (call.outcome) {
+      case 'answered':  return { text: 'Answered',           labelClass: 'text-blue-600 font-medium',  isExpandable: !!(call.contractor_note) };
+      case 'voicemail': return { text: 'You Left a Message', labelClass: 'text-amber-600 font-medium', isExpandable: !!(call.contractor_note) };
+      case 'no-answer': return { text: 'No Answer',          labelClass: 'text-gray-400',              isExpandable: false };
+      default:          return { text: 'Outbound',           labelClass: 'text-gray-400',              isExpandable: !!(call.contractor_note) };
+    }
+  }
+  const answered = !!call.transcript;
+  return {
+    text: answered ? 'Answered' : 'Missed',
+    labelClass: answered ? 'text-blue-600 font-medium' : 'text-gray-400',
+    isExpandable: answered,
+  };
+}
+
 function timeAgo(dateStr) {
   const diff = Date.now() - new Date(dateStr).getTime();
   const m = Math.floor(diff / 60000);
@@ -48,28 +68,72 @@ function timeAgo(dateStr) {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-export default function CallsPage() {
+function formatDuration(seconds) {
+  if (!seconds) return null;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m === 0 ? `${s}s` : `${m}m ${s}s`;
+}
+
+export default function CallsPage({ onContactClick, voiceDevice = {} }) {
   const [dialInput, setDialInput] = useState('');
   const [activeTab, setActiveTab] = useState('Dialer');
   const [calls, setCalls] = useState([]);
+  const [voicemails, setVoicemails] = useState([]);
   const [loadingCalls, setLoadingCalls] = useState(false);
+  const [expandedCallId, setExpandedCallId] = useState(null);
+  const [actionSheetPhone, setActionSheetPhone] = useState(null);
+
+  const {
+    status: deviceStatus = 'idle',
+    error: deviceError = null,
+    remoteIdentity,
+    makeCall,
+    hangUp,
+    isReady,
+  } = voiceDevice;
+
+  // Derived dialer state from SDK
+  const isDialing = deviceStatus === 'dialing';
+  const isRinging = deviceStatus === 'ringing';
+  const isConnected = deviceStatus === 'connected';
+  const isEnded = deviceStatus === 'ended';
+  const isFailed = deviceStatus === 'failed';
+  const isBusy = isDialing || isRinging || isConnected || isEnded;
 
   useEffect(() => {
-    if (activeTab === 'Recent' || activeTab === 'Voicemail') {
+    if (activeTab === 'Recent') {
       setLoadingCalls(true);
       getCalls()
         .then(data => setCalls(data))
         .catch(err => console.error('Failed to load calls:', err))
         .finally(() => setLoadingCalls(false));
     }
+    if (activeTab === 'Voicemail') {
+      setLoadingCalls(true);
+      getVoicemailLeads()
+        .then(data => setVoicemails(data))
+        .catch(err => console.error('Failed to load voicemails:', err))
+        .finally(() => setLoadingCalls(false));
+    }
   }, [activeTab]);
 
   const handleKeypad = (val) => setDialInput(prev => prev + val);
   const handleBackspace = () => setDialInput(prev => prev.slice(0, -1));
+
   const handleCall = () => {
-    if (!dialInput.trim()) return;
-    alert(`Calling ${dialInput}… (telephony integration coming soon)`);
+    if (!dialInput.trim() || isBusy || !makeCall) return;
+    makeCall(dialInput.trim());
   };
+
+  // Called from Recent row or PhoneActionSheet — populates dialer, switches tab, then calls
+  const handleCallFromRecent = (phone) => {
+    if (!phone) return;
+    setDialInput(phone);
+    setActiveTab('Dialer');
+    if (makeCall && !isBusy) makeCall(phone);
+  };
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') handleCall();
   };
@@ -100,12 +164,32 @@ export default function CallsPage() {
       {/* Dialer tab */}
       {activeTab === 'Dialer' && (
         <div className="flex flex-col items-center">
-          {/* Number display */}
-          <div className="relative w-full flex items-center justify-center mb-6 min-h-[52px]">
-            <span className={`text-4xl font-light tracking-widest text-gray-900 ${!dialInput ? 'opacity-30' : ''}`}>
-              {dialInput || '—'}
-            </span>
-            {dialInput && (
+          {/* Number display / call status */}
+          <div className="relative w-full flex flex-col items-center justify-center mb-6 min-h-[52px]">
+            {isConnected ? (
+              <div className="flex flex-col items-center gap-1">
+                <span className="text-base font-semibold text-green-600">Connected</span>
+                <span className="text-sm text-gray-500">{remoteIdentity || dialInput}</span>
+              </div>
+            ) : isRinging ? (
+              <div className="flex flex-col items-center gap-1">
+                <span className="text-base font-medium text-blue-500 animate-pulse">Ringing…</span>
+                <span className="text-sm text-gray-400">{remoteIdentity || dialInput}</span>
+              </div>
+            ) : isDialing ? (
+              <span className="text-base font-medium text-blue-500 animate-pulse">Calling…</span>
+            ) : isEnded ? (
+              <span className="text-base font-medium text-gray-400">Call ended</span>
+            ) : isFailed ? (
+              <span className="text-sm font-medium text-red-500 text-center px-4">{deviceError || 'Call failed'}</span>
+            ) : deviceStatus === 'registering' ? (
+              <span className="text-sm text-gray-400 animate-pulse">Connecting to voice…</span>
+            ) : (
+              <span className={`text-4xl font-light tracking-widest text-gray-900 ${!dialInput ? 'opacity-30' : ''}`}>
+                {dialInput || '—'}
+              </span>
+            )}
+            {dialInput && !isBusy && (
               <button
                 onClick={handleBackspace}
                 className="absolute right-0 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-gray-700 transition-colors"
@@ -147,20 +231,32 @@ export default function CallsPage() {
               </button>
             ))}
           </div>
-          {/* Call button */}
-          <button
-            onClick={handleCall}
-            disabled={!dialInput.trim()}
-            className="w-[68px] h-[68px] rounded-full flex items-center justify-center
-                       bg-blue-600 hover:bg-blue-700 active:bg-blue-800
-                       disabled:bg-gray-200 disabled:cursor-not-allowed
-                       transition-colors duration-150"
-            aria-label="Call"
-          >
-            <svg className="w-7 h-7 text-white" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M3 5a2 2 0 012-2h2.28a1 1 0 01.95.68l1.06 3.18a1 1 0 01-.23 1.05L7.5 9.43a16 16 0 006.07 6.07l1.52-1.56a1 1 0 011.05-.23l3.18 1.06a1 1 0 01.68.95V19a2 2 0 01-2 2C9.16 21 3 14.84 3 7V5z" />
-            </svg>
-          </button>
+          {/* Call / Hang up button */}
+          {isConnected || isRinging || isDialing ? (
+            <button
+              onClick={hangUp}
+              className="w-[68px] h-[68px] rounded-full flex items-center justify-center bg-red-500 hover:bg-red-600 active:bg-red-700 transition-colors duration-150"
+              aria-label="Hang up"
+            >
+              <svg className="w-7 h-7 text-white rotate-135" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M3 5a2 2 0 012-2h2.28a1 1 0 01.95.68l1.06 3.18a1 1 0 01-.23 1.05L7.5 9.43a16 16 0 006.07 6.07l1.52-1.56a1 1 0 011.05-.23l3.18 1.06a1 1 0 01.68.95V19a2 2 0 01-2 2C9.16 21 3 14.84 3 7V5z" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              onClick={handleCall}
+              disabled={!dialInput.trim() || isBusy}
+              className={`w-[68px] h-[68px] rounded-full flex items-center justify-center
+                         transition-colors duration-150
+                         ${isFailed ? 'bg-red-500' : 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800'}
+                         disabled:opacity-60 disabled:cursor-not-allowed`}
+              aria-label="Call"
+            >
+              <svg className="w-7 h-7 text-white" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M3 5a2 2 0 012-2h2.28a1 1 0 01.95.68l1.06 3.18a1 1 0 01-.23 1.05L7.5 9.43a16 16 0 006.07 6.07l1.52-1.56a1 1 0 011.05-.23l3.18 1.06a1 1 0 01.68.95V19a2 2 0 01-2 2C9.16 21 3 14.84 3 7V5z" />
+              </svg>
+            </button>
+          )}
         </div>
       )}
 
@@ -172,21 +268,111 @@ export default function CallsPage() {
           ) : calls.length === 0 ? (
             <p className="text-sm text-gray-400 text-center py-12">No recent calls yet.</p>
           ) : (
-            <ul className="space-y-2">
-              {calls.map(call => (
-                <li key={call.id} className="flex items-center justify-between py-3 border-b border-gray-100 last:border-0">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">
-                      {formatPhone(call.from_number)}
-                    </p>
-                    <p className="text-xs text-gray-400 mt-0.5">{timeAgo(call.created_at)}</p>
-                  </div>
-                  <span className={`ml-3 shrink-0 text-xs font-medium rounded-full px-2.5 py-1
-                    ${CLASSIFICATION_STYLES[call.classification] || CLASSIFICATION_STYLES['Unknown']}`}>
-                    {call.classification}
-                  </span>
-                </li>
-              ))}
+            <ul>
+              {calls.map(call => {
+                const isOutbound = call.classification === 'Outbound';
+                const meta = getCallMeta(call);
+                const isExpanded = expandedCallId === call.id;
+                const duration = formatDuration(call.duration);
+                const keyPoints = Array.isArray(call.key_points) ? call.key_points : [];
+                const displayName = call.contact_name || formatPhone(call.from_number);
+                const showPhone = !!call.contact_name;
+
+                return (
+                  <li key={call.id} className="border-b border-gray-100 last:border-0">
+                    {/* Row — 3-column: [name+meta] [label/badge] [chevron] */}
+                    <div
+                      className={`flex items-center py-2 gap-2 ${meta.isExpandable ? 'cursor-pointer' : ''}`}
+                      onClick={() => meta.isExpandable && setExpandedCallId(isExpanded ? null : call.id)}
+                    >
+                      {/* Col 1: name / number + time */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1">
+                          {/* Outbound arrow indicator */}
+                          {isOutbound && (
+                            <svg className="w-3 h-3 text-gray-400 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M7 17L17 7M17 7H7M17 7v10" />
+                            </svg>
+                          )}
+                          <button
+                            onClick={e => { e.stopPropagation(); handleCallFromRecent(call.from_number); }}
+                            className="block text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline underline-offset-2 transition-colors text-left leading-tight truncate"
+                          >
+                            {displayName}
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          {showPhone && (
+                            <span className="text-xs text-gray-400 truncate">{formatPhone(call.from_number)}</span>
+                          )}
+                          {showPhone && <span className="text-xs text-gray-300">·</span>}
+                          <span className="text-xs text-gray-400 shrink-0">{timeAgo(call.created_at)}</span>
+                          {duration && <span className="text-xs text-gray-300 shrink-0">· {duration}</span>}
+                        </div>
+                      </div>
+
+                      {/* Col 2: outcome label (outbound) or classification badge (inbound) */}
+                      <div className="shrink-0 w-[120px] flex justify-end">
+                        {isOutbound ? (
+                          <span className={`text-xs whitespace-nowrap ${meta.labelClass}`}>
+                            {meta.text}
+                          </span>
+                        ) : (
+                          <span className={`text-xs font-medium rounded-full px-2 py-0.5 whitespace-nowrap
+                            ${CLASSIFICATION_STYLES[call.classification] || CLASSIFICATION_STYLES['Unknown']}`}>
+                            {call.classification}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Col 3: chevron */}
+                      <div className="shrink-0 w-4">
+                        {meta.isExpandable && (
+                          <svg
+                            className={`w-4 h-4 text-gray-300 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                            fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                          </svg>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Expanded detail */}
+                    {meta.isExpandable && isExpanded && (
+                      <div className="pb-3 space-y-2">
+                        {/* Inbound: AI summary + key points */}
+                        {!isOutbound && call.summary && (
+                          <div className="bg-blue-50 rounded-lg p-3">
+                            <p className="text-sm font-bold text-gray-800 mb-1.5">Call Summary</p>
+                            <p className="text-sm text-gray-700 leading-relaxed">{call.summary}</p>
+                          </div>
+                        )}
+                        {!isOutbound && keyPoints.length > 0 && (
+                          <div className="bg-blue-50 rounded-lg p-3">
+                            <p className="text-xs font-semibold text-blue-500 uppercase tracking-wide mb-1.5">Call Notes</p>
+                            <ul className="space-y-1">
+                              {keyPoints.map((pt, i) => (
+                                <li key={i} className="text-xs text-gray-600 flex gap-1.5">
+                                  <span className="text-blue-400 font-bold shrink-0">•</span>
+                                  <span>{pt}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {/* Outbound: contractor note */}
+                        {isOutbound && call.contractor_note && (
+                          <div className="bg-amber-50 rounded-lg p-3">
+                            <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-1.5">Your Note</p>
+                            <p className="text-sm text-gray-700 leading-relaxed">{call.contractor_note}</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -194,7 +380,76 @@ export default function CallsPage() {
 
       {/* Voicemail tab */}
       {activeTab === 'Voicemail' && (
-        <p className="text-sm text-gray-400 text-center py-12">No voicemails yet.</p>
+        <div>
+          {loadingCalls ? (
+            <p className="text-sm text-gray-400 text-center py-12 animate-pulse">Loading…</p>
+          ) : voicemails.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-12">No voicemails yet.</p>
+          ) : (
+            <ul className="space-y-3">
+              {voicemails.map(vm => {
+                const keyPoints = Array.isArray(vm.key_points) ? vm.key_points : [];
+                return (
+                  <li key={vm.id} className="border border-gray-100 rounded-lg p-4 bg-gray-50">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs text-gray-400">
+                          {new Date(vm.created_at).toLocaleDateString('en-US', {
+                            month: 'short', day: 'numeric', year: 'numeric'
+                          })}
+                        </span>
+                        <span className="text-xs font-medium text-gray-500 bg-gray-200 rounded-full px-2 py-0.5">
+                          Voicemail
+                        </span>
+                      </div>
+                      <span className="text-xs text-gray-500 font-medium truncate shrink-0">
+                        {formatPhone(vm.callback_number || vm.phone_number)}
+                      </span>
+                    </div>
+                    <p className="text-sm font-medium text-gray-800 mb-1">
+                      {vm.contact_name !== 'Unknown' ? vm.contact_name : formatPhone(vm.phone_number)}
+                    </p>
+                    {vm.summary && (
+                      <p className="text-sm text-gray-600 leading-relaxed">{vm.summary}</p>
+                    )}
+                    {keyPoints.length > 0 && (
+                      <ul className="mt-2 space-y-0.5">
+                        {keyPoints.map((pt, i) => (
+                          <li key={i} className="text-xs text-gray-500 flex gap-1.5">
+                            <span className="text-gray-400 font-bold shrink-0">•</span>
+                            <span>{pt}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {vm.recording_url && (
+                      <div className="mt-3 pt-3 border-t border-gray-200">
+                        <audio
+                          controls
+                          preload="none"
+                          src={`/api/leads/${vm.id}/voicemail`}
+                          className="w-full h-9"
+                          style={{ colorScheme: 'light' }}
+                        >
+                          Your browser does not support audio playback.
+                        </audio>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {actionSheetPhone && (
+        <PhoneActionSheet
+          phone={actionSheetPhone}
+          onViewHistory={onContactClick ? () => onContactClick(actionSheetPhone) : null}
+          onCall={handleCallFromRecent}
+          onClose={() => setActionSheetPhone(null)}
+        />
       )}
 
     </div>

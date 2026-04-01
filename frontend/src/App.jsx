@@ -3,13 +3,21 @@ import TranscriptForm from './components/TranscriptForm';
 import AudioUploadForm from './components/AudioUploadForm';
 import LeadList from './components/LeadList';
 import CallsPage from './components/CallsPage';
-import { getLeads } from './api';
+import TimelinePage from './components/TimelinePage';
+import ContactsPage from './components/ContactsPage';
+import SettingsModal from './components/SettingsModal';
+import OnboardingModal from './components/OnboardingModal';
+import ContactHistoryModal from './components/ContactHistoryModal';
+import OutboundNoteModal from './components/OutboundNoteModal';
+import InboxLayout from './components/inbox/InboxLayout';
+import { getLeads, saveOutboundNote } from './api';
+import { translations } from './i18n';
+import { useVoiceDevice } from './hooks/useVoiceDevice';
 
-// Desktop sidebar nav
-const SIDEBAR_NAV = [
+// Nav icons — labels are injected at render time from translations
+const SIDEBAR_NAV_ICONS = [
   {
     id: 'overview',
-    label: 'Overview',
     icon: (
       <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l2-2m0 0l7-7 7 7m-9 2v8m4-8v8m5 0H4" />
@@ -18,7 +26,6 @@ const SIDEBAR_NAV = [
   },
   {
     id: 'calls',
-    label: 'Calls',
     icon: (
       <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" d="M3 5a2 2 0 012-2h2.28a1 1 0 01.95.68l1.06 3.18a1 1 0 01-.23 1.05L7.5 9.43a16 16 0 006.07 6.07l1.52-1.56a1 1 0 011.05-.23l3.18 1.06a1 1 0 01.68.95V19a2 2 0 01-2 2C9.16 21 3 14.84 3 7V5z" />
@@ -27,20 +34,26 @@ const SIDEBAR_NAV = [
   },
   {
     id: 'text',
-    label: 'Text',
     icon: (
       <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 16a2 2 0 01-2 2H7l-4 4V6a2 2 0 012-2h14a2 2 0 012 2v10z" />
       </svg>
     ),
   },
+  {
+    id: 'timeline',
+    icon: (
+      <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+  },
 ];
 
-// Mobile bottom nav — 4 tabs: Calls, Leads, Text, Contacts
-const BOTTOM_NAV = [
+// Mobile bottom nav icons
+const BOTTOM_NAV_ICONS = [
   {
     id: 'calls',
-    label: 'Calls',
     icon: (active) => (
       <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M3 5a2 2 0 012-2h2.28a1 1 0 01.95.68l1.06 3.18a1 1 0 01-.23 1.05L7.5 9.43a16 16 0 006.07 6.07l1.52-1.56a1 1 0 011.05-.23l3.18 1.06a1 1 0 01.68.95V19a2 2 0 01-2 2C9.16 21 3 14.84 3 7V5z" />
@@ -49,7 +62,6 @@ const BOTTOM_NAV = [
   },
   {
     id: 'leads',
-    label: 'Leads',
     icon: (active) => (
       <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
@@ -58,7 +70,6 @@ const BOTTOM_NAV = [
   },
   {
     id: 'text',
-    label: 'Text',
     icon: (active) => (
       <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 16a2 2 0 01-2 2H7l-4 4V6a2 2 0 012-2h14a2 2 0 012 2v10z" />
@@ -66,8 +77,15 @@ const BOTTOM_NAV = [
     ),
   },
   {
+    id: 'timeline',
+    icon: (active) => (
+      <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+  },
+  {
     id: 'contacts',
-    label: 'Contacts',
     icon: (active) => (
       <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-1a4 4 0 00-5.196-3.764M17 20H7m10 0v-1c0-.653-.126-1.274-.356-1.841M7 20H2v-1a4 4 0 015.196-3.764M7 20v-1c0-.653.126-1.274.356-1.841m0 0A5.97 5.97 0 0112 13c1.796 0 3.408.793 4.502 2.049M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -87,12 +105,43 @@ function sortLeads(leads) {
 }
 
 export default function App() {
+  const voiceDevice = useVoiceDevice();
+
+  // Register the voice device on mount so inbound calls ring in the app
+  useEffect(() => { voiceDevice.initialize(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [leads, setLeads] = useState([]);
   const [loadingLeads, setLoadingLeads] = useState(true);
   const [activeNav, setActiveNav] = useState('overview');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [callsPagePhone, setCallsPagePhone] = useState(null);
+  const [language, setLanguage] = useState(
+    () => localStorage.getItem('language') || 'en'
+  );
+  const [replyTranslation, setReplyTranslation] = useState(
+    () => localStorage.getItem('replyTranslation') === 'true'
+  );
+  const [showOnboarding, setShowOnboarding] = useState(
+    () => !localStorage.getItem('onboardingComplete')
+  );
   const [contractorName, setContractorName] = useState(
     () => localStorage.getItem('contractorName') || ''
   );
+  const [businessName, setBusinessName] = useState(
+    () => localStorage.getItem('businessName') || ''
+  );
+
+  const t = translations[language] || translations.en;
+
+  const handleLanguageChange = (lang) => {
+    setLanguage(lang);
+    localStorage.setItem('language', lang);
+  };
+
+  const handleReplyTranslationChange = (val) => {
+    setReplyTranslation(val);
+    localStorage.setItem('replyTranslation', val ? 'true' : 'false');
+  };
 
   const fetchLeads = useCallback(async () => {
     try {
@@ -113,6 +162,12 @@ export default function App() {
     localStorage.setItem('contractorName', val);
   };
 
+  const handleBusinessNameChange = (e) => {
+    const val = e.target.value;
+    setBusinessName(val);
+    localStorage.setItem('businessName', val);
+  };
+
   const handleLeadCreated = (newLead) => setLeads(prev => sortLeads([newLead, ...prev]));
   const handleLeadUpdated = (updatedLead) =>
     setLeads(prev => sortLeads(prev.map(l => l.id === updatedLead.id ? updatedLead : l)));
@@ -120,29 +175,29 @@ export default function App() {
     setLeads(prev => prev.filter(l => l.id !== id));
 
   const isLeadsView = activeNav === 'overview' || activeNav === 'leads';
+  // bottom nav: timeline counts as its own view, not leads
+
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
 
       {/* Header */}
-      <header className="bg-gray-900 border-b border-gray-700 px-4 md:px-6 sticky top-0 z-30 h-14 flex items-center">
+      <header className="bg-white border-b border-gray-200 px-4 md:px-6 sticky top-0 z-30 h-14 flex items-center">
         <div className="flex items-center justify-between w-full gap-4">
           <div className="leading-tight">
-            <span className="text-white font-bold text-lg tracking-tight">PlumbLine</span>
+            <span className="text-gray-900 font-bold text-lg tracking-tight">PlumbLine</span>
             <span className="text-gray-400 font-semibold text-lg tracking-tight"> Leads</span>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <label className="text-xs text-gray-500 whitespace-nowrap hidden sm:block">Your name</label>
-            <input
-              type="text"
-              value={contractorName}
-              onChange={handleContractorNameChange}
-              placeholder="Your name"
-              className="text-xs bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 w-24 md:w-28
-                         text-gray-300 placeholder-gray-600
-                         focus:outline-none focus:ring-1 focus:ring-gray-500 focus:border-transparent"
-            />
-          </div>
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="p-2 text-gray-500 hover:text-gray-700 transition-colors rounded-lg hover:bg-gray-100"
+            aria-label="Settings"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </button>
         </div>
       </header>
 
@@ -151,7 +206,7 @@ export default function App() {
 
         {/* Sidebar — desktop only */}
         <nav className="hidden md:flex w-44 bg-white border-r border-gray-200 flex-col py-4 shrink-0">
-          {SIDEBAR_NAV.map(item => (
+          {SIDEBAR_NAV_ICONS.map(item => (
             <button
               key={item.id}
               onClick={() => setActiveNav(item.id)}
@@ -162,18 +217,23 @@ export default function App() {
                 }`}
             >
               {item.icon}
-              {item.label}
+              {t[item.id]}
             </button>
           ))}
         </nav>
 
         {/* Main content */}
-        <main className="flex-1 overflow-auto px-4 md:px-6 py-6" style={{ paddingBottom: 'calc(96px + env(safe-area-inset-bottom))' }}>
+        {/* Inbox needs overflow-hidden + no padding so it can manage its own scroll internally */}
+        <main className={`flex-1 flex flex-col ${
+          activeNav === 'text'
+            ? 'overflow-hidden'
+            : 'overflow-auto px-4 md:px-6 pt-6 pb-[calc(56px+env(safe-area-inset-bottom))] md:pb-6'
+        }`}>
           {isLeadsView && (
-            <div className="max-w-4xl">
+            <div className="flex-1 flex flex-col max-w-4xl w-full">
               <div className="hidden">
-                <TranscriptForm onLeadCreated={handleLeadCreated} />
-                <AudioUploadForm onLeadCreated={handleLeadCreated} />
+                <TranscriptForm onLeadCreated={handleLeadCreated} language={language} />
+                <AudioUploadForm onLeadCreated={handleLeadCreated} language={language} />
               </div>
               <LeadList
                 leads={leads}
@@ -181,33 +241,140 @@ export default function App() {
                 onLeadUpdated={handleLeadUpdated}
                 onLeadRemoved={handleLeadRemoved}
                 contractorName={contractorName}
+                language={language}
+                replyTranslation={replyTranslation}
               />
             </div>
           )}
 
-          {activeNav === 'calls' && <CallsPage />}
+          {activeNav === 'calls' && <CallsPage onContactClick={setCallsPagePhone} voiceDevice={voiceDevice} />}
 
-          {activeNav === 'text' && (
-            <div>
-              <h1 className="text-xl font-bold text-gray-900">Text</h1>
-              <p className="text-sm text-gray-400 mt-1">Coming soon.</p>
-            </div>
-          )}
+          {activeNav === 'text' && <InboxLayout />}
+
+          {activeNav === 'timeline' && <TimelinePage onContactClick={setCallsPagePhone} />}
 
           {activeNav === 'contacts' && (
-            <div>
-              <h1 className="text-xl font-bold text-gray-900">Contacts</h1>
-              <p className="text-sm text-gray-400 mt-1">Coming soon.</p>
-            </div>
+            <ContactsPage leads={leads} />
           )}
         </main>
       </div>
+
+      {/* Gradient fade mask — mobile only */}
+      <div
+        className="md:hidden fixed bottom-0 left-0 right-0"
+        style={{
+          height: '96px',
+          zIndex: 39,
+          pointerEvents: 'auto',
+          background: 'linear-gradient(to bottom, rgba(249,250,251,0) 0%, rgba(249,250,251,0.6) 50%, rgba(249,250,251,0.92) 100%)',
+        }}
+      />
+
+      {/* Inbound call banner — shown over everything when a call is incoming or active */}
+      {(voiceDevice.status === 'incoming' || voiceDevice.status === 'connected') && (
+        <div className="fixed inset-x-0 top-16 z-50 flex justify-center px-4">
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl border border-gray-200 px-5 py-4 flex items-center gap-4">
+            {/* Avatar */}
+            <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
+              <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 5a2 2 0 012-2h2.28a1 1 0 01.95.68l1.06 3.18a1 1 0 01-.23 1.05L7.5 9.43a16 16 0 006.07 6.07l1.52-1.56a1 1 0 011.05-.23l3.18 1.06a1 1 0 01.68.95V19a2 2 0 01-2 2C9.16 21 3 14.84 3 7V5z" />
+              </svg>
+            </div>
+            {/* Info */}
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                {voiceDevice.status === 'incoming' ? 'Incoming call' : 'Connected'}
+              </p>
+              <p className="text-sm font-semibold text-gray-900 truncate">
+                {voiceDevice.remoteIdentity || 'Unknown'}
+              </p>
+            </div>
+            {/* Action buttons */}
+            {voiceDevice.status === 'incoming' ? (
+              <div className="flex gap-2 shrink-0">
+                <button
+                  onClick={voiceDevice.rejectCall}
+                  className="w-10 h-10 rounded-full bg-red-500 hover:bg-red-600 flex items-center justify-center transition-colors"
+                  aria-label="Decline"
+                >
+                  <svg className="w-4 h-4 text-white rotate-135" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M3 5a2 2 0 012-2h2.28a1 1 0 01.95.68l1.06 3.18a1 1 0 01-.23 1.05L7.5 9.43a16 16 0 006.07 6.07l1.52-1.56a1 1 0 011.05-.23l3.18 1.06a1 1 0 01.68.95V19a2 2 0 01-2 2C9.16 21 3 14.84 3 7V5z" />
+                  </svg>
+                </button>
+                <button
+                  onClick={voiceDevice.answerCall}
+                  className="w-10 h-10 rounded-full bg-green-500 hover:bg-green-600 flex items-center justify-center transition-colors"
+                  aria-label="Answer"
+                >
+                  <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M3 5a2 2 0 012-2h2.28a1 1 0 01.95.68l1.06 3.18a1 1 0 01-.23 1.05L7.5 9.43a16 16 0 006.07 6.07l1.52-1.56a1 1 0 011.05-.23l3.18 1.06a1 1 0 01.68.95V19a2 2 0 01-2 2C9.16 21 3 14.84 3 7V5z" />
+                  </svg>
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={voiceDevice.hangUp}
+                className="w-10 h-10 rounded-full bg-red-500 hover:bg-red-600 flex items-center justify-center transition-colors shrink-0"
+                aria-label="Hang up"
+              >
+                <svg className="w-4 h-4 text-white rotate-135" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M3 5a2 2 0 012-2h2.28a1 1 0 01.95.68l1.06 3.18a1 1 0 01-.23 1.05L7.5 9.43a16 16 0 006.07 6.07l1.52-1.56a1 1 0 011.05-.23l3.18 1.06a1 1 0 01.68.95V19a2 2 0 01-2 2C9.16 21 3 14.84 3 7V5z" />
+                </svg>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Post-call note modal — outbound calls only, never inbound */}
+      {voiceDevice.pendingPostCallNote && (
+        <OutboundNoteModal
+          phone={voiceDevice.pendingPostCallNote.phone}
+          onSave={(note, outcome) => saveOutboundNote(voiceDevice.pendingPostCallNote.phone, note, outcome)}
+          onClose={voiceDevice.clearPostCallNote}
+        />
+      )}
+
+      {/* Contact history — triggered from Calls page */}
+      {callsPagePhone && (
+        <ContactHistoryModal
+          phone={callsPagePhone}
+          leads={leads}
+          onClose={() => setCallsPagePhone(null)}
+        />
+      )}
+
+      {/* Onboarding modal — shown once on first load */}
+      {showOnboarding && (
+        <OnboardingModal
+          language={language}
+          onDismiss={() => {
+            localStorage.setItem('onboardingComplete', 'true');
+            setShowOnboarding(false);
+          }}
+        />
+      )}
+
+      {/* Settings modal */}
+      {settingsOpen && (
+        <SettingsModal
+          onClose={() => setSettingsOpen(false)}
+          contractorName={contractorName}
+          onContractorNameChange={handleContractorNameChange}
+          businessName={businessName}
+          onBusinessNameChange={handleBusinessNameChange}
+          language={language}
+          onLanguageChange={handleLanguageChange}
+          replyTranslation={replyTranslation}
+          onReplyTranslationChange={handleReplyTranslationChange}
+        />
+      )}
 
       {/* Bottom navigation — mobile only, floating pill style */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex justify-center"
            style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 12px)', paddingLeft: '16px', paddingRight: '16px', paddingTop: '8px' }}>
         <nav className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-gray-100 flex items-stretch px-2 py-1">
-          {BOTTOM_NAV.map(item => {
+          {BOTTOM_NAV_ICONS.map(item => {
             const isActive = item.id === 'leads'
               ? activeNav === 'leads' || activeNav === 'overview'
               : activeNav === item.id;
@@ -223,7 +390,7 @@ export default function App() {
               >
                 {item.icon(isActive)}
                 <span className={`text-[10px] leading-none font-semibold tracking-wide ${isActive ? 'text-blue-600' : 'text-gray-400'}`}>
-                  {item.label.toUpperCase()}
+                  {(t[item.id] || item.id).toUpperCase()}
                 </span>
               </button>
             );

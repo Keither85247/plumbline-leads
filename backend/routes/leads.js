@@ -14,7 +14,14 @@ const STATUS_ORDER = { New: 0, Contacted: 1, Qualified: 2, Closed: 3 };
 // Shared logic: call OpenAI, save lead, return the saved row.
 // contactNameFallback is used when OpenAI cannot extract a name from the transcript.
 // phoneNumber is pre-extracted from inbound caller ID (Twilio From field) when available.
-async function createLeadFromTranscript({ transcript, rawText, contactNameFallback = 'Unknown', phoneNumber = null }) {
+// language: 'en' | 'es' — controls the output language for summary, keyPoints, followUpText.
+//   Falls back to the LANGUAGE env var, then 'en'.
+async function createLeadFromTranscript({ transcript, rawText, contactNameFallback = 'Unknown', phoneNumber = null, source = 'voicemail', language, recordingUrl = null }) {
+  const lang = language || process.env.LANGUAGE || 'en';
+  const languageInstruction = lang === 'es'
+    ? '\n- IMPORTANT: Write the "summary", all "keyPoints" strings, and "followUpText" in Spanish (Español). Keep all JSON field names in English.'
+    : '';
+
   const completion = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     response_format: { type: 'json_object' },
@@ -28,7 +35,7 @@ async function createLeadFromTranscript({ transcript, rawText, contactNameFallba
 - "summary": string — a single concise sentence formatted exactly as: "[Caller Name] ([Company Name]) – [what the call was about]". If no company is known, omit the parenthetical entirely and use: "[Caller Name] – [what the call was about]". If the caller name is unknown, start with just the action. Keep it short and factual. Examples: "Gonzo (Advanced Paint) – Called about paint pickup", "Mike – Asked for an estimate on a bathroom remodel", "Called about a broken water heater, no name given"
 - "keyPoints": array of strings — up to 3 short, contractor-focused bullet points. Prioritize in this order: (1) job location or address if mentioned, (2) type of work or service requested, (3) urgency, timing, or requested next step. Do NOT include anything about contact info being provided or left — that is already shown on the card. Do NOT repeat what is already obvious from the summary. Every bullet should be new, specific, and actionable information a contractor needs before calling back.
 - "callbackNumber": string — if the caller explicitly states a different number to call them back at (e.g. "call me back at 203-555-1234" or "my cell is 555-9876"), extract that number exactly as spoken. If no alternate callback number is mentioned, return an empty string.
-- "followUpText": string — a short, natural SMS-style follow-up message a contractor would send to the customer after the call. It should reference the customer's specific request, suggest a next step, sound like a real person texting (not a template), and use no emojis. Use [Your Name] as a placeholder for the contractor's name. Example: "Hi Mike, this is [Your Name]. Got your call about the breaker panel and outdoor lighting. Happy to help. Let me know a good time to connect."`
+- "followUpText": string — a short, natural SMS-style follow-up message a contractor would send to the customer after the call. It should reference the customer's specific request, suggest a next step, sound like a real person texting (not a template), and use no emojis. Use [Your Name] as a placeholder for the contractor's name. Example: "Hi Mike, this is [Your Name]. Got your call about the breaker panel and outdoor lighting. Happy to help. Let me know a good time to connect."${languageInstruction}`
       },
       {
         role: 'user',
@@ -48,7 +55,7 @@ async function createLeadFromTranscript({ transcript, rawText, contactNameFallba
   const extractedCallback = typeof callbackNumber === 'string' ? callbackNumber.trim() : '';
 
   const result = db.prepare(
-    'INSERT INTO leads (transcript, raw_text, contact_name, company_name, phone_number, callback_number, summary, key_points, follow_up_text, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO leads (transcript, raw_text, contact_name, company_name, phone_number, callback_number, summary, key_points, follow_up_text, category, source, recording_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     transcript,
     rawText ?? transcript,
@@ -59,8 +66,11 @@ async function createLeadFromTranscript({ transcript, rawText, contactNameFallba
     summary,
     JSON.stringify(Array.isArray(keyPoints) ? keyPoints.slice(0, 3) : []),
     followUpText,
-    resolvedCategory
+    resolvedCategory,
+    source,
+    recordingUrl || null
   );
+  console.log(`[Leads] Lead created — id:${result.lastInsertRowid} source:${source} recording:${recordingUrl ? 'yes' : 'none'}`);
 
   const newLead = db.prepare('SELECT * FROM leads WHERE id = ?').get(result.lastInsertRowid);
   newLead.key_points = JSON.parse(newLead.key_points);
@@ -88,7 +98,8 @@ router.post('/', async (req, res) => {
   try {
     const newLead = await createLeadFromTranscript({
       transcript,
-      rawText: req.body.rawText || transcript
+      rawText: req.body.rawText || transcript,
+      language: req.body.language || undefined,
     });
     return res.status(201).json(newLead);
   } catch (err) {
@@ -100,13 +111,21 @@ router.post('/', async (req, res) => {
   }
 });
 
-// GET /api/leads — return leads; ?archived=true returns only archived, default returns active
+// GET /api/leads — return leads; ?archived=true returns only archived; ?source=voicemail filters by source
 router.get('/', (req, res) => {
   try {
     const showArchived = req.query.archived === 'true';
-    const leads = db.prepare(
-      `SELECT * FROM leads WHERE archived = ? ORDER BY created_at DESC`
-    ).all(showArchived ? 1 : 0);
+    const { source } = req.query;
+
+    let query = 'SELECT * FROM leads WHERE archived = ?';
+    const params = [showArchived ? 1 : 0];
+    if (source) {
+      query += ' AND source = ?';
+      params.push(source);
+    }
+    query += ' ORDER BY created_at DESC';
+
+    const leads = db.prepare(query).all(...params);
     const result = leads.map(lead => ({
       ...lead,
       key_points: JSON.parse(lead.key_points)
@@ -123,6 +142,53 @@ router.get('/', (req, res) => {
     console.error('Error fetching leads:', err);
     return res.status(500).json({ error: 'Failed to fetch leads' });
   }
+});
+
+// GET /api/leads/:id/voicemail — proxy voicemail audio from Twilio with Basic auth
+// The browser cannot authenticate directly against Twilio recording URLs, so
+// this route fetches the audio server-side and streams it to the client.
+router.get('/:id/voicemail', (req, res) => {
+  const lead = db.prepare('SELECT recording_url FROM leads WHERE id = ?').get(req.params.id);
+
+  if (!lead) {
+    console.warn(`[Leads] Voicemail playback: lead ${req.params.id} not found`);
+    return res.status(404).json({ error: 'Lead not found' });
+  }
+  if (!lead.recording_url) {
+    console.warn(`[Leads] Voicemail playback: lead ${req.params.id} has no recording_url`);
+    return res.status(404).json({ error: 'No recording available for this lead' });
+  }
+
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken  = process.env.TWILIO_AUTH_TOKEN;
+
+  if (!accountSid || !authToken) {
+    console.error('[Leads] Voicemail playback: TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN missing');
+    return res.status(500).json({ error: 'Twilio credentials not configured' });
+  }
+
+  const audioUrl = lead.recording_url.endsWith('.mp3')
+    ? lead.recording_url
+    : `${lead.recording_url}.mp3`;
+
+  console.log(`[Leads] Voicemail playback: proxying lead ${req.params.id} → ${audioUrl}`);
+
+  const credentials = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+  const protocol = audioUrl.startsWith('https') ? require('https') : require('http');
+
+  protocol.get(audioUrl, { headers: { Authorization: `Basic ${credentials}` } }, (twilioRes) => {
+    if (twilioRes.statusCode !== 200) {
+      console.error(`[Leads] Voicemail playback: Twilio returned ${twilioRes.statusCode} for lead ${req.params.id}`);
+      twilioRes.resume();
+      return res.status(502).json({ error: `Twilio returned ${twilioRes.statusCode}` });
+    }
+    res.setHeader('Content-Type', twilioRes.headers['content-type'] || 'audio/mpeg');
+    res.setHeader('Accept-Ranges', 'bytes');
+    twilioRes.pipe(res);
+  }).on('error', (err) => {
+    console.error(`[Leads] Voicemail playback: fetch failed for lead ${req.params.id}:`, err.message);
+    res.status(500).json({ error: 'Failed to fetch recording' });
+  });
 });
 
 // PATCH /api/leads/:id/status — update lead status

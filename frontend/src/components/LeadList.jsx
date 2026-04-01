@@ -3,6 +3,32 @@ import LeadCard from './LeadCard';
 import ContactHistoryModal from './ContactHistoryModal';
 import { getArchivedLeads, unarchiveLead } from '../api';
 
+function getDateLabel(dateStr) {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterdayStart = new Date(todayStart);
+  yesterdayStart.setDate(todayStart.getDate() - 1);
+
+  if (date >= todayStart) return 'Today';
+  if (date >= yesterdayStart) return 'Yesterday';
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function groupLeadsByDate(leads) {
+  const groups = [];
+  const seen = new Map();
+  for (const lead of leads) {
+    const label = getDateLabel(lead.created_at);
+    if (!seen.has(label)) {
+      seen.set(label, groups.length);
+      groups.push({ label, leads: [] });
+    }
+    groups[seen.get(label)].leads.push(lead);
+  }
+  return groups;
+}
+
 const TABS = [
   { label: 'Leads',               category: 'Lead' },
   { label: 'Existing Customers',  category: 'Existing Customer' },
@@ -12,7 +38,7 @@ const TABS = [
   { label: 'Archived',            category: '__archived__' },
 ];
 
-export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved, contractorName }) {
+export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved, contractorName, language, replyTranslation }) {
   const [activeTab, setActiveTab] = useState('Lead');
   const [selectedPhone, setSelectedPhone] = useState(null);
   const [archivedLeads, setArchivedLeads] = useState([]);
@@ -61,8 +87,8 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
   }
 
   return (
-    <>
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex-1 flex flex-col bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
         {/* Tabs */}
         <div className="flex items-center border-b border-gray-200 overflow-x-auto">
           {TABS.map(tab => {
@@ -90,7 +116,7 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
           })}
         </div>
 
-        <div className="p-6">
+        <div className="flex-1 flex flex-col p-6 overflow-hidden">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-base font-semibold text-gray-800">
               {TABS.find(t => t.category === activeTab)?.label}
@@ -107,20 +133,31 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
               {isArchivedTab ? 'No archived leads.' : `No ${TABS.find(t => t.category === activeTab)?.label.toLowerCase()} yet.`}
             </p>
           ) : (
-            <div className="space-y-4 max-h-[60vh] md:max-h-[calc(100vh-280px)] overflow-y-auto pr-1">
-              {filtered.map(lead => (
-                <LeadCard
-                  key={lead.id}
-                  lead={lead}
-                  onLeadUpdated={onLeadUpdated}
-                  onLeadRemoved={isArchivedTab
-                    ? (id) => setArchivedLeads(prev => prev.filter(l => l.id !== id))
-                    : onLeadRemoved
-                  }
-                  contractorName={contractorName}
-                  onContactClick={setSelectedPhone}
-                  isArchived={isArchivedTab}
-                />
+            <div className="flex-1 overflow-y-auto pr-1">
+              {groupLeadsByDate(filtered).map(group => (
+                <div key={group.label}>
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mt-7 mb-2 first:mt-0">
+                    {group.label}
+                  </p>
+                  <div className="space-y-3">
+                    {group.leads.map(lead => (
+                      <LeadCard
+                        key={lead.id}
+                        lead={lead}
+                        onLeadUpdated={onLeadUpdated}
+                        onLeadRemoved={isArchivedTab
+                          ? (id) => setArchivedLeads(prev => prev.filter(l => l.id !== id))
+                          : onLeadRemoved
+                        }
+                        contractorName={contractorName}
+                        onContactClick={setSelectedPhone}
+                        isArchived={isArchivedTab}
+                        language={language}
+                        replyTranslation={replyTranslation}
+                      />
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           )}
@@ -134,6 +171,6 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
           onClose={() => setSelectedPhone(null)}
         />
       )}
-    </>
+    </div>
   );
 }

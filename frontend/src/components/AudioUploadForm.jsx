@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 
-export default function AudioUploadForm({ onLeadCreated }) {
+export default function AudioUploadForm({ onLeadCreated, language }) {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -27,6 +27,7 @@ export default function AudioUploadForm({ onLeadCreated }) {
     try {
       const formData = new FormData();
       formData.append('audio', file);
+      if (language) formData.append('language', language);
 
       const res = await fetch('/api/transcribe', {
         method: 'POST',
