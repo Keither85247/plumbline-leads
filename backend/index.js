@@ -16,7 +16,12 @@ const { backfillMissingLabels } = require('./services/gmailService');
 const app  = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+// In production, restrict CORS to the known frontend origin.
+// In local dev (no FRONTEND_URL set), allow all origins so the Vite dev server works.
+const corsOptions = process.env.FRONTEND_URL
+  ? { origin: process.env.FRONTEND_URL, credentials: true }
+  : {};
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '2mb' }));
 
 // API routes

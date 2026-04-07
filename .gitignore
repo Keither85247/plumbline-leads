@@ -1,32 +1,24 @@
+# Dependencies
 node_modules
-.env
-.DS_Store
-twilio_2FA_recovery_code.txt
-backend/*.db
-backend/*.db-shm
-backend/*.db-wal
-.env
-.env.*
-node_modules
-dist
-backend/leads.db
-backend/leads.db-shm
-backend/leads.db-wal
 frontend/node_modules
+
+# Build output
+dist
 frontend/dist
 frontend/.vite
-backend/leads.db
-backend/leads.db-shm
-backend/leads.db-wal
-frontend/dist
-frontend/node_modules
-.env
-.env.*
 
+# Environment — never commit real secrets
+.env
+.env.*
+!.env.example
+
+# SQLite database files
 backend/leads.db
 backend/leads.db-wal
 backend/leads.db-shm
-frontend/dist
-frontend/node_modules
-.env
-.env.*
+
+# macOS
+.DS_Store
+
+# Sensitive local files
+twilio_2FA_recovery_code.txt

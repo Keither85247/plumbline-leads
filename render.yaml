@@ -1,0 +1,47 @@
+services:
+  - type: web
+    name: plumbline-backend
+    env: node
+    plan: starter          # $7/month — required for persistent disk
+    buildCommand: cd backend && npm install
+    startCommand: cd backend && node index.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DB_PATH
+        value: /data/leads.db
+      # Set the following in the Render dashboard (do NOT commit real values):
+      - key: FRONTEND_URL
+        sync: false          # set manually in dashboard
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TWILIO_BASE_URL
+        sync: false          # set to https://<your-render-service>.onrender.com
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_API_KEY
+        sync: false
+      - key: TWILIO_API_SECRET
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
+      - key: TWILIO_TWIML_APP_SID
+        sync: false
+      - key: CONTRACTOR_PHONE_NUMBER
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false          # set to https://<your-render-service>.onrender.com/auth/google/callback
+
+    disk:
+      name: plumbline-db
+      mountPath: /data
+      sizeGB: 1

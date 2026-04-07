@@ -1,4 +1,8 @@
-const API_BASE = '/api';
+// In local dev (VITE_BACKEND_URL not set): relative paths → proxied by Vite to localhost:3001
+// In production (VITE_BACKEND_URL=https://your-backend.onrender.com): absolute cross-origin URLs
+export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || '';
+const API_BASE  = `${BACKEND_URL}/api`;
+const AUTH_BASE = `${BACKEND_URL}/auth`;
 
 export async function createLead(transcript, language) {
   const res = await fetch(`${API_BASE}/leads`, {
@@ -158,14 +162,14 @@ export async function saveContactProfile(phone, data) {
 
 /** Returns { connected: bool, email: string|null } */
 export async function getGmailStatus() {
-  const res = await fetch('/auth/gmail-status');
+  const res = await fetch(`${AUTH_BASE}/gmail-status`);
   if (!res.ok) throw new Error('Failed to get Gmail status');
   return res.json();
 }
 
 /** Removes stored Gmail tokens. */
 export async function disconnectGmail() {
-  const res = await fetch('/auth/gmail-disconnect', { method: 'DELETE' });
+  const res = await fetch(`${AUTH_BASE}/gmail-disconnect`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to disconnect Gmail');
   return res.json();
 }

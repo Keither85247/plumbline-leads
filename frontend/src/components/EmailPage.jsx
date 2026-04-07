@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getEmails, getGmailStatus, disconnectGmail, sendEmail, patchEmail, softDeleteEmail, searchContacts } from '../api';
+import { getEmails, getGmailStatus, disconnectGmail, sendEmail, patchEmail, softDeleteEmail, searchContacts, BACKEND_URL } from '../api';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -504,7 +504,7 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
             <div className="py-1">
               <p className="text-sm text-gray-500 mb-3">No Gmail account connected.</p>
               <a
-                href="/auth/google"
+                href={`${BACKEND_URL}/auth/google`}
                 className="flex items-center justify-center gap-2.5 w-full border border-gray-200 hover:border-gray-300 rounded-xl py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm"
               >
                 <GoogleLogo size={16} />
@@ -1103,7 +1103,7 @@ export default function EmailPage() {
               <p className="text-xs text-amber-700 font-medium truncate">Gmail not connected</p>
             </div>
             <a
-              href="/auth/google"
+              href={`${BACKEND_URL}/auth/google`}
               className="shrink-0 flex items-center gap-1.5 text-xs font-semibold text-amber-700 hover:text-amber-900 bg-white border border-amber-200 rounded-lg px-2.5 py-1 transition-colors"
             >
               <GoogleLogo size={12} />
