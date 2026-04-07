@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { normalizePhone } from '../utils/phone';
-import { getCallsByPhone, getContactProfile, saveContactProfile } from '../api';
+import { getCallsByPhone, getEmailsByPhone, getContactProfile, saveContactProfile } from '../api';
 import PhoneActionSheet from './PhoneActionSheet';
 import AddressAutocomplete from './AddressAutocomplete';
 
@@ -309,6 +309,7 @@ function ProfileField({ icon, label, value }) {
 
 export default function ContactHistoryModal({ phone, leads, onClose }) {
   const [callNotes,        setCallNotes]        = useState([]);
+  const [emailItems,       setEmailItems]       = useState([]);
   const [actionSheetPhone, setActionSheetPhone] = useState(null);
 
   useEffect(() => {
@@ -316,6 +317,9 @@ export default function ContactHistoryModal({ phone, leads, onClose }) {
     getCallsByPhone(phone)
       .then(setCallNotes)
       .catch(err => console.error('Failed to load call notes:', err));
+    getEmailsByPhone(phone)
+      .then(setEmailItems)
+      .catch(err => console.error('Failed to load email history:', err));
   }, [phone]);
 
   if (!phone) return null;
@@ -333,10 +337,11 @@ export default function ContactHistoryModal({ phone, leads, onClose }) {
   const contact    = history[0] || {};
   const primaryPhone = contact.callback_number || contact.phone_number || phone;
 
-  // Merge leads and calls into a single timeline, newest first
+  // Merge leads, calls, and emails into a single timeline, newest first
   const timeline = [
-    ...history.map(l => ({ ...l, _type: 'lead' })),
-    ...callNotes.map(c => ({ ...c, _type: 'call' })),
+    ...history.map(l    => ({ ...l, _type: 'lead'  })),
+    ...callNotes.map(c  => ({ ...c, _type: 'call'  })),
+    ...emailItems.map(e => ({ ...e, _type: 'email' })),
   ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
   return (
@@ -390,9 +395,9 @@ export default function ContactHistoryModal({ phone, leads, onClose }) {
               <>
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">History</p>
                 {timeline.map(item =>
-                  item._type === 'call'
-                    ? <CallNoteItem   key={`call-${item.id}`}  item={item} />
-                    : <LeadItem       key={`lead-${item.id}`}  item={item} />
+                  item._type === 'call'  ? <CallNoteItem  key={`call-${item.id}`}  item={item} /> :
+                  item._type === 'email' ? <EmailItem     key={`email-${item.id}`} item={item} /> :
+                                           <LeadItem      key={`lead-${item.id}`}  item={item} />
                 )}
               </>
             )}
@@ -468,7 +473,7 @@ function CallNoteItem({ item: call }) {
           </span>
           <span className="text-xs text-gray-300">·</span>
           <span className="text-xs text-blue-600 bg-blue-100 rounded px-1.5 py-0.5 font-medium">
-            Answered call
+            {call.classification === 'Outbound' ? 'You called' : 'Answered call'}
           </span>
           {duration && <span className="text-xs text-gray-400">{duration}</span>}
         </div>
@@ -504,6 +509,100 @@ function CallNoteItem({ item: call }) {
             <p className="mt-1.5 text-xs text-gray-400 leading-relaxed whitespace-pre-wrap">
               {call.transcript}
             </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Return just the email address from strings like "Name <addr@example.com>" or "addr@example.com"
+function extractEmailAddress(str) {
+  if (!str) return '';
+  const match = str.match(/<([^>]+)>/);
+  return match ? match[1].trim() : str.trim();
+}
+
+// Human-friendly mailbox label
+function mailboxLabel(email) {
+  const mb = email.mailbox;
+  if (mb === 'sent')  return 'Sent';
+  if (mb === 'trash') return 'Trash';
+  if (mb === 'spam')  return 'Spam';
+  // fall back to direction for rows without mailbox metadata
+  return email.direction === 'outbound' ? 'Sent' : 'Inbox';
+}
+
+function EmailItem({ item: email }) {
+  const [expanded, setExpanded] = useState(false);
+  const isOutbound  = email.direction === 'outbound';
+  const counterpart = isOutbound ? email.to_address : email.from_address;
+  const shortAddr   = extractEmailAddress(counterpart);
+  const unread      = email.is_read === 0 && !isOutbound;
+  const mboxLabel   = mailboxLabel(email);
+
+  return (
+    <div
+      className={`border rounded-lg bg-violet-50 overflow-hidden ${unread ? 'border-violet-300' : 'border-violet-100'}`}
+      onClick={() => setExpanded(e => !e)}
+      style={{ cursor: 'pointer' }}
+    >
+      {/* Header row */}
+      <div className="flex items-start justify-between gap-3 p-3.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="text-xs text-gray-400">
+              {new Date(email.created_at).toLocaleDateString('en-US', {
+                month: 'short', day: 'numeric', year: 'numeric',
+              })}
+            </span>
+            <span className="text-xs text-gray-300">·</span>
+            <span className="text-xs font-semibold text-violet-600 bg-violet-100 rounded px-1.5 py-0.5">
+              {mboxLabel}
+            </span>
+            {unread && (
+              <span className="text-[10px] font-bold text-white bg-violet-500 rounded px-1.5 py-0.5 leading-none">
+                UNREAD
+              </span>
+            )}
+          </div>
+
+          {/* Subject (bold if unread) */}
+          {email.subject ? (
+            <p className={`text-sm leading-snug truncate ${unread ? 'font-bold text-gray-900' : 'font-medium text-gray-800'}`}>
+              {email.subject}
+            </p>
+          ) : (
+            <p className="text-sm text-gray-400 italic leading-snug">(no subject)</p>
+          )}
+
+          {/* Counterpart address */}
+          {shortAddr && (
+            <p className="text-xs text-gray-400 mt-0.5 truncate">
+              {isOutbound ? 'To: ' : 'From: '}
+              <span className="text-gray-600">{shortAddr}</span>
+            </p>
+          )}
+        </div>
+
+        {/* Expand chevron */}
+        <svg
+          className={`w-4 h-4 text-violet-300 shrink-0 mt-0.5 transition-transform ${expanded ? 'rotate-180' : ''}`}
+          fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </div>
+
+      {/* Expandable preview */}
+      {expanded && (
+        <div className="px-3.5 pb-3.5 border-t border-violet-100 pt-2.5">
+          {email.body_preview ? (
+            <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+              {email.body_preview}
+            </p>
+          ) : (
+            <p className="text-xs text-gray-400 italic">No preview available for this email.</p>
           )}
         </div>
       )}

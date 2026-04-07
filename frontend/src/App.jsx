@@ -10,6 +10,7 @@ import OnboardingModal from './components/OnboardingModal';
 import ContactHistoryModal from './components/ContactHistoryModal';
 import OutboundNoteModal from './components/OutboundNoteModal';
 import InboxLayout from './components/inbox/InboxLayout';
+import EmailPage from './components/EmailPage';
 import { getLeads, saveOutboundNote } from './api';
 import { translations } from './i18n';
 import { useVoiceDevice } from './hooks/useVoiceDevice';
@@ -37,6 +38,14 @@ const SIDEBAR_NAV_ICONS = [
     icon: (
       <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 16a2 2 0 01-2 2H7l-4 4V6a2 2 0 012-2h14a2 2 0 012 2v10z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'email',
+    icon: (
+      <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
       </svg>
     ),
   },
@@ -73,6 +82,14 @@ const BOTTOM_NAV_ICONS = [
     icon: (active) => (
       <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 16a2 2 0 01-2 2H7l-4 4V6a2 2 0 012-2h14a2 2 0 012 2v10z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'email',
+    icon: (active) => (
+      <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
       </svg>
     ),
   },
@@ -225,7 +242,7 @@ export default function App() {
         {/* Main content */}
         {/* Inbox needs overflow-hidden + no padding so it can manage its own scroll internally */}
         <main className={`flex-1 flex flex-col ${
-          activeNav === 'text'
+          activeNav === 'text' || activeNav === 'email'
             ? 'overflow-hidden'
             : 'overflow-auto px-4 md:px-6 pt-6 pb-[calc(56px+env(safe-area-inset-bottom))] md:pb-6'
         }`}>
@@ -250,6 +267,8 @@ export default function App() {
           {activeNav === 'calls' && <CallsPage onContactClick={setCallsPagePhone} voiceDevice={voiceDevice} />}
 
           {activeNav === 'text' && <InboxLayout />}
+
+          {activeNav === 'email' && <EmailPage />}
 
           {activeNav === 'timeline' && <TimelinePage onContactClick={setCallsPagePhone} />}
 

@@ -80,6 +80,24 @@ db.exec(`
   )
 `);
 
+// Email activity log — one row per inbound or outbound email event.
+// Actual sending/receiving is handled by an external provider (see Phase 2).
+// This table stores metadata so emails appear in the timeline and contact history.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS emails (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone        TEXT,
+    direction    TEXT NOT NULL DEFAULT 'outbound',
+    from_address TEXT,
+    to_address   TEXT,
+    subject      TEXT,
+    body_preview TEXT,
+    status       TEXT NOT NULL DEFAULT 'sent',
+    external_id  TEXT,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
 // Structured address fields added to contacts for Mapbox Address Autofill integration
 try { db.exec('ALTER TABLE contacts ADD COLUMN formatted_address TEXT'); } catch {}
 try { db.exec('ALTER TABLE contacts ADD COLUMN address_line_1 TEXT'); } catch {}
@@ -89,5 +107,40 @@ try { db.exec('ALTER TABLE contacts ADD COLUMN postal_code TEXT'); } catch {}
 try { db.exec('ALTER TABLE contacts ADD COLUMN country TEXT'); } catch {}
 try { db.exec('ALTER TABLE contacts ADD COLUMN lat REAL'); } catch {}
 try { db.exec('ALTER TABLE contacts ADD COLUMN lng REAL'); } catch {}
+
+// Gmail OAuth tokens — single row for the connected account.
+// refresh_token is stored once at connect time; access_token is refreshed automatically.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gmail_tokens (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    email         TEXT    NOT NULL,
+    access_token  TEXT    NOT NULL,
+    refresh_token TEXT,
+    expiry_date   INTEGER,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+// Gmail-specific fields on emails — added safely so existing rows are unaffected
+try { db.exec('ALTER TABLE emails ADD COLUMN gmail_message_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE emails ADD COLUMN thread_id TEXT'); } catch {}
+
+// Email state fields — is_read defaults to 1 (read) so historical rows appear read.
+// New inbound emails from the poller are inserted with is_read = 0.
+try { db.exec('ALTER TABLE emails ADD COLUMN is_read INTEGER NOT NULL DEFAULT 1'); } catch {}
+try { db.exec('ALTER TABLE emails ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE emails ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0'); } catch {}
+
+// Gmail mailbox/label metadata.
+// labels_json: JSON-serialised array of Gmail label IDs, e.g. ["INBOX","UNREAD"].
+// mailbox: normalised bucket derived from labels — inbox | sent | trash | spam | other.
+try { db.exec("ALTER TABLE emails ADD COLUMN labels_json TEXT"); } catch {}
+try { db.exec("ALTER TABLE emails ADD COLUMN mailbox TEXT NOT NULL DEFAULT 'inbox'"); } catch {}
+
+// One-time data fix: outbound emails that were imported before the mailbox column
+// existed all defaulted to 'inbox'. Correct them to 'sent'.
+db.prepare(
+  "UPDATE emails SET mailbox = 'sent' WHERE direction = 'outbound' AND mailbox = 'inbox' AND labels_json IS NULL"
+).run();
 
 module.exports = db;

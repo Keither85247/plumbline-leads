@@ -10,8 +10,6 @@ function formatPhone(num) {
   return num;
 }
 
-// Exact clock time — events are already grouped by date in the parent,
-// so a timestamp like "10:23 AM" is unambiguous within the group.
 function formatTime(iso) {
   if (!iso) return '';
   return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -25,45 +23,48 @@ function formatDuration(seconds) {
 }
 
 // ── Icons ────────────────────────────────────────────────────────────────────
-// Each icon type renders a distinct SVG for fast visual scanning.
 
-// Phone handset — same path already used in LeadDetailsPanel (proven to render)
 const PHONE_PATH = 'M3 5a2 2 0 012-2h2.28a1 1 0 01.95.68l1.06 3.18a1 1 0 01-.23 1.05L7.5 9.43a16 16 0 006.07 6.07l1.52-1.56a1 1 0 011.05-.23l3.18 1.06a1 1 0 01.68.95V19a2 2 0 01-2 2C9.16 21 3 14.84 3 7V5z';
-// Microphone — for voicemail events
-const MIC_PATH  = 'M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z';
-// Outbound arrow (up-right) — already in codebase as OutboundArrow
-const ARROW_OUT = 'M7 17L17 7M17 7H7M17 7v10';
+const MIC_PATH   = 'M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z';
 
 function EventIcon({ iconType, bgClass, colorClass }) {
-  const isVoicemail = iconType === 'voicemail';
-  const isOutbound  = iconType === 'phone-out';
-  const isMissed    = iconType === 'phone-missed';
+  const isVoicemail  = iconType === 'voicemail';
+  const isPhoneOut   = iconType === 'phone-out';
+  const isMissed     = iconType === 'phone-missed';
+  const isEmail      = iconType === 'email';
+  const isEmailOut   = iconType === 'email-out';
 
   return (
     <div className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${bgClass}`}>
       {isVoicemail ? (
-        // Microphone icon for voicemail
         <svg className={`w-4 h-4 ${colorClass}`} fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" d={MIC_PATH} />
         </svg>
-      ) : isOutbound ? (
-        // Phone + outbound arrow overlay
+      ) : isPhoneOut ? (
         <svg className={`w-4 h-4 ${colorClass}`} fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" d={PHONE_PATH} />
-          {/* Small outbound arrow tucked in top-right corner of the 24×24 grid */}
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 3h6m0 0v6m0-6L14 10" />
         </svg>
       ) : isMissed ? (
-        // Phone + diagonal X for missed
         <svg className={`w-4 h-4 ${colorClass}`} fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" d={PHONE_PATH} />
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 5L5 19" />
         </svg>
+      ) : isEmail ? (
+        // Envelope icon — inbound email
+        <svg className={`w-4 h-4 ${colorClass}`} fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+        </svg>
+      ) : isEmailOut ? (
+        // Envelope + arrow — outbound email
+        <svg className={`w-4 h-4 ${colorClass}`} fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 3h6m0 0v6m0-6L14 10" />
+        </svg>
       ) : (
-        // Plain phone for inbound answered
+        // Plain phone with down-arrow for inbound answered
         <svg className={`w-4 h-4 ${colorClass}`} fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" d={PHONE_PATH} />
-          {/* Small down arrow for inbound direction hint */}
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 21h6m0 0v-6m0 6L14 14" />
         </svg>
       )}
@@ -92,13 +93,19 @@ function ClassBadge({ value }) {
 
 // ── EventRow ─────────────────────────────────────────────────────────────────
 
-export default function EventRow({ event, expanded, onToggle }) {
+export default function EventRow({ event, expanded, onToggle, onContactClick }) {
   const meta = EVENT_META[event.type] ?? EVENT_META['call-outbound'];
   const duration = meta.showDuration ? formatDuration(event.durationSeconds) : null;
+  const isEmail  = event.type === 'email-inbound' || event.type === 'email-outbound';
 
-  // Display name: contact name if known, otherwise formatted phone
-  const displayName = event.contactName || formatPhone(event.contactPhone);
-  const showPhone   = !!event.contactName; // show phone as secondary line when name is known
+  // Display name: contact name → email address → formatted phone
+  const displayName = event.contactName
+    || (isEmail ? event.contactEmail : null)
+    || formatPhone(event.contactPhone);
+
+  // Secondary line: phone when name is shown; for email show phone only if it's set
+  const showPhone = !isEmail && !!event.contactName;
+  const showEmailAddr = isEmail && !!event.contactName; // show email as secondary when name is known
 
   return (
     <div>
@@ -110,31 +117,42 @@ export default function EventRow({ event, expanded, onToggle }) {
         `}
         onClick={() => event.isExpandable && onToggle()}
       >
-        {/* Icon */}
         <EventIcon
           iconType={meta.iconType}
           bgClass={meta.iconBg}
           colorClass={meta.iconColor}
         />
 
-        {/* Content — name is the strongest element, event type is secondary */}
         <div className="flex-1 min-w-0">
-          {/* Line 1: contact name + classification badge */}
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-semibold text-gray-900 leading-snug truncate">
-              {displayName}
-            </span>
+            {onContactClick && event.contactPhone ? (
+              <button
+                className="text-sm font-semibold text-gray-900 leading-snug truncate hover:text-blue-600 transition-colors text-left"
+                onClick={e => { e.stopPropagation(); onContactClick(event.contactPhone); }}
+              >
+                {displayName}
+              </button>
+            ) : (
+              <span className="text-sm font-semibold text-gray-900 leading-snug truncate">
+                {displayName}
+              </span>
+            )}
             <ClassBadge value={event.classification} />
           </div>
 
-          {/* Line 2: phone number (only when name is shown above it) */}
           {showPhone && (
             <p className="text-[11px] text-gray-400 mt-0.5 leading-none">
               {formatPhone(event.contactPhone)}
             </p>
           )}
 
-          {/* Line 3: event type + duration */}
+          {showEmailAddr && (
+            <p className="text-[11px] text-gray-400 mt-0.5 leading-none truncate">
+              {event.contactEmail}
+            </p>
+          )}
+
+          {/* Event type label + duration */}
           <div className="flex items-center gap-1.5 mt-1">
             <span className={`text-xs font-medium leading-none ${meta.labelColor}`}>
               {meta.label}
@@ -142,10 +160,14 @@ export default function EventRow({ event, expanded, onToggle }) {
             {duration && (
               <span className="text-[11px] text-gray-400 leading-none">· {duration}</span>
             )}
+            {/* Email subject inline when collapsed */}
+            {isEmail && event.subject && (
+              <span className="text-[11px] text-gray-400 leading-none truncate">· {event.subject}</span>
+            )}
           </div>
 
-          {/* Line 4: 1-line summary preview — collapsed state only */}
-          {!expanded && (event.summary || event.note) && (
+          {/* 1-line summary preview — collapsed state only */}
+          {!expanded && (event.summary || event.note) && !isEmail && (
             <p className="text-[11px] text-gray-500 mt-1.5 line-clamp-1 leading-snug">
               {event.summary || event.note}
             </p>
@@ -169,12 +191,25 @@ export default function EventRow({ event, expanded, onToggle }) {
       </div>
 
       {/* ── Expanded detail ───────────────────────────────────────────────── */}
-      {/* ml-11 = icon(32) + gap(12) — aligns detail under the icon column  */}
       {event.isExpandable && expanded && (
         <div className="ml-11 mr-4 mb-4 space-y-2">
 
+          {/* Email: subject + body preview */}
+          {isEmail && (event.subject || event.summary) && (
+            <div className="bg-violet-50 border border-violet-100 rounded-lg px-3 py-2.5">
+              {event.subject && (
+                <p className="text-[10px] font-semibold text-violet-400 uppercase tracking-widest mb-1">
+                  {event.subject}
+                </p>
+              )}
+              {event.summary && (
+                <p className="text-xs text-gray-700 leading-relaxed">{event.summary}</p>
+              )}
+            </div>
+          )}
+
           {/* Inbound answered: AI summary */}
-          {!event.isOutbound && event.summary && (
+          {!event.isOutbound && !isEmail && event.summary && (
             <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">
                 Summary
@@ -183,8 +218,18 @@ export default function EventRow({ event, expanded, onToggle }) {
             </div>
           )}
 
-          {/* Inbound answered: AI key points */}
-          {!event.isOutbound && event.keyPoints.length > 0 && (
+          {/* Outbound answered: AI summary (now that outbound calls are recorded) */}
+          {event.isOutbound && !isEmail && event.summary && (
+            <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">
+                Call Summary
+              </p>
+              <p className="text-xs text-gray-700 leading-relaxed">{event.summary}</p>
+            </div>
+          )}
+
+          {/* Key points */}
+          {event.keyPoints.length > 0 && (
             <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">
                 Key Points
@@ -200,7 +245,7 @@ export default function EventRow({ event, expanded, onToggle }) {
             </div>
           )}
 
-          {/* Outbound voicemail or answered: contractor note */}
+          {/* Contractor note */}
           {event.note && (
             <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5">
               <p className="text-[10px] font-semibold text-amber-500 uppercase tracking-widest mb-1.5">

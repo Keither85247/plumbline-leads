@@ -1,13 +1,13 @@
 // ── Timeline event normalization ────────────────────────────────────────────
 //
-// Maps raw call records from GET /api/calls into a clean, typed event shape.
-// All conditional logic lives here so EventRow stays declarative.
+// Maps raw records from the API into a clean, typed event shape consumed by
+// EventRow. All conditional logic lives here so EventRow stays declarative.
 //
-// Data model notes (from backend/routes/calls.js):
+// Call data model notes (from backend/routes/calls.js):
 //   - `from_number`    = customer's phone for BOTH inbound and outbound calls
 //   - `classification` = direction ('Outbound') OR lead category for inbound calls
 //   - `outcome`        = 'answered' | 'voicemail' | 'no-answer' | null  (outbound only)
-//   - `transcript`     = non-null iff the inbound call was answered + AI-transcribed
+//   - `transcript`     = non-null iff the call was answered + AI-transcribed
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const EVENT_TYPES = {
@@ -17,6 +17,8 @@ export const EVENT_TYPES = {
   OUTBOUND_VOICEMAIL: 'call-outbound-voicemail',
   OUTBOUND_NO_ANSWER: 'call-outbound-no-answer',
   OUTBOUND_UNKNOWN:   'call-outbound',
+  INBOUND_EMAIL:      'email-inbound',
+  OUTBOUND_EMAIL:     'email-outbound',
 };
 
 // Visual metadata per event type.
@@ -70,15 +72,35 @@ export const EVENT_META = {
     showDuration: true,
     iconType: 'phone-out',
   },
+  [EVENT_TYPES.INBOUND_EMAIL]: {
+    label: 'Email Received',
+    labelColor: 'text-violet-600',
+    iconBg: 'bg-violet-50',
+    iconColor: 'text-violet-500',
+    showDuration: false,
+    iconType: 'email',
+  },
+  [EVENT_TYPES.OUTBOUND_EMAIL]: {
+    label: 'Email Sent',
+    labelColor: 'text-violet-600',
+    iconBg: 'bg-violet-50',
+    iconColor: 'text-violet-500',
+    showDuration: false,
+    iconType: 'email-out',
+  },
 };
 
-function resolveType(call) {
+// ── normalizeCall ─────────────────────────────────────────────────────────────
+
+function resolveCallType(call) {
   if (call.classification === 'Outbound') {
     switch (call.outcome) {
       case 'answered':  return EVENT_TYPES.OUTBOUND_ANSWERED;
       case 'voicemail': return EVENT_TYPES.OUTBOUND_VOICEMAIL;
       case 'no-answer': return EVENT_TYPES.OUTBOUND_NO_ANSWER;
-      default:          return EVENT_TYPES.OUTBOUND_UNKNOWN;
+      default:
+        // Outbound calls that were recorded + transcribed = answered
+        return call.transcript ? EVENT_TYPES.OUTBOUND_ANSWERED : EVENT_TYPES.OUTBOUND_UNKNOWN;
     }
   }
   // Inbound: transcript present = was answered; absent = call was missed
@@ -87,11 +109,10 @@ function resolveType(call) {
 
 export function normalizeCall(call) {
   const isOutbound = call.classification === 'Outbound';
-  const type = resolveType(call);
+  const type = resolveCallType(call);
   const keyPoints = Array.isArray(call.key_points) ? call.key_points : [];
 
   // Classification badge only makes sense for inbound calls (it's the lead category).
-  // For outbound rows classification = 'Outbound' which is directional, not categorical.
   const classification = isOutbound ? null : (call.classification || null);
 
   const hasContent = !!(call.summary || call.contractor_note || keyPoints.length > 0);
@@ -100,8 +121,10 @@ export function normalizeCall(call) {
     id:              call.id,
     type,
     isOutbound,
-    contactName:     call.contact_name || null,
-    contactPhone:    call.from_number  || '',
+    contactName:     call.contact_name  || null,
+    contactPhone:    call.from_number   || '',
+    contactEmail:    null,
+    subject:         null,
     summary:         call.summary         || null,
     note:            call.contractor_note || null,
     keyPoints,
@@ -109,5 +132,38 @@ export function normalizeCall(call) {
     durationSeconds: call.duration        || null,
     classification,
     isExpandable: hasContent,
+  };
+}
+
+// ── normalizeEmail ────────────────────────────────────────────────────────────
+
+export function normalizeEmail(email) {
+  const isOutbound = email.direction === 'outbound';
+  const type = isOutbound ? EVENT_TYPES.OUTBOUND_EMAIL : EVENT_TYPES.INBOUND_EMAIL;
+
+  // Counterpart address — who sent to us (inbound) or who we sent to (outbound)
+  const contactEmail = isOutbound ? (email.to_address || '') : (email.from_address || '');
+
+  // contact_name is resolved server-side by matching the counterpart address
+  // against contacts.email and joining with leads for the human name.
+  // When present it becomes the primary display label; the raw email address
+  // is shown as smaller secondary text (handled in EventRow via showEmailAddr).
+  const contactName = email.contact_name || null;
+
+  return {
+    id:              `email-${email.id}`,
+    type,
+    isOutbound,
+    contactName,
+    contactPhone:    email.phone   || '',
+    contactEmail,
+    subject:         email.subject || null,
+    summary:         email.body_preview || email.subject || null,
+    note:            null,
+    keyPoints:       [],
+    timestamp:       email.created_at,
+    durationSeconds: null,
+    classification:  null,
+    isExpandable:    !!(email.subject || email.body_preview),
   };
 }
