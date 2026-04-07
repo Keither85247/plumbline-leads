@@ -24,7 +24,7 @@ function ConversationSkeleton() {
   );
 }
 
-export default function ConversationList({ conversations, selectedId, onSelect, loading = false }) {
+export default function ConversationList({ conversations, selectedId, onSelect, onCompose, loading = false }) {
   const [query, setQuery] = useState('');
 
   const filtered = query.trim()
@@ -51,11 +51,12 @@ export default function ConversationList({ conversations, selectedId, onSelect, 
               </span>
             )}
           </h2>
-          {/* Compose button — placeholder for future */}
+          {/* Compose button */}
           <button
-            className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+            onClick={onCompose}
+            className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
             aria-label="New conversation"
-            title="New conversation (coming soon)"
+            title="New conversation"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />

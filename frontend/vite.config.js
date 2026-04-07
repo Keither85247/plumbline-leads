@@ -10,8 +10,13 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:3001',
-        changeOrigin: true
-      }
-    }
-  }
+        changeOrigin: true,
+      },
+      // OAuth flow: /auth/google redirects to Google; /auth/google/callback returns here
+      '/auth': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+    },
+  },
 });

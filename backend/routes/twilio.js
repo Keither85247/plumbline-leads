@@ -406,14 +406,17 @@ router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) 
   }
 
   console.log(`[Twilio] /voice-client: outbound to ${To} (CallSid: ${CallSid})`);
-  // Log as Outbound — no recording/transcription for outbound calls (inbound only).
-  // Future: add a post-call note flow here once ready.
+  // Log as Outbound. The answered leg is recorded and flows into the /recording
+  // webhook, which transcribes + summarises it just like inbound answered calls.
   logCall(To, CallSid, 'Outbound');
 
   const dial = twiml.dial({
     ...(callerId && { callerId }),
-    // Outbound calls are NOT recorded or transcribed.
-    // Inbound calls go through /voice → /recording for that pipeline.
+    record: 'record-from-answer',
+    ...(baseUrl && {
+      recordingStatusCallback:       `${baseUrl}/api/twilio/recording`,
+      recordingStatusCallbackMethod: 'POST',
+    }),
   });
   dial.number(To);
 

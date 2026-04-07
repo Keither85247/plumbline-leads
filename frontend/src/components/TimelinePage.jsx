@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { getCalls } from '../api';
-import { normalizeCall } from './timeline/normalizeEvent';
+import { getCalls, getEmails } from '../api';
+import { normalizeCall, normalizeEmail } from './timeline/normalizeEvent';
 import EventRow from './timeline/EventRow';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -98,8 +98,14 @@ export default function TimelinePage({ onContactClick }) {
   const [expandedId, setExpandedId] = useState(null);
 
   useEffect(() => {
-    getCalls()
-      .then(calls => setEvents(calls.map(normalizeCall)))
+    Promise.all([getCalls(), getEmails()])
+      .then(([calls, emails]) => {
+        const all = [
+          ...calls.map(normalizeCall),
+          ...emails.map(normalizeEmail),
+        ].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        setEvents(all);
+      })
       .catch(err => console.error('[Timeline] fetch failed:', err))
       .finally(() => setLoading(false));
   }, []);
@@ -144,6 +150,7 @@ export default function TimelinePage({ onContactClick }) {
                       event={event}
                       expanded={expandedId === event.id}
                       onToggle={() => setExpandedId(expandedId === event.id ? null : event.id)}
+                      onContactClick={onContactClick}
                     />
                   </div>
                 ))}

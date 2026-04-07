@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import ConversationList from './ConversationList';
 import MessageThread from './MessageThread';
 import LeadDetailsPanel from './LeadDetailsPanel';
+import NewMessageModal from './NewMessageModal';
 import { MOCK_CONVERSATIONS, MOCK_MESSAGES } from './mockData';
 
 function EmptyThreadState() {
@@ -36,6 +37,7 @@ export default function InboxLayout() {
   const [selectedId,    setSelectedId]       = useState(null);
   const [showDetails,   setShowDetails]      = useState(true);
   const [mobileView,    setMobileView]       = useState('list'); // 'list' | 'thread'
+  const [composeOpen,   setComposeOpen]      = useState(false);
 
   const selected = conversations.find(c => c.id === selectedId) ?? null;
   const messages = selectedId ? (messageMap[selectedId] ?? []) : [];
@@ -71,6 +73,49 @@ export default function InboxLayout() {
     ));
   }, [selectedId]);
 
+  // Called from NewMessageModal — creates (or selects existing) conversation + sends first message
+  const handleComposeSend = useCallback((phone, text) => {
+    const normalized = phone.trim();
+    const existing = conversations.find(c => c.phone === normalized);
+
+    if (existing) {
+      handleSelect(existing.id);
+      // Append message to existing thread directly (selectedId may not be updated yet)
+      const msg = {
+        id:        `msg-${Date.now()}`,
+        body:      text.trim(),
+        direction: 'outbound',
+        ts:        new Date().toISOString(),
+      };
+      setMessageMap(prev => ({
+        ...prev,
+        [existing.id]: [...(prev[existing.id] ?? []), msg],
+      }));
+    } else {
+      // Create a new stub conversation
+      const newId = `conv-new-${Date.now()}`;
+      const newConv = {
+        id:             newId,
+        name:           normalized,
+        phone:          normalized,
+        lastMessage:    text,
+        lastMessageDir: 'outbound',
+        timestamp:      new Date().toISOString(),
+        unread:         0,
+      };
+      const firstMsg = {
+        id:        `msg-${Date.now()}`,
+        body:      text,
+        direction: 'outbound',
+        ts:        new Date().toISOString(),
+      };
+      setConversations(prev => [newConv, ...prev]);
+      setMessageMap(prev => ({ ...prev, [newId]: [firstMsg] }));
+      setSelectedId(newId);
+      setMobileView('thread');
+    }
+  }, [conversations, handleSelect]);
+
   return (
     // Fills the full available height. Parent in App.jsx must be flex-1 + overflow-hidden.
     <div className="flex flex-1 min-h-0 overflow-hidden bg-white border-t border-gray-100">
@@ -85,6 +130,7 @@ export default function InboxLayout() {
           conversations={conversations}
           selectedId={selectedId}
           onSelect={handleSelect}
+          onCompose={() => setComposeOpen(true)}
         />
       </aside>
 
@@ -111,6 +157,14 @@ export default function InboxLayout() {
         <aside className="hidden lg:flex flex-col w-64 xl:w-72 border-l border-gray-100 shrink-0">
           <LeadDetailsPanel conversation={selected} />
         </aside>
+      )}
+
+      {/* ── New message composer ────────────────────────────────── */}
+      {composeOpen && (
+        <NewMessageModal
+          onSend={handleComposeSend}
+          onClose={() => setComposeOpen(false)}
+        />
       )}
     </div>
   );

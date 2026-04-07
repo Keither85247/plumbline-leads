@@ -82,8 +82,8 @@ router.get('/by-phone/:number', (req, res) => {
 // Saves a contractor-written note for a just-completed outbound call.
 // Matches the most recent Outbound call row by phone number and writes the
 // note into `contractor_note`. If no row is found (edge case), inserts one.
-// This endpoint is intentionally separate from the inbound transcription/
-// summary pipeline — outbound calls are never recorded or AI-summarised.
+// Note: outbound calls are now recorded via /voice-client → /recording, so
+// the same row may also receive an AI transcript/summary from that pipeline.
 // ---------------------------------------------------------------------------
 router.post('/outbound-note', express.json(), (req, res) => {
   const { phone, note, outcome } = req.body;
