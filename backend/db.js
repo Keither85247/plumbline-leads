@@ -143,4 +143,31 @@ db.prepare(
   "UPDATE emails SET mailbox = 'sent' WHERE direction = 'outbound' AND mailbox = 'inbox' AND labels_json IS NULL"
 ).run();
 
+// Attachment metadata stored as a JSON array: [{filename, mime_type, size}].
+// Binary content is never stored — attachments are only held in memory during send.
+try { db.exec("ALTER TABLE emails ADD COLUMN attachments_json TEXT"); } catch {}
+
+// ── User accounts (multi-tenant scaffolding) ──────────────────────────────────
+// The app starts as single-user; these tables/columns prepare it for multi-user.
+// user_id on data tables is nullable so existing rows are unaffected.
+// Authentication and row-level scoping are enforced in auth middleware.
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    email        TEXT    NOT NULL UNIQUE,
+    display_name TEXT,
+    api_key      TEXT    UNIQUE,           -- simple tester auth token
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+// Scaffold user_id onto all data-bearing tables.
+// All nullable + no default — existing rows stay NULL (treated as "legacy / shared").
+try { db.exec('ALTER TABLE leads    ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
+try { db.exec('ALTER TABLE calls    ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
+try { db.exec('ALTER TABLE contacts ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
+try { db.exec('ALTER TABLE emails   ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
+try { db.exec('ALTER TABLE gmail_tokens ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
+
 module.exports = db;

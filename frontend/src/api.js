@@ -172,19 +172,32 @@ export async function disconnectGmail() {
 
 /**
  * Send an outbound email via Gmail and log it.
- * @param {{ to: string, subject: string, body: string }} params
+ * When attachments (File[]) are provided, uses multipart/form-data;
+ * otherwise sends JSON (faster, no overhead).
+ *
+ * @param {{ to: string, subject: string, body: string, attachments?: File[] }} params
  */
-export async function sendEmail({ to, subject, body }) {
-  const res = await fetch(`${API_BASE}/emails`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      direction:   'outbound',
-      to_address:  to,
-      subject,
-      body,
-    }),
-  });
+export async function sendEmail({ to, subject, body, attachments = [] }) {
+  let fetchInit;
+
+  if (attachments.length > 0) {
+    const form = new FormData();
+    form.append('direction',  'outbound');
+    form.append('to_address', to);
+    form.append('subject',    subject);
+    form.append('body',       body);
+    attachments.forEach(file => form.append('attachments', file, file.name));
+    fetchInit = { method: 'POST', body: form };
+    // Do NOT set Content-Type — browser sets it automatically with boundary
+  } else {
+    fetchInit = {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ direction: 'outbound', to_address: to, subject, body }),
+    };
+  }
+
+  const res = await fetch(`${API_BASE}/emails`, fetchInit);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to send email');

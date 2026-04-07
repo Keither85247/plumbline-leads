@@ -1,8 +1,29 @@
 'use strict';
 const express = require('express');
+const multer  = require('multer');
 const router  = express.Router();
 const db      = require('../db');
 const gmailService = require('../services/gmailService');
+
+// Multer: memory storage, 10 MB total limit, max 5 files
+// Allowed mime types checked per-file below.
+const ALLOWED_MIME_TYPES = new Set([
+  'application/pdf',
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain', 'text/csv',
+]);
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 10 * 1024 * 1024, files: 5 },
+  fileFilter(_req, file, cb) {
+    cb(null, ALLOWED_MIME_TYPES.has(file.mimetype));
+  },
+});
 
 // Normalize phone to 10 digits for matching (mirrors calls.js)
 function normalizePhone(num) {
@@ -137,9 +158,12 @@ router.get('/by-phone/:phone', (req, res) => {
 
 // ── POST /api/emails ──────────────────────────────────────────────────────────
 // Sends an outbound email via Gmail (if connected) and logs it to the DB.
+// Accepts multipart/form-data (for attachments) or application/json (no attachments).
 // For inbound emails logged by the poller, direction = 'inbound'.
 
-router.post('/', async (req, res) => {
+router.post('/', upload.array('attachments', 5), async (req, res) => {
+  // Support both JSON and multipart/form-data bodies
+  const body_raw = req.body;
   const {
     phone,
     direction    = 'outbound',
@@ -150,11 +174,26 @@ router.post('/', async (req, res) => {
     body_preview,  // short preview stored in DB
     status         = 'sent',
     external_id,
-  } = req.body;
+  } = body_raw;
 
   if (!['inbound', 'outbound'].includes(direction)) {
     return res.status(400).json({ error: 'direction must be "inbound" or "outbound"' });
   }
+
+  // Build attachment list from uploaded files (multer puts them in req.files)
+  const uploadedFiles = req.files ?? [];
+  const attachments   = uploadedFiles.map(f => ({
+    filename: f.originalname,
+    mimeType: f.mimetype,
+    buffer:   f.buffer,
+  }));
+
+  // Attachment metadata to persist (no binary content, just meta)
+  const attachmentsMeta = uploadedFiles.map(f => ({
+    filename:  f.originalname,
+    mime_type: f.mimetype,
+    size:      f.size,
+  }));
 
   // ── Outbound: attempt to send via Gmail ────────────────────────────────────
   let gmailMessageId = null;
@@ -169,10 +208,11 @@ router.post('/', async (req, res) => {
         to:      to_address,
         subject: subject || '',
         body,
+        attachments,
       });
       gmailMessageId = sent.id       ?? null;
       threadId       = sent.threadId ?? null;
-      console.log(`[Emails] Sent via Gmail to ${to_address} (msgId: ${gmailMessageId})`);
+      console.log(`[Emails] Sent via Gmail to ${to_address} (msgId: ${gmailMessageId}, attachments: ${attachments.length})`);
     } catch (err) {
       console.error('[Emails] Gmail send failed:', err.message);
       return res.status(500).json({ error: `Gmail send failed: ${err.message}` });
@@ -181,15 +221,18 @@ router.post('/', async (req, res) => {
 
   // ── Persist to DB ──────────────────────────────────────────────────────────
   try {
-    const preview  = body_preview ?? (body ? body.slice(0, 300) : null);
-    // Outbound emails are "read" by default; inbound arrive unread.
-    const is_read  = direction === 'outbound' ? 1 : 0;
+    const preview         = body_preview ?? (body ? body.slice(0, 300) : null);
+    const is_read         = direction === 'outbound' ? 1 : 0;
+    const attachmentsJson = attachmentsMeta.length > 0
+      ? JSON.stringify(attachmentsMeta)
+      : null;
 
     const result = db.prepare(`
       INSERT INTO emails
         (phone, direction, from_address, to_address, subject,
-         body_preview, status, external_id, gmail_message_id, thread_id, is_read)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         body_preview, status, external_id, gmail_message_id, thread_id,
+         is_read, attachments_json, mailbox)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       phone          || null,
       direction,
@@ -202,6 +245,8 @@ router.post('/', async (req, res) => {
       gmailMessageId,
       threadId,
       is_read,
+      attachmentsJson,
+      direction === 'outbound' ? 'sent' : 'inbox',
     );
 
     const row = db.prepare('SELECT * FROM emails WHERE id = ?').get(result.lastInsertRowid);

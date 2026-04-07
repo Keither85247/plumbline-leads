@@ -63,27 +63,73 @@ function getClient() {
 
 /**
  * Send an email via the authenticated Gmail account.
- * Uses RFC 2822 format encoded as base64url (required by Gmail API).
+ * Builds RFC 2822 / MIME multipart when attachments are provided,
+ * otherwise sends a simple text/plain message.
  *
- * @param {{ to: string, subject: string, body: string }} params
+ * @param {{
+ *   to:          string,
+ *   subject:     string,
+ *   body:        string,
+ *   attachments?: Array<{ filename: string, mimeType: string, buffer: Buffer }>
+ * }} params
  * @returns {{ id: string, threadId: string }} Gmail message object
  */
-async function sendEmail({ to, subject, body }) {
-  const gmail = getClient();
-  const from  = getConnectedEmail();
+async function sendEmail({ to, subject, body, attachments = [] }) {
+  const gmail    = getClient();
+  const from     = getConnectedEmail();
+  const boundary = `boundary_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
-  const messageParts = [
-    `From: ${from}`,
-    `To: ${to}`,
-    `Subject: =?utf-8?B?${Buffer.from(subject || '').toString('base64')}?=`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=utf-8',
-    'Content-Transfer-Encoding: base64',
-    '',
-    Buffer.from(body || '').toString('base64'),
-  ];
+  const subjectEncoded = `=?utf-8?B?${Buffer.from(subject || '').toString('base64')}?=`;
 
-  const raw = Buffer.from(messageParts.join('\r\n')).toString('base64url');
+  let raw;
+
+  if (attachments.length === 0) {
+    // ── Plain text — no attachments ───────────────────────────────────────────
+    const parts = [
+      `From: ${from}`,
+      `To: ${to}`,
+      `Subject: ${subjectEncoded}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      Buffer.from(body || '').toString('base64'),
+    ];
+    raw = Buffer.from(parts.join('\r\n')).toString('base64url');
+  } else {
+    // ── Multipart/mixed — body + attachments ──────────────────────────────────
+    const crlf = '\r\n';
+    const lines = [
+      `From: ${from}`,
+      `To: ${to}`,
+      `Subject: ${subjectEncoded}`,
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain; charset=utf-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      Buffer.from(body || '').toString('base64'),
+    ];
+
+    for (const att of attachments) {
+      // Sanitise filename (no path traversal, ASCII-safe)
+      const safeName = att.filename.replace(/[^\w.\-]/g, '_');
+      const nameEncoded = `=?utf-8?B?${Buffer.from(att.filename).toString('base64')}?=`;
+      lines.push(
+        `--${boundary}`,
+        `Content-Type: ${att.mimeType}; name="${nameEncoded}"`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: attachment; filename="${safeName}"`,
+        '',
+        att.buffer.toString('base64'),
+      );
+    }
+
+    lines.push(`--${boundary}--`);
+    raw = Buffer.from(lines.join(crlf)).toString('base64url');
+  }
 
   const res = await gmail.users.messages.send({
     userId: 'me',

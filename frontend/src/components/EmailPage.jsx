@@ -409,7 +409,7 @@ function EmailDetailPanel({ email, onBack, onDelete, onToggleRead, onArchive }) 
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto px-5 py-5 pb-[calc(56px+env(safe-area-inset-bottom))] md:pb-6">
+      <div className="flex-1 overflow-y-auto px-5 py-5 pb-[calc(56px+env(safe-area-inset-bottom))] md:pb-6 space-y-4">
         {email.body_preview ? (
           <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
             {email.body_preview}
@@ -417,6 +417,33 @@ function EmailDetailPanel({ email, onBack, onDelete, onToggleRead, onArchive }) 
         ) : (
           <p className="text-sm text-gray-400 italic">No preview available for this email.</p>
         )}
+
+        {/* Attachments */}
+        {(() => {
+          let atts = [];
+          try { atts = JSON.parse(email.attachments_json || '[]'); } catch {}
+          if (atts.length === 0) return null;
+          return (
+            <div className="border-t border-gray-100 pt-4">
+              <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                Attachments ({atts.length})
+              </p>
+              <div className="space-y-1.5">
+                {atts.map((att, i) => (
+                  <div key={i} className="flex items-center gap-2.5 bg-gray-50 rounded-lg px-3 py-2">
+                    <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                    </svg>
+                    <span className="text-xs text-gray-700 truncate flex-1">{att.filename}</span>
+                    {att.size != null && (
+                      <span className="text-[11px] text-gray-400 shrink-0">{formatBytes(att.size)}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
@@ -618,7 +645,7 @@ function RecipientInput({ query, onQueryChange, onSelect, autoFocus }) {
               {/* Initial avatar */}
               <div className="w-7 h-7 rounded-full bg-violet-100 flex items-center justify-center shrink-0">
                 <span className="text-[11px] font-bold text-violet-600 select-none">
-                  {(contact.name || contact.email)[0].toUpperCase()}
+                  {(contact.name || contact.email || '?')[0].toUpperCase()}
                 </span>
               </div>
               <div className="min-w-0 flex-1">
@@ -642,17 +669,36 @@ function RecipientInput({ query, onQueryChange, onSelect, autoFocus }) {
 
 // ── Compose modal ─────────────────────────────────────────────────────────────
 
+// Allowed MIME types mirroring the backend whitelist
+const ALLOWED_ATTACH_TYPES = new Set([
+  'application/pdf',
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain', 'text/csv',
+]);
+
+function formatBytes(bytes) {
+  if (bytes < 1024)       return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function ComposeModal({ onClose, onSent }) {
   // toQuery  — text currently in the input field (clears on contact selection)
   // toEmail  — actual email address for sending (set on autocomplete selection, null for raw input)
   // toName   — display name of the selected contact (null when raw input)
-  const [toQuery,  setToQuery]  = useState('');
-  const [toEmail,  setToEmail]  = useState(null);
-  const [toName,   setToName]   = useState(null);
-  const [subject,  setSubject]  = useState('');
-  const [body,     setBody]     = useState('');
-  const [sending,  setSending]  = useState(false);
-  const [error,    setError]    = useState(null);
+  const [toQuery,     setToQuery]     = useState('');
+  const [toEmail,     setToEmail]     = useState(null);
+  const [toName,      setToName]      = useState(null);
+  const [subject,     setSubject]     = useState('');
+  const [body,        setBody]        = useState('');
+  const [attachments, setAttachments] = useState([]); // File[]
+  const [sending,     setSending]     = useState(false);
+  const [error,       setError]       = useState(null);
+  const fileInputRef = useRef(null);
 
   // The address that will actually be used when sending.
   // Prefer the contact-selected email; fall back to raw typed input.
@@ -670,6 +716,27 @@ function ComposeModal({ onClose, onSent }) {
     setToQuery('');
   }
 
+  function handleFilePick(e) {
+    const files = Array.from(e.target.files || []);
+    const valid = files.filter(f => ALLOWED_ATTACH_TYPES.has(f.type));
+    const rejected = files.length - valid.length;
+    if (rejected > 0) setError(`${rejected} file(s) skipped — unsupported type.`);
+    setAttachments(prev => {
+      const merged = [...prev, ...valid];
+      if (merged.length > 5) {
+        setError('Maximum 5 attachments.');
+        return merged.slice(0, 5);
+      }
+      return merged;
+    });
+    // Reset so the same file can be re-added after removal
+    e.target.value = '';
+  }
+
+  function removeAttachment(idx) {
+    setAttachments(prev => prev.filter((_, i) => i !== idx));
+  }
+
   async function handleSend() {
     if (!recipientEmail || !body.trim()) {
       setError('To and Message are required.');
@@ -683,7 +750,7 @@ function ComposeModal({ onClose, onSent }) {
     setSending(true);
     setError(null);
     try {
-      await sendEmail({ to: recipientEmail, subject: subject.trim(), body: body.trim() });
+      await sendEmail({ to: recipientEmail, subject: subject.trim(), body: body.trim(), attachments });
       onSent();
       onClose();
     } catch (err) {
@@ -781,11 +848,60 @@ function ComposeModal({ onClose, onSent }) {
             />
           </div>
 
+          {/* ── Attachments list ── */}
+          {attachments.length > 0 && (
+            <div className="space-y-1.5">
+              {attachments.map((file, idx) => (
+                <div key={idx} className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-1.5">
+                  <svg className="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                  <span className="text-xs text-gray-700 truncate flex-1">{file.name}</span>
+                  <span className="text-[11px] text-gray-400 shrink-0">{formatBytes(file.size)}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(idx)}
+                    className="text-gray-300 hover:text-red-400 transition-colors shrink-0"
+                    aria-label="Remove attachment"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           {error && <p className="text-xs text-red-500">{error}</p>}
         </div>
 
+        {/* Hidden file input */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.xls,.xlsx,.txt,.csv"
+          className="hidden"
+          onChange={handleFilePick}
+        />
+
         <div className="flex items-center justify-between px-5 pb-5 pt-1">
-          <p className="text-[11px] text-gray-400">⌘+Enter to send</p>
+          <div className="flex items-center gap-3">
+            <p className="text-[11px] text-gray-400">⌘+Enter to send</p>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={attachments.length >= 5}
+              className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-violet-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              title="Attach file (max 5, 10 MB each)"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+              </svg>
+              Attach
+            </button>
+          </div>
           <div className="flex gap-2">
             <button
               onClick={onClose}
