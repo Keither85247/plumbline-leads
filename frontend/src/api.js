@@ -1,8 +1,8 @@
 // In local dev (VITE_BACKEND_URL not set): relative paths → proxied by Vite to localhost:3001
 // In production (VITE_BACKEND_URL=https://your-backend.onrender.com): absolute cross-origin URLs
 export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || '';
-const API_BASE  = `${BACKEND_URL}/api`;
-const AUTH_BASE = `${BACKEND_URL}/auth`;
+export const API_BASE    = `${BACKEND_URL}/api`;
+const AUTH_BASE          = `${BACKEND_URL}/auth`;
 
 export async function createLead(transcript, language) {
   const res = await fetch(`${API_BASE}/leads`, {

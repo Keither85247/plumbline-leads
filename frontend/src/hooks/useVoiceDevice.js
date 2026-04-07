@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Device } from '@twilio/voice-sdk';
+import { API_BASE } from '../api';
 
 // Normalize to E.164 for Twilio
 function toE164(num) {
@@ -10,7 +11,7 @@ function toE164(num) {
 }
 
 async function fetchToken() {
-  const res = await fetch('/api/twilio/token');
+  const res = await fetch(`${API_BASE}/twilio/token`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to fetch voice token');

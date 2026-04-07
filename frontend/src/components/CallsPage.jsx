@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getCalls, getVoicemailLeads } from '../api';
+import { getCalls, getVoicemailLeads, API_BASE } from '../api';
 import PhoneActionSheet from './PhoneActionSheet';
 
 const KEYPAD = [
@@ -427,7 +427,7 @@ export default function CallsPage({ onContactClick, voiceDevice = {} }) {
                         <audio
                           controls
                           preload="none"
-                          src={`/api/leads/${vm.id}/voicemail`}
+                          src={`${API_BASE}/leads/${vm.id}/voicemail`}
                           className="w-full h-9"
                           style={{ colorScheme: 'light' }}
                         >
