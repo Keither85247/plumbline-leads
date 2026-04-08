@@ -152,7 +152,6 @@ router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
   console.log(`[Twilio] Incoming call from ${From || 'unknown'} — classified as: ${classification}`);
 
   const baseUrl = process.env.TWILIO_BASE_URL;
-  const contractorPhone = process.env.CONTRACTOR_PHONE_NUMBER;
 
   if (!baseUrl) {
     console.error('[Twilio] TWILIO_BASE_URL not set — cannot build callback URLs');
@@ -162,10 +161,8 @@ router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
 
   twiml.say({ voice: 'alice' }, 'This call may be recorded for quality purposes.');
 
-  // PRIMARY: ring the in-app Voice SDK client (browser softphone).
-  // FALLBACK: if CONTRACTOR_PHONE_NUMBER is also set, ring it simultaneously so calls
-  //           can still be answered on a personal phone when the app isn't open.
-  // Either way, /missed-call handles voicemail if nothing answers before timeout.
+  // Ring the in-app Voice SDK client (browser softphone) only.
+  // /missed-call handles voicemail if nothing answers before timeout.
   const dial = twiml.dial({
     ...(From && { callerId: From }),
     timeout: 20,
@@ -176,14 +173,7 @@ router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
     recordingStatusCallbackMethod: 'POST',
   });
 
-  // Browser client — always included
   dial.client('contractor');
-
-  // PSTN fallback — only if still configured (optional, secondary)
-  if (contractorPhone) {
-    // answerOnBridge: true prevents carrier voicemail from "answering" the PSTN leg
-    dial.number({ answerOnBridge: true }, contractorPhone);
-  }
 
   res.type('text/xml').send(twiml.toString());
 });
