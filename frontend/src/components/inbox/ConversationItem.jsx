@@ -1,8 +1,9 @@
 // Single row in the conversation list sidebar.
+import { parseTimestamp } from '../../utils/phone';
 
 function formatTimestamp(iso) {
   if (!iso) return '';
-  const date = new Date(iso);
+  const date = parseTimestamp(iso);
   const now = new Date();
   const diffMs = now - date;
   const diffMins = Math.floor(diffMs / 60000);

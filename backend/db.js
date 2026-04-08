@@ -150,6 +150,22 @@ db.prepare(
 // Binary content is never stored — attachments are only held in memory during send.
 try { db.exec("ALTER TABLE emails ADD COLUMN attachments_json TEXT"); } catch {}
 
+// SMS messages — one row per inbound or outbound text message.
+// `phone` is the customer's number (normalized to E.164 or 10-digit).
+// `direction`: 'inbound' | 'outbound'
+// `status`: 'sent' | 'delivered' | 'failed' | 'received'
+db.exec(`
+  CREATE TABLE IF NOT EXISTS messages (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone        TEXT    NOT NULL,
+    direction    TEXT    NOT NULL DEFAULT 'outbound',
+    body         TEXT    NOT NULL,
+    twilio_sid   TEXT,
+    status       TEXT    NOT NULL DEFAULT 'sent',
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
 // ── User accounts (multi-tenant scaffolding) ──────────────────────────────────
 // The app starts as single-user; these tables/columns prepare it for multi-user.
 // user_id on data tables is nullable so existing rows are unaffected.

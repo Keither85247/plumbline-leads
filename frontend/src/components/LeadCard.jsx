@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { updateLeadStatus, archiveLead, unarchiveLead, deleteLead, translateText } from '../api';
+import { updateLeadStatus, archiveLead, unarchiveLead, deleteLead, translateText, sendMessage } from '../api';
 import { normalizePhone } from '../utils/phone';
 import PhoneActionSheet from './PhoneActionSheet';
 import { translations } from '../i18n';
@@ -116,9 +116,15 @@ function formatLeadTags(lead) {
     const value = point.slice(colonIdx + 1).trim();
 
     if (label === 'job location' || label === 'location') {
-      // City is the last comma-segment (handles "17 Main St, Massapequa" or just "Hampstead")
-      const parts = value.split(',');
-      locationTag = { icon: '📍', value: parts[parts.length - 1].trim() };
+      // Prefer city/town over state. For "City, ST" or "Street, City, ST" the
+      // last segment is the state code — skip it and take the segment before it.
+      const parts = value.split(',').map(p => p.trim()).filter(Boolean);
+      const last  = parts[parts.length - 1] ?? '';
+      const isStateCode = /^[A-Z]{2}$/.test(last);
+      const city  = (isStateCode && parts.length >= 2)
+        ? parts[parts.length - 2]   // "Norwalk, CT" → "Norwalk"
+        : last;                      // "17 Main St, Norwalk" → "Norwalk"
+      locationTag = { icon: '📍', value: city };
 
     } else if (label === 'type of work' || label === 'service' || label === 'service requested') {
       problemTag = { icon: '🔧', value: condenseJobType(value) };
@@ -217,7 +223,23 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
     }
   };
 
-  const handleSend = () => { alert('Texting integration coming soon'); };
+  const [isSending, setIsSending] = useState(false);
+
+  const handleSend = async () => {
+    const to = lead.callback_number || lead.phone_number;
+    const text = showingTranslation ? translatedText : displayedFollowUp;
+    if (!to) { alert('No phone number available for this lead.'); return; }
+    if (!text?.trim()) { alert('Follow-up text is empty.'); return; }
+    setIsSending(true);
+    try {
+      await sendMessage(to, text.trim());
+      alert('Message sent!');
+    } catch (err) {
+      alert(`Failed to send: ${err.message}`);
+    } finally {
+      setIsSending(false);
+    }
+  };
 
   const handleStatusChange = async (e) => {
     const newStatus = e.target.value;
@@ -400,7 +422,9 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                   : <button onClick={() => setEditingFollowUp(false)} className="text-xs text-blue-500 hover:text-blue-700 transition-colors">Done</button>
                 }
               </div>
-              <button onClick={handleSend} className="text-xs text-blue-500 hover:text-blue-700 transition-colors">Send</button>
+              <button onClick={handleSend} disabled={isSending} className="text-xs text-blue-500 hover:text-blue-700 transition-colors disabled:opacity-50">
+                {isSending ? 'Sending…' : 'Send'}
+              </button>
             </div>
             {editingFollowUp ? (
               <textarea

@@ -1,9 +1,9 @@
-import { useState, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import ConversationList from './ConversationList';
 import MessageThread from './MessageThread';
 import LeadDetailsPanel from './LeadDetailsPanel';
 import NewMessageModal from './NewMessageModal';
-import { MOCK_CONVERSATIONS, MOCK_MESSAGES } from './mockData';
+import { getConversations, getMessageThread, sendMessage } from '../../api';
 
 function EmptyThreadState() {
   return (
@@ -22,97 +22,132 @@ function EmptyThreadState() {
 }
 
 // ── InboxLayout ─────────────────────────────────────────────────────────────
-// Top-level state manager for the inbox. Owns:
-//   - selected conversation id
-//   - message map (local for now, replace with API calls)
-//   - mobile panel visibility ('list' | 'thread')
-//   - right details panel toggle
-//
-// When wired to a real backend, replace MOCK_CONVERSATIONS / MOCK_MESSAGES
-// with useSWR/useQuery calls and pass `loading` down to ConversationList.
+// Top-level state manager for the inbox. Fetches real conversations + messages
+// from the backend. Send is wired to POST /api/messages/send via Twilio.
 
 export default function InboxLayout() {
-  const [conversations, setConversations]   = useState(MOCK_CONVERSATIONS);
-  const [messageMap,    setMessageMap]       = useState(MOCK_MESSAGES);
+  const [conversations, setConversations]   = useState([]);
+  const [messageMap,    setMessageMap]       = useState({});
   const [selectedId,    setSelectedId]       = useState(null);
   const [showDetails,   setShowDetails]      = useState(true);
   const [mobileView,    setMobileView]       = useState('list'); // 'list' | 'thread'
   const [composeOpen,   setComposeOpen]      = useState(false);
+  const [loading,       setLoading]          = useState(true);
+
+  // ── Load conversation list on mount ────────────────────────────────────────
+  useEffect(() => {
+    getConversations()
+      .then(setConversations)
+      .catch(err => console.error('[Inbox] Failed to load conversations:', err))
+      .finally(() => setLoading(false));
+  }, []);
 
   const selected = conversations.find(c => c.id === selectedId) ?? null;
-  const messages = selectedId ? (messageMap[selectedId] ?? []) : [];
+  const messages = selectedId ? (messageMap[selectedId] ?? null) : null; // null = not loaded yet
 
+  // ── Select a conversation + load its thread ─────────────────────────────────
   const handleSelect = useCallback((id) => {
     setSelectedId(id);
     setMobileView('thread');
-    // Mark as read locally; replace with PATCH /api/conversations/:id/read
+    // Mark as read locally
     setConversations(prev => prev.map(c => c.id === id ? { ...c, unread: 0 } : c));
+
+    // Load thread if not already cached
+    setMessageMap(prev => {
+      if (prev[id]) return prev; // already loaded
+      getMessageThread(id)
+        .then(msgs => setMessageMap(m => ({ ...m, [id]: msgs })))
+        .catch(err => console.error('[Inbox] Failed to load thread:', err));
+      return { ...prev, [id]: [] }; // placeholder while loading
+    });
   }, []);
 
   const handleBack = useCallback(() => {
     setMobileView('list');
   }, []);
 
-  const handleSend = useCallback((text) => {
+  // ── Send a message in the current thread ───────────────────────────────────
+  const handleSend = useCallback(async (text) => {
     if (!selectedId || !text.trim()) return;
-    const msg = {
-      id:        `msg-${Date.now()}`,
+
+    // Optimistic UI update first
+    const optimisticMsg = {
+      id:        `optimistic-${Date.now()}`,
       body:      text.trim(),
       direction: 'outbound',
-      ts:        new Date().toISOString(),
+      created_at: new Date().toISOString(),
     };
-    // Optimistic update — replace with POST /api/messages
     setMessageMap(prev => ({
       ...prev,
-      [selectedId]: [...(prev[selectedId] ?? []), msg],
+      [selectedId]: [...(prev[selectedId] ?? []), optimisticMsg],
     }));
     setConversations(prev => prev.map(c =>
       c.id === selectedId
         ? { ...c, lastMessage: text.trim(), lastMessageDir: 'outbound', timestamp: new Date().toISOString() }
         : c
     ));
+
+    // Real send
+    try {
+      await sendMessage(selectedId, text.trim());
+    } catch (err) {
+      console.error('[Inbox] Send failed:', err.message);
+      // Remove optimistic message on failure
+      setMessageMap(prev => ({
+        ...prev,
+        [selectedId]: (prev[selectedId] ?? []).filter(m => m.id !== optimisticMsg.id),
+      }));
+      alert(`Failed to send message: ${err.message}`);
+    }
   }, [selectedId]);
 
-  // Called from NewMessageModal — creates (or selects existing) conversation + sends first message
-  const handleComposeSend = useCallback((phone, text) => {
-    const normalized = phone.trim();
-    const existing = conversations.find(c => c.phone === normalized);
+  // ── Compose: start a new conversation or open an existing one ──────────────
+  const handleComposeSend = useCallback(async (phone, text) => {
+    const normalizedPhone = phone.trim();
+    const existing = conversations.find(c => c.phone === normalizedPhone);
 
     if (existing) {
       handleSelect(existing.id);
-      // Append message to existing thread directly (selectedId may not be updated yet)
-      const msg = {
-        id:        `msg-${Date.now()}`,
-        body:      text.trim(),
-        direction: 'outbound',
-        ts:        new Date().toISOString(),
-      };
-      setMessageMap(prev => ({
-        ...prev,
-        [existing.id]: [...(prev[existing.id] ?? []), msg],
-      }));
     } else {
-      // Create a new stub conversation
-      const newId = `conv-new-${Date.now()}`;
+      // Optimistically add the conversation
       const newConv = {
-        id:             newId,
-        name:           normalized,
-        phone:          normalized,
+        id:             normalizedPhone,
+        phone:          normalizedPhone,
+        name:           normalizedPhone,
         lastMessage:    text,
         lastMessageDir: 'outbound',
         timestamp:      new Date().toISOString(),
         unread:         0,
       };
-      const firstMsg = {
-        id:        `msg-${Date.now()}`,
-        body:      text,
-        direction: 'outbound',
-        ts:        new Date().toISOString(),
-      };
       setConversations(prev => [newConv, ...prev]);
-      setMessageMap(prev => ({ ...prev, [newId]: [firstMsg] }));
-      setSelectedId(newId);
+      setMessageMap(prev => ({ ...prev, [normalizedPhone]: [] }));
+      setSelectedId(normalizedPhone);
       setMobileView('thread');
+    }
+
+    // Send the message (goes through handleSend after selectedId is set,
+    // but selectedId state update is async — call sendMessage directly here)
+    const targetId = existing ? existing.id : normalizedPhone;
+    const optimisticMsg = {
+      id:        `optimistic-${Date.now()}`,
+      body:      text.trim(),
+      direction: 'outbound',
+      created_at: new Date().toISOString(),
+    };
+    setMessageMap(prev => ({
+      ...prev,
+      [targetId]: [...(prev[targetId] ?? []), optimisticMsg],
+    }));
+
+    try {
+      await sendMessage(normalizedPhone, text.trim());
+    } catch (err) {
+      console.error('[Inbox] Compose send failed:', err.message);
+      setMessageMap(prev => ({
+        ...prev,
+        [targetId]: (prev[targetId] ?? []).filter(m => m.id !== optimisticMsg.id),
+      }));
+      alert(`Failed to send message: ${err.message}`);
     }
   }, [conversations, handleSelect]);
 
@@ -131,6 +166,7 @@ export default function InboxLayout() {
           selectedId={selectedId}
           onSelect={handleSelect}
           onCompose={() => setComposeOpen(true)}
+          loading={loading}
         />
       </aside>
 
@@ -142,7 +178,7 @@ export default function InboxLayout() {
         {selected
           ? <MessageThread
               conversation={selected}
-              messages={messages}
+              messages={messages ?? []}
               onSend={handleSend}
               onBack={handleBack}
               showDetails={showDetails}

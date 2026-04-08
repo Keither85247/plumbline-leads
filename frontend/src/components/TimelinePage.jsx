@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { getCalls, getEmails } from '../api';
-import { normalizeCall, normalizeEmail } from './timeline/normalizeEvent';
+import { getCalls, getEmails, getConversations, getMessageThread } from '../api';
+import { normalizeCall, normalizeEmail, normalizeSms } from './timeline/normalizeEvent';
 import EventRow from './timeline/EventRow';
 import { parseTimestamp } from '../utils/phone';
 
@@ -99,14 +99,29 @@ export default function TimelinePage({ onContactClick }) {
   const [expandedId, setExpandedId] = useState(null);
 
   useEffect(() => {
-    Promise.all([getCalls(), getEmails()])
-      .then(([calls, emails]) => {
-        const all = [
-          ...calls.map(normalizeCall),
-          ...emails.map(normalizeEmail),
-        ].sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
-        setEvents(all);
-      })
+    async function loadAll() {
+      const [calls, emails, conversations] = await Promise.all([
+        getCalls(),
+        getEmails(),
+        getConversations(),
+      ]);
+
+      // Fetch all message threads in parallel (one request per unique phone)
+      const threads = await Promise.all(
+        conversations.map(c => getMessageThread(c.phone).catch(() => []))
+      );
+      const allMessages = threads.flat();
+
+      const all = [
+        ...calls.map(normalizeCall),
+        ...emails.map(normalizeEmail),
+        ...allMessages.map(normalizeSms),
+      ].sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
+
+      setEvents(all);
+    }
+
+    loadAll()
       .catch(err => console.error('[Timeline] fetch failed:', err))
       .finally(() => setLoading(false));
   }, []);

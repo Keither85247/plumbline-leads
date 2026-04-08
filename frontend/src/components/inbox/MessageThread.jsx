@@ -1,6 +1,12 @@
 import { useEffect, useRef } from 'react';
 import MessageBubble, { DaySeparator } from './MessageBubble';
 import MessageInput from './MessageInput';
+import { parseTimestamp } from '../../utils/phone';
+
+// Normalize message: real API rows have `created_at`; legacy/mock used `ts`
+function msgTs(msg) {
+  return msg.ts || msg.created_at || null;
+}
 
 function formatPhone(num) {
   if (!num) return '';
@@ -16,8 +22,8 @@ function groupMessages(messages) {
   const groups = [];
   for (const msg of messages) {
     const last = groups[groups.length - 1];
-    const ts = new Date(msg.ts).getTime();
-    const lastTs = last ? new Date(last.messages[last.messages.length - 1].ts).getTime() : 0;
+    const ts = parseTimestamp(msgTs(msg)).getTime();
+    const lastTs = last ? parseTimestamp(msgTs(last.messages[last.messages.length - 1])).getTime() : 0;
     if (last && last.direction === msg.direction && ts - lastTs < 5 * 60 * 1000) {
       last.messages.push(msg);
     } else {
@@ -32,9 +38,9 @@ function withDaySeparators(groups) {
   const result = [];
   let lastDay = null;
   for (const group of groups) {
-    const day = new Date(group.messages[0].ts).toDateString();
+    const day = parseTimestamp(msgTs(group.messages[0])).toDateString();
     if (day !== lastDay) {
-      result.push({ type: 'separator', ts: group.messages[0].ts });
+      result.push({ type: 'separator', ts: msgTs(group.messages[0]) });
       lastDay = day;
     }
     result.push({ type: 'group', ...group });

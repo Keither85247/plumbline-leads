@@ -9,6 +9,7 @@ const translateRouter  = require('./routes/translate');
 const tokenRouter      = require('./routes/token');
 const contactsRouter   = require('./routes/contacts');
 const emailsRouter     = require('./routes/emails');
+const messagesRouter   = require('./routes/messages');
 const authRouter       = require('./routes/auth');
 const { startPolling }        = require('./jobs/gmailPoller');
 const { backfillMissingLabels } = require('./services/gmailService');
@@ -33,6 +34,7 @@ app.use('/api/translate',    translateRouter);
 app.use('/api/twilio/token', tokenRouter);
 app.use('/api/contacts',     contactsRouter);
 app.use('/api/emails',       emailsRouter);
+app.use('/api/messages',     messagesRouter);
 
 // Auth routes — at /auth (not /api/auth) so the OAuth redirect URI is a clean path
 app.use('/auth', authRouter);

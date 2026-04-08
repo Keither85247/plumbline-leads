@@ -1,9 +1,10 @@
 // Renders a single message bubble.
 // Messages from the same sender within 5 minutes are grouped — only the
 // first in a group shows the timestamp; the last shows the "tail" shape.
+import { parseTimestamp } from '../../utils/phone';
 
 function formatTime(iso) {
-  const date = new Date(iso);
+  const date = parseTimestamp(iso);
   const now = new Date();
   const isToday = date.toDateString() === now.toDateString();
   const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
@@ -16,7 +17,7 @@ function formatTime(iso) {
 
 // A day separator between messages on different calendar days
 export function DaySeparator({ ts }) {
-  const date = new Date(ts);
+  const date = parseTimestamp(ts);
   const now  = new Date();
   const isToday = date.toDateString() === now.toDateString();
   const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
@@ -42,7 +43,8 @@ export default function MessageBubble({
   isFirst,   // first in its sender-group → show timestamp above
   isLast,    // last in its sender-group → sharp corner on the "tail" side
 }) {
-  const { body, direction, ts } = message;
+  const { body, direction } = message;
+  const ts = message.ts || message.created_at || null;
   const isOut = direction === 'outbound';
 
   return (

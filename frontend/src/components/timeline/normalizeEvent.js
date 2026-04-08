@@ -19,6 +19,8 @@ export const EVENT_TYPES = {
   OUTBOUND_UNKNOWN:   'call-outbound',
   INBOUND_EMAIL:      'email-inbound',
   OUTBOUND_EMAIL:     'email-outbound',
+  INBOUND_SMS:        'sms-inbound',
+  OUTBOUND_SMS:       'sms-outbound',
 };
 
 // Visual metadata per event type.
@@ -88,6 +90,22 @@ export const EVENT_META = {
     showDuration: false,
     iconType: 'email-out',
   },
+  [EVENT_TYPES.INBOUND_SMS]: {
+    label: 'Text Received',
+    labelColor: 'text-teal-600',
+    iconBg: 'bg-teal-50',
+    iconColor: 'text-teal-500',
+    showDuration: false,
+    iconType: 'sms',
+  },
+  [EVENT_TYPES.OUTBOUND_SMS]: {
+    label: 'Text Sent',
+    labelColor: 'text-teal-600',
+    iconBg: 'bg-teal-50',
+    iconColor: 'text-teal-500',
+    showDuration: false,
+    iconType: 'sms-out',
+  },
 };
 
 // ── normalizeCall ─────────────────────────────────────────────────────────────
@@ -136,6 +154,30 @@ export function normalizeCall(call) {
     durationSeconds: call.duration        || null,
     classification,
     isExpandable: hasContent,
+  };
+}
+
+// ── normalizeSms ──────────────────────────────────────────────────────────────
+
+export function normalizeSms(msg) {
+  const isOutbound = msg.direction === 'outbound';
+  const type = isOutbound ? EVENT_TYPES.OUTBOUND_SMS : EVENT_TYPES.INBOUND_SMS;
+
+  return {
+    id:              `sms-${msg.id}`,
+    type,
+    isOutbound,
+    contactName:     msg.contact_name || null,
+    contactPhone:    msg.phone || '',
+    contactEmail:    null,
+    subject:         null,
+    summary:         msg.body || null,
+    note:            null,
+    keyPoints:       [],
+    timestamp:       msg.created_at,
+    durationSeconds: null,
+    classification:  null,
+    isExpandable:    !!(msg.body),
   };
 }
 

@@ -240,6 +240,36 @@ export async function softDeleteEmail(id) {
   return res.json();
 }
 
+// ── SMS / Messages ────────────────────────────────────────────────────────────
+
+/** Returns conversation list (one entry per phone, latest message + unread count). */
+export async function getConversations() {
+  const res = await fetch(`${API_BASE}/messages`);
+  if (!res.ok) throw new Error('Failed to fetch conversations');
+  return res.json();
+}
+
+/** Returns all messages for a single phone number, oldest first. */
+export async function getMessageThread(phone) {
+  const res = await fetch(`${API_BASE}/messages/${encodeURIComponent(phone)}`);
+  if (!res.ok) throw new Error('Failed to fetch message thread');
+  return res.json();
+}
+
+/** Sends an outbound SMS via Twilio and persists it. */
+export async function sendMessage(to, body) {
+  const res = await fetch(`${API_BASE}/messages/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to, body }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to send message');
+  }
+  return res.json();
+}
+
 export async function updateLeadCategory(id, category) {
   const res = await fetch(`${API_BASE}/leads/${id}/category`, {
     method: 'PATCH',

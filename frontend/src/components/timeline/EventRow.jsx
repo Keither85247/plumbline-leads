@@ -28,16 +28,25 @@ function formatDuration(seconds) {
 const PHONE_PATH = 'M3 5a2 2 0 012-2h2.28a1 1 0 01.95.68l1.06 3.18a1 1 0 01-.23 1.05L7.5 9.43a16 16 0 006.07 6.07l1.52-1.56a1 1 0 011.05-.23l3.18 1.06a1 1 0 01.68.95V19a2 2 0 01-2 2C9.16 21 3 14.84 3 7V5z';
 const MIC_PATH   = 'M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z';
 
+const SMS_PATH = 'M8 10h.01M12 10h.01M16 10h.01M21 16a2 2 0 01-2 2H7l-4 4V6a2 2 0 012-2h14a2 2 0 012 2v10z';
+
 function EventIcon({ iconType, bgClass, colorClass }) {
   const isVoicemail  = iconType === 'voicemail';
   const isPhoneOut   = iconType === 'phone-out';
   const isMissed     = iconType === 'phone-missed';
   const isEmail      = iconType === 'email';
   const isEmailOut   = iconType === 'email-out';
+  const isSms        = iconType === 'sms';
+  const isSmsOut     = iconType === 'sms-out';
 
   return (
     <div className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${bgClass}`}>
-      {isVoicemail ? (
+      {isSms || isSmsOut ? (
+        <svg className={`w-4 h-4 ${colorClass}`} fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d={SMS_PATH} />
+          {isSmsOut && <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 3h6m0 0v6m0-6L14 10" />}
+        </svg>
+      ) : isVoicemail ? (
         <svg className={`w-4 h-4 ${colorClass}`} fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" d={MIC_PATH} />
         </svg>
@@ -98,6 +107,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
   const meta = EVENT_META[event.type] ?? EVENT_META['call-outbound'];
   const duration = meta.showDuration ? formatDuration(event.durationSeconds) : null;
   const isEmail  = event.type === 'email-inbound' || event.type === 'email-outbound';
+  const isSms    = event.type === 'sms-inbound'   || event.type === 'sms-outbound';
 
   // Display name: contact name → email address → formatted phone
   const displayName = event.contactName
@@ -173,6 +183,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
               {event.summary || event.note}
             </p>
           )}
+
         </div>
 
         {/* Right: exact time + expand chevron */}
@@ -209,8 +220,15 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
             </div>
           )}
 
+          {/* SMS: show message body */}
+          {isSms && event.summary && (
+            <div className="bg-teal-50 border border-teal-100 rounded-lg px-3 py-2.5">
+              <p className="text-xs text-gray-700 leading-relaxed">{event.summary}</p>
+            </div>
+          )}
+
           {/* Inbound answered: AI summary */}
-          {!event.isOutbound && !isEmail && event.summary && (
+          {!event.isOutbound && !isEmail && !isSms && event.summary && (
             <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">
                 Summary
@@ -220,7 +238,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
           )}
 
           {/* Outbound answered: AI summary (now that outbound calls are recorded) */}
-          {event.isOutbound && !isEmail && event.summary && (
+          {event.isOutbound && !isEmail && !isSms && event.summary && (
             <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">
                 Call Summary

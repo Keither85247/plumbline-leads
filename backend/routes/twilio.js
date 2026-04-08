@@ -221,6 +221,15 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
     return res.status(200).send('OK');
   }
 
+  // Always persist the inbound message so it appears in the inbox thread
+  try {
+    db.prepare(
+      "INSERT INTO messages (phone, direction, body, status) VALUES (?, 'inbound', ?, 'received')"
+    ).run(From || 'unknown', Body.trim());
+  } catch (err) {
+    console.error('[Twilio] Failed to save inbound SMS to messages table:', err.message);
+  }
+
   try {
     await createLeadFromTranscript({
       transcript: Body,
