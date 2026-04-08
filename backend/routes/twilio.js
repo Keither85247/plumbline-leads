@@ -216,18 +216,19 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
     return res.status(200).send('OK');
   }
 
-  if (isDuplicate(From, Body)) {
-    console.log(`[Twilio] SMS duplicate detected from ${From}, skipping`);
-    return res.status(200).send('OK');
-  }
-
-  // Always persist the inbound message so it appears in the inbox thread
+  // Always persist the inbound message FIRST so it appears in the inbox
+  // regardless of duplicate-lead detection below.
   try {
     db.prepare(
       "INSERT INTO messages (phone, direction, body, status) VALUES (?, 'inbound', ?, 'received')"
     ).run(From || 'unknown', Body.trim());
   } catch (err) {
     console.error('[Twilio] Failed to save inbound SMS to messages table:', err.message);
+  }
+
+  if (isDuplicate(From, Body)) {
+    console.log(`[Twilio] SMS duplicate lead detected from ${From}, skipping lead creation`);
+    return res.status(200).send('OK');
   }
 
   try {

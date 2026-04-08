@@ -34,32 +34,47 @@ export default function InboxLayout() {
   const [composeOpen,   setComposeOpen]      = useState(false);
   const [loading,       setLoading]          = useState(true);
 
-  // ── Load conversation list on mount ────────────────────────────────────────
+  // ── Load + poll conversation list ──────────────────────────────────────────
   useEffect(() => {
-    getConversations()
-      .then(setConversations)
-      .catch(err => console.error('[Inbox] Failed to load conversations:', err))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+
+    function fetchConversations() {
+      getConversations()
+        .then(data => { if (!cancelled) setConversations(data); })
+        .catch(err => console.error('[Inbox] Failed to load conversations:', err))
+        .finally(() => { if (!cancelled) setLoading(false); });
+    }
+
+    fetchConversations();
+    const interval = setInterval(fetchConversations, 10_000); // refresh every 10s
+    return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
   const selected = conversations.find(c => c.id === selectedId) ?? null;
   const messages = selectedId ? (messageMap[selectedId] ?? null) : null; // null = not loaded yet
 
-  // ── Select a conversation + load its thread ─────────────────────────────────
+  // ── Poll the open thread ───────────────────────────────────────────────────
+  useEffect(() => {
+    if (!selectedId) return;
+    let cancelled = false;
+
+    function fetchThread() {
+      getMessageThread(selectedId)
+        .then(msgs => { if (!cancelled) setMessageMap(m => ({ ...m, [selectedId]: msgs })); })
+        .catch(err => console.error('[Inbox] Failed to load thread:', err));
+    }
+
+    fetchThread(); // load immediately on selection
+    const interval = setInterval(fetchThread, 5_000); // poll every 5s while open
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [selectedId]);
+
+  // ── Select a conversation ──────────────────────────────────────────────────
   const handleSelect = useCallback((id) => {
     setSelectedId(id);
     setMobileView('thread');
     // Mark as read locally
     setConversations(prev => prev.map(c => c.id === id ? { ...c, unread: 0 } : c));
-
-    // Load thread if not already cached
-    setMessageMap(prev => {
-      if (prev[id]) return prev; // already loaded
-      getMessageThread(id)
-        .then(msgs => setMessageMap(m => ({ ...m, [id]: msgs })))
-        .catch(err => console.error('[Inbox] Failed to load thread:', err));
-      return { ...prev, [id]: [] }; // placeholder while loading
-    });
   }, []);
 
   const handleBack = useCallback(() => {
