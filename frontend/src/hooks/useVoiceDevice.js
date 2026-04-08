@@ -35,13 +35,40 @@ export function useVoiceDevice() {
   const deviceRef   = useRef(null);
   const ringtoneRef = useRef(null);
 
-  // ── Ringtone ───────────────────────────────────────────────────────────────
+  // ── Ringtone + title alert ────────────────────────────────────────────────
+  // Audio plays on desktop browsers where autoplay is unlocked by the user
+  // gesture that called initialize(). On iOS Safari, autoplay is blocked
+  // regardless — there is no production-safe workaround without a native app.
+  // The page title flash works on all platforms including iPhone.
+
+  const originalTitleRef = useRef(document.title);
+  const titleTimerRef    = useRef(null);
+
+  function startTitleFlash(from) {
+    const alert = `📞 ${from || 'Incoming call'}`;
+    let on = true;
+    titleTimerRef.current = setInterval(() => {
+      document.title = on ? alert : originalTitleRef.current;
+      on = !on;
+    }, 800);
+  }
+
+  function stopTitleFlash() {
+    clearInterval(titleTimerRef.current);
+    titleTimerRef.current = null;
+    document.title = originalTitleRef.current;
+  }
 
   function stopRingtone() {
     const r = ringtoneRef.current;
     if (!r) return;
     r.pause();
     r.currentTime = 0;
+  }
+
+  function stopAllAlerts() {
+    stopRingtone();
+    stopTitleFlash();
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -55,13 +82,13 @@ export function useVoiceDevice() {
     call.on('ringing', () => setStatus('ringing'));
 
     call.on('accept', () => {
-      stopRingtone();
+      stopAllAlerts();
       setActiveCall(call);
       setStatus('connected');
     });
 
     call.on('disconnect', () => {
-      stopRingtone();
+      stopAllAlerts();
       setActiveCall(null);
       setIncomingCall(null);
       setStatus('ended');
@@ -77,13 +104,15 @@ export function useVoiceDevice() {
     });
 
     call.on('cancel', () => {
-      stopRingtone();
+      // Fires when the remote caller hangs up before the call is answered,
+      // OR when an outbound attempt is cancelled. Always reset to ready.
+      stopAllAlerts();
       setIncomingCall(null);
-      if (!isInbound) setStatus('ready');
+      setStatus(deviceRef.current ? 'ready' : 'idle');
     });
 
     call.on('error', (err) => {
-      stopRingtone();
+      stopAllAlerts();
       console.error('[VoiceDevice] Call error:', err.message);
       setError(err.message);
       setActiveCall(null);
@@ -135,7 +164,8 @@ export function useVoiceDevice() {
         setRemoteIdentity(from);
         setIncomingCall(call);
         setStatus('incoming');
-        ringtoneRef.current?.play().catch(() => {});
+        ringtoneRef.current?.play().catch(() => {}); // works on desktop; silently ignored on iOS
+        startTitleFlash(from);
         // isInbound: true — ensures post-call note modal is NOT shown for inbound calls
         wireCallEvents(call, { isInbound: true, phone: from });
       });
@@ -191,7 +221,7 @@ export function useVoiceDevice() {
 
   const answerCall = useCallback(() => {
     if (!incomingCall) return;
-    stopRingtone();
+    stopAllAlerts();
     incomingCall.accept();
     setActiveCall(incomingCall);
     setIncomingCall(null);
@@ -200,7 +230,7 @@ export function useVoiceDevice() {
 
   const rejectCall = useCallback(() => {
     if (!incomingCall) return;
-    stopRingtone();
+    stopAllAlerts();
     incomingCall.reject();
     setIncomingCall(null);
     setStatus('ready');
@@ -226,7 +256,7 @@ export function useVoiceDevice() {
 
   useEffect(() => {
     return () => {
-      stopRingtone();
+      stopAllAlerts();
       if (deviceRef.current) {
         deviceRef.current.destroy();
         deviceRef.current = null;
