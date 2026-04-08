@@ -39,6 +39,29 @@ app.use('/auth', authRouter);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+// ── TEMPORARY MIGRATION ENDPOINT — REMOVE AFTER USE ──────────────────────────
+app.post('/api/migrate', (req, res) => {
+  const db = require('./db');
+  const { leads = [], calls = [] } = req.body;
+  let leadsInserted = 0;
+  let callsInserted = 0;
+  const insertLead = db.prepare(`INSERT OR IGNORE INTO leads (id,transcript,raw_text,contact_name,company_name,phone_number,callback_number,summary,key_points,follow_up_text,category,source,recording_url,status,archived,created_at) VALUES (@id,@transcript,@raw_text,@contact_name,@company_name,@phone_number,@callback_number,@summary,@key_points,@follow_up_text,@category,@source,@recording_url,@status,@archived,@created_at)`);
+  const insertCall = db.prepare(`INSERT OR IGNORE INTO calls (id,from_number,call_sid,classification,status,recording_url,duration,transcript,summary,key_points,contractor_note,outcome,created_at) VALUES (@id,@from_number,@call_sid,@classification,@status,@recording_url,@duration,@transcript,@summary,@key_points,@contractor_note,@outcome,@created_at)`);
+  const runAll = db.transaction(() => {
+    for (const lead of leads) leadsInserted += insertLead.run(lead).changes;
+    for (const call of calls) callsInserted += insertCall.run(call).changes;
+  });
+  try {
+    runAll();
+    console.log(`[Migrate] ${leadsInserted} leads, ${callsInserted} calls`);
+    res.json({ ok: true, leadsInserted, callsInserted });
+  } catch (err) {
+    console.error('[Migrate]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+// ── END TEMPORARY MIGRATION ENDPOINT ─────────────────────────────────────────
+
 
 app.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);
