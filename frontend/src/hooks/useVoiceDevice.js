@@ -32,7 +32,17 @@ export function useVoiceDevice() {
   // App.jsx watches this and renders the OutboundNoteModal.
   const [pendingPostCallNote, setPendingPostCallNote] = useState(null);
 
-  const deviceRef = useRef(null);
+  const deviceRef   = useRef(null);
+  const ringtoneRef = useRef(null);
+
+  // ── Ringtone ───────────────────────────────────────────────────────────────
+
+  function stopRingtone() {
+    const r = ringtoneRef.current;
+    if (!r) return;
+    r.pause();
+    r.currentTime = 0;
+  }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -45,11 +55,13 @@ export function useVoiceDevice() {
     call.on('ringing', () => setStatus('ringing'));
 
     call.on('accept', () => {
+      stopRingtone();
       setActiveCall(call);
       setStatus('connected');
     });
 
     call.on('disconnect', () => {
+      stopRingtone();
       setActiveCall(null);
       setIncomingCall(null);
       setStatus('ended');
@@ -65,11 +77,13 @@ export function useVoiceDevice() {
     });
 
     call.on('cancel', () => {
+      stopRingtone();
       setIncomingCall(null);
       if (!isInbound) setStatus('ready');
     });
 
     call.on('error', (err) => {
+      stopRingtone();
       console.error('[VoiceDevice] Call error:', err.message);
       setError(err.message);
       setActiveCall(null);
@@ -86,6 +100,13 @@ export function useVoiceDevice() {
     setError(null);
 
     try {
+      // Prime ringtone inside the user-gesture window so browsers allow
+      // it to play later when an incoming call arrives (no gesture available).
+      const ringtone = new Audio('/ringtone.mp3');
+      ringtone.loop = true;
+      ringtone.play().then(() => ringtone.pause()).catch(() => {});
+      ringtoneRef.current = ringtone;
+
       const token = await fetchToken();
       const device = new Device(token, {
         logLevel: 'debug',
@@ -114,6 +135,7 @@ export function useVoiceDevice() {
         setRemoteIdentity(from);
         setIncomingCall(call);
         setStatus('incoming');
+        ringtoneRef.current?.play().catch(() => {});
         // isInbound: true — ensures post-call note modal is NOT shown for inbound calls
         wireCallEvents(call, { isInbound: true, phone: from });
       });
@@ -169,6 +191,7 @@ export function useVoiceDevice() {
 
   const answerCall = useCallback(() => {
     if (!incomingCall) return;
+    stopRingtone();
     incomingCall.accept();
     setActiveCall(incomingCall);
     setIncomingCall(null);
@@ -177,6 +200,7 @@ export function useVoiceDevice() {
 
   const rejectCall = useCallback(() => {
     if (!incomingCall) return;
+    stopRingtone();
     incomingCall.reject();
     setIncomingCall(null);
     setStatus('ready');
@@ -202,6 +226,7 @@ export function useVoiceDevice() {
 
   useEffect(() => {
     return () => {
+      stopRingtone();
       if (deviceRef.current) {
         deviceRef.current.destroy();
         deviceRef.current = null;
