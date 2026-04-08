@@ -390,7 +390,12 @@ Return a JSON object with exactly these fields:
 // POST /api/twilio/voice-client
 // TwiML App webhook — Twilio calls this URL when the browser Voice SDK places
 // an outbound call via device.connect({ params: { To: '+1...' } }).
-// The `To` param is the customer's phone number.
+//
+// Routing logic:
+//   • If To starts with 'client:' → route to that Twilio Client identity (browser)
+//   • Otherwise              → treat To as a PSTN phone number and dial it
+//
+// The browser stays the audio endpoint in both cases.
 // Records the answered leg via the existing /recording webhook.
 // ---------------------------------------------------------------------------
 router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) => {
@@ -405,20 +410,31 @@ router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) 
     return res.type('text/xml').send(twiml.toString());
   }
 
-  console.log(`[Twilio] /voice-client: outbound to ${To} (CallSid: ${CallSid})`);
-  // Log as Outbound. The answered leg is recorded and flows into the /recording
-  // webhook, which transcribes + summarises it just like inbound answered calls.
+  const isClient = To.startsWith('client:');
+  const destination = isClient ? To.replace(/^client:/, '') : To;
+
+  if (isClient) {
+    console.log(`[Twilio] /voice-client: routing to browser client "${destination}" (CallSid: ${CallSid})`);
+  } else {
+    console.log(`[Twilio] /voice-client: dialing PSTN number ${To} (CallSid: ${CallSid})`);
+  }
+
   logCall(To, CallSid, 'Outbound');
 
   const dial = twiml.dial({
-    ...(callerId && { callerId }),
+    ...(callerId && !isClient && { callerId }),
     record: 'record-from-answer',
     ...(baseUrl && {
       recordingStatusCallback:       `${baseUrl}/api/twilio/recording`,
       recordingStatusCallbackMethod: 'POST',
     }),
   });
-  dial.number(To);
+
+  if (isClient) {
+    dial.client(destination);
+  } else {
+    dial.number(To);
+  }
 
   res.type('text/xml').send(twiml.toString());
 });
@@ -478,9 +494,10 @@ router.post('/outbound', express.json(), async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/twilio/outbound-bridge
-// TwiML served to the contractor's phone after they answer the outbound leg.
-// Dials the customer and records the conversation.
-// Query param: customer (E.164 number)
+// Legacy: TwiML served after the contractor's personal phone answers.
+// Updated to route back to the browser client (identity: 'contractor') instead
+// of dialing a PSTN number, so all audio stays inside the app.
+// Query param: customer (E.164 number — kept for logging/context only)
 // ---------------------------------------------------------------------------
 router.post('/outbound-bridge', express.urlencoded({ extended: true }), (req, res) => {
   const customer = req.query.customer;
@@ -493,7 +510,9 @@ router.post('/outbound-bridge', express.urlencoded({ extended: true }), (req, re
     return res.type('text/xml').send(twiml.toString());
   }
 
-  console.log(`[Twilio] /outbound-bridge: bridging to ${customer}`);
+  // Route to the browser client, not a PSTN number.
+  // 'contractor' must match the identity issued by /api/twilio/token.
+  console.log(`[Twilio] /outbound-bridge: routing to browser client "contractor" (customer context: ${customer})`);
   twiml.say({ voice: 'alice' }, 'Connecting your call.');
   const dial = twiml.dial({
     record: 'record-from-answer',
@@ -502,7 +521,7 @@ router.post('/outbound-bridge', express.urlencoded({ extended: true }), (req, re
       recordingStatusCallbackMethod: 'POST',
     }),
   });
-  dial.number(customer);
+  dial.client('contractor'); // browser softphone — NOT a PSTN number
 
   res.type('text/xml').send(twiml.toString());
 });
