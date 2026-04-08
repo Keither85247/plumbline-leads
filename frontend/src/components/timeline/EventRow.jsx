@@ -1,4 +1,5 @@
 import { EVENT_META } from './normalizeEvent';
+import { parseTimestamp } from '../../utils/phone';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -12,7 +13,7 @@ function formatPhone(num) {
 
 function formatTime(iso) {
   if (!iso) return '';
-  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  return parseTimestamp(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
 function formatDuration(seconds) {

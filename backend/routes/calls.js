@@ -60,9 +60,10 @@ router.get('/by-phone/:number', (req, res) => {
     const normalized = normalizePhone(req.params.number);
     if (!normalized) return res.json([]);
 
-    // Fetch all calls with transcripts for numbers that normalize to the same value
+    // Fetch ALL calls — do NOT filter by transcript. Missed calls and
+    // answered-but-unrecorded calls should appear in contact history too.
     const calls = db.prepare(
-      'SELECT * FROM calls WHERE transcript IS NOT NULL ORDER BY created_at DESC'
+      'SELECT * FROM calls ORDER BY created_at DESC'
     ).all();
 
     const matched = calls.filter(c => normalizePhone(c.from_number) === normalized);

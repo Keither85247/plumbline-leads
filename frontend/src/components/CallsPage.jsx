@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getCalls, getVoicemailLeads, API_BASE } from '../api';
+import { parseTimestamp } from '../utils/phone';
 import PhoneActionSheet from './PhoneActionSheet';
 
 const KEYPAD = [
@@ -50,16 +51,17 @@ function getCallMeta(call) {
       default:          return { text: 'Outbound',           labelClass: 'text-gray-400',              isExpandable: !!(call.contractor_note) };
     }
   }
-  const answered = !!call.transcript;
+  // transcript OR duration > 0 means the call was answered
+  const answered = !!(call.transcript || call.duration > 0);
   return {
     text: answered ? 'Answered' : 'Missed',
-    labelClass: answered ? 'text-blue-600 font-medium' : 'text-gray-400',
+    labelClass: answered ? 'text-green-600 font-medium' : 'text-red-400 font-medium',
     isExpandable: answered,
   };
 }
 
 function timeAgo(dateStr) {
-  const diff = Date.now() - new Date(dateStr).getTime();
+  const diff = Date.now() - parseTimestamp(dateStr).getTime();
   const m = Math.floor(diff / 60000);
   if (m < 1) return 'Just now';
   if (m < 60) return `${m}m ago`;
@@ -311,18 +313,11 @@ export default function CallsPage({ onContactClick, voiceDevice = {} }) {
                         </div>
                       </div>
 
-                      {/* Col 2: outcome label (outbound) or classification badge (inbound) */}
+                      {/* Col 2: outcome label for all calls (answered/missed/no-answer/etc.) */}
                       <div className="shrink-0 w-[120px] flex justify-end">
-                        {isOutbound ? (
-                          <span className={`text-xs whitespace-nowrap ${meta.labelClass}`}>
-                            {meta.text}
-                          </span>
-                        ) : (
-                          <span className={`text-xs font-medium rounded-full px-2 py-0.5 whitespace-nowrap
-                            ${CLASSIFICATION_STYLES[call.classification] || CLASSIFICATION_STYLES['Unknown']}`}>
-                            {call.classification}
-                          </span>
-                        )}
+                        <span className={`text-xs whitespace-nowrap ${meta.labelClass}`}>
+                          {meta.text}
+                        </span>
                       </div>
 
                       {/* Col 3: chevron */}

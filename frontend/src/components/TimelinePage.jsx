@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react';
 import { getCalls, getEmails } from '../api';
 import { normalizeCall, normalizeEmail } from './timeline/normalizeEvent';
 import EventRow from './timeline/EventRow';
+import { parseTimestamp } from '../utils/phone';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function getDateLabel(dateStr) {
   if (!dateStr) return 'Unknown';
-  const date = new Date(dateStr);
+  const date = parseTimestamp(dateStr);
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const yestStart  = new Date(todayStart);
@@ -103,7 +104,7 @@ export default function TimelinePage({ onContactClick }) {
         const all = [
           ...calls.map(normalizeCall),
           ...emails.map(normalizeEmail),
-        ].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        ].sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
         setEvents(all);
       })
       .catch(err => console.error('[Timeline] fetch failed:', err))

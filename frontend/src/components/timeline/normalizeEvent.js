@@ -103,8 +103,12 @@ function resolveCallType(call) {
         return call.transcript ? EVENT_TYPES.OUTBOUND_ANSWERED : EVENT_TYPES.OUTBOUND_UNKNOWN;
     }
   }
-  // Inbound: transcript present = was answered; absent = call was missed
-  return call.transcript ? EVENT_TYPES.INBOUND_ANSWERED : EVENT_TYPES.INBOUND_MISSED;
+  // Inbound: transcript OR duration > 0 = answered.
+  // Duration is set by the recording webhook; transcript may be missing if
+  // the call was short or the AI pipeline failed, but duration is reliable.
+  return (call.transcript || call.duration > 0)
+    ? EVENT_TYPES.INBOUND_ANSWERED
+    : EVENT_TYPES.INBOUND_MISSED;
 }
 
 export function normalizeCall(call) {

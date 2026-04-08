@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { normalizePhone } from '../utils/phone';
+import { normalizePhone, parseTimestamp } from '../utils/phone';
 import { getCallsByPhone, getEmailsByPhone, getContactProfile, saveContactProfile } from '../api';
 import PhoneActionSheet from './PhoneActionSheet';
 import AddressAutocomplete from './AddressAutocomplete';
@@ -342,7 +342,7 @@ export default function ContactHistoryModal({ phone, leads, onClose }) {
     ...history.map(l    => ({ ...l, _type: 'lead'  })),
     ...callNotes.map(c  => ({ ...c, _type: 'call'  })),
     ...emailItems.map(e => ({ ...e, _type: 'email' })),
-  ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  ].sort((a, b) => parseTimestamp(b.created_at) - parseTimestamp(a.created_at));
 
   return (
     <div
@@ -423,7 +423,7 @@ function LeadItem({ item: lead }) {
       <div className="flex items-center justify-between gap-3 mb-2">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-gray-400">
-            {new Date(lead.created_at).toLocaleDateString('en-US', {
+            {parseTimestamp(lead.created_at).toLocaleDateString('en-US', {
               month: 'short', day: 'numeric', year: 'numeric',
             })}
           </span>
@@ -467,7 +467,7 @@ function CallNoteItem({ item: call }) {
       <div className="flex items-center justify-between gap-3 mb-2">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-gray-400">
-            {new Date(call.created_at).toLocaleDateString('en-US', {
+            {parseTimestamp(call.created_at).toLocaleDateString('en-US', {
               month: 'short', day: 'numeric', year: 'numeric',
             })}
           </span>
@@ -552,7 +552,7 @@ function EmailItem({ item: email }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap mb-1">
             <span className="text-xs text-gray-400">
-              {new Date(email.created_at).toLocaleDateString('en-US', {
+              {parseTimestamp(email.created_at).toLocaleDateString('en-US', {
                 month: 'short', day: 'numeric', year: 'numeric',
               })}
             </span>
