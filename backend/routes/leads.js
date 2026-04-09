@@ -208,14 +208,41 @@ router.get('/:id/voicemail', (req, res) => {
   const credentials = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
   const protocol = audioUrl.startsWith('https') ? require('https') : require('http');
 
-  protocol.get(audioUrl, { headers: { Authorization: `Basic ${credentials}` } }, (twilioRes) => {
-    if (twilioRes.statusCode !== 200) {
-      console.error(`[Leads] Voicemail playback: Twilio returned ${twilioRes.statusCode} for lead ${req.params.id}`);
+  // Pass any Range header from the browser through to Twilio so seeking works.
+  // Without this, the browser sends a Range request (because the player wants to
+  // seek) and gets back the full file — confusing the scrubber into showing 100%.
+  const upstreamHeaders = { Authorization: `Basic ${credentials}` };
+  if (req.headers.range) {
+    upstreamHeaders['Range'] = req.headers.range;
+  }
+
+  protocol.get(audioUrl, { headers: upstreamHeaders }, (twilioRes) => {
+    const status = twilioRes.statusCode;
+
+    // 200 OK (full file) and 206 Partial Content (range request) are both valid
+    if (status !== 200 && status !== 206) {
+      console.error(`[Leads] Voicemail playback: Twilio returned ${status} for lead ${req.params.id}`);
       twilioRes.resume();
-      return res.status(502).json({ error: `Twilio returned ${twilioRes.statusCode}` });
+      return res.status(502).json({ error: `Twilio returned ${status}` });
     }
+
+    // Forward headers that the browser needs to track playback progress and seek:
+    //   content-type     — so the browser knows it's audio
+    //   content-length   — lets the browser calculate duration (without this, scrubber breaks)
+    //   accept-ranges    — only advertise range support if Twilio actually provides it
+    //   content-range    — required for 206 Partial Content responses
     res.setHeader('Content-Type', twilioRes.headers['content-type'] || 'audio/mpeg');
-    res.setHeader('Accept-Ranges', 'bytes');
+    if (twilioRes.headers['content-length']) {
+      res.setHeader('Content-Length', twilioRes.headers['content-length']);
+    }
+    if (twilioRes.headers['accept-ranges']) {
+      res.setHeader('Accept-Ranges', twilioRes.headers['accept-ranges']);
+    }
+    if (twilioRes.headers['content-range']) {
+      res.setHeader('Content-Range', twilioRes.headers['content-range']);
+    }
+
+    res.status(status);
     twilioRes.pipe(res);
   }).on('error', (err) => {
     console.error(`[Leads] Voicemail playback: fetch failed for lead ${req.params.id}:`, err.message);

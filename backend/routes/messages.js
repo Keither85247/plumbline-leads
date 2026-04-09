@@ -90,6 +90,31 @@ router.get('/:phone', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// PATCH /api/messages/:phone/read
+// Marks all inbound messages from a phone as read (is_read = 1).
+// Called when the contractor opens a conversation thread.
+// ---------------------------------------------------------------------------
+router.patch('/:phone/read', (req, res) => {
+  try {
+    const phone = normalizePhone(decodeURIComponent(req.params.phone));
+    if (!phone) return res.json({ ok: true });
+
+    db.prepare(`
+      UPDATE messages
+      SET is_read = 1
+      WHERE direction = 'inbound'
+        AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''),'(',''),')','')
+          = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(?,'+',''),'-',''),' ',''),'(',''),')','')
+    `).run(phone);
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[Messages] PATCH /:phone/read error:', err.message);
+    return res.status(500).json({ error: 'Failed to mark messages as read' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/messages/send
 // Sends an outbound SMS via Twilio and persists it to the messages table.
 // Body: { to: string, body: string }

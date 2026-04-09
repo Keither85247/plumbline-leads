@@ -129,4 +129,27 @@ router.post('/outbound-note', express.json(), (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// POST /api/calls/mark-seen
+// Marks all unseen missed inbound calls (within 48h) as seen.
+// Called when the contractor opens the Recent calls tab.
+// ---------------------------------------------------------------------------
+router.post('/mark-seen', (req, res) => {
+  try {
+    db.prepare(`
+      UPDATE calls
+      SET is_seen = 1
+      WHERE classification != 'Outbound'
+        AND (duration IS NULL OR duration = 0)
+        AND transcript IS NULL
+        AND created_at > datetime('now', '-48 hours')
+        AND is_seen = 0
+    `).run();
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[Calls] mark-seen error:', err.message);
+    return res.status(500).json({ error: 'Failed to mark calls as seen' });
+  }
+});
+
 module.exports = router;

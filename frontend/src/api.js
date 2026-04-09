@@ -286,6 +286,20 @@ export async function sendMessage(to, body) {
   return res.json();
 }
 
+/** Mark all inbound messages for a phone as read. */
+export async function markMessagesRead(phone) {
+  const res = await fetch(`${API_BASE}/messages/${encodeURIComponent(phone)}/read`, { method: 'PATCH' });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Failed to mark read'); }
+  return res.json();
+}
+
+/** Mark all unseen missed calls (within 48h) as seen. */
+export async function markCallsSeen() {
+  const res = await fetch(`${API_BASE}/calls/mark-seen`, { method: 'POST' });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Failed to mark seen'); }
+  return res.json();
+}
+
 export async function updateLeadCategory(id, category) {
   const res = await fetch(`${API_BASE}/leads/${id}/category`, {
     method: 'PATCH',

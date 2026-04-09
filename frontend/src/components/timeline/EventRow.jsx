@@ -105,9 +105,10 @@ function ClassBadge({ value }) {
 
 export default function EventRow({ event, expanded, onToggle, onContactClick }) {
   const meta = EVENT_META[event.type] ?? EVENT_META['call-outbound'];
-  const duration = meta.showDuration ? formatDuration(event.durationSeconds) : null;
-  const isEmail  = event.type === 'email-inbound' || event.type === 'email-outbound';
-  const isSms    = event.type === 'sms-inbound'   || event.type === 'sms-outbound';
+  const duration    = meta.showDuration ? formatDuration(event.durationSeconds) : null;
+  const isEmail     = event.type === 'email-inbound' || event.type === 'email-outbound';
+  const isSms       = event.type === 'sms-inbound'   || event.type === 'sms-outbound';
+  const isSmsThread = event.type === 'sms-thread';
 
   // Display name: contact name → email address → formatted phone
   const displayName = event.contactName
@@ -163,23 +164,39 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
             </p>
           )}
 
-          {/* Event type label + duration */}
+          {/* Event type label + duration / thread count */}
           <div className="flex items-center gap-1.5 mt-1">
-            <span className={`text-xs font-medium leading-none ${meta.labelColor}`}>
-              {meta.label}
-            </span>
-            {duration && (
-              <span className="text-[11px] text-gray-400 leading-none">· {duration}</span>
-            )}
-            {/* Email subject inline when collapsed */}
-            {isEmail && event.subject && (
-              <span className="text-[11px] text-gray-400 leading-none truncate">· {event.subject}</span>
+            {isSmsThread ? (
+              <>
+                <span className="text-xs font-medium leading-none text-teal-600">
+                  {event.messageCount} {event.messageCount === 1 ? 'text' : 'texts'}
+                </span>
+                {event.unreadCount > 0 && (
+                  <span className="text-[10px] font-bold bg-teal-500 text-white rounded-full px-1.5 leading-[18px]">
+                    {event.unreadCount} new
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                <span className={`text-xs font-medium leading-none ${meta.labelColor}`}>
+                  {meta.label}
+                </span>
+                {duration && (
+                  <span className="text-[11px] text-gray-400 leading-none">· {duration}</span>
+                )}
+                {/* Email subject inline when collapsed */}
+                {isEmail && event.subject && (
+                  <span className="text-[11px] text-gray-400 leading-none truncate">· {event.subject}</span>
+                )}
+              </>
             )}
           </div>
 
           {/* 1-line summary preview — collapsed state only */}
           {!expanded && (event.summary || event.note) && !isEmail && (
             <p className="text-[11px] text-gray-500 mt-1.5 line-clamp-1 leading-snug">
+              {isSmsThread && event.isOutbound ? '→ ' : isSmsThread ? '← ' : ''}
               {event.summary || event.note}
             </p>
           )}
@@ -220,10 +237,40 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
             </div>
           )}
 
-          {/* SMS: show message body */}
+          {/* SMS: show message body (individual message events, legacy) */}
           {isSms && event.summary && (
             <div className="bg-teal-50 border border-teal-100 rounded-lg px-3 py-2.5">
               <p className="text-xs text-gray-700 leading-relaxed">{event.summary}</p>
+            </div>
+          )}
+
+          {/* SMS thread: chat bubble view of last 5 messages */}
+          {isSmsThread && event.messages && event.messages.length > 0 && (
+            <div className="space-y-1.5">
+              {event.messages.length > 5 && (
+                <p className="text-[10px] text-gray-400 text-center pb-0.5">
+                  {event.messages.length - 5} earlier {event.messages.length - 5 === 1 ? 'message' : 'messages'}
+                </p>
+              )}
+              {event.messages.slice(-5).map(msg => (
+                <div
+                  key={msg.id}
+                  className={`flex ${msg.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div className={`max-w-[82%] rounded-2xl px-3 py-2 ${
+                    msg.direction === 'outbound'
+                      ? 'bg-teal-500 text-white rounded-br-sm'
+                      : 'bg-gray-100 text-gray-800 rounded-bl-sm'
+                  }`}>
+                    <p className="text-xs leading-snug">{msg.body}</p>
+                    <p className={`text-[10px] mt-1 leading-none ${
+                      msg.direction === 'outbound' ? 'text-teal-200' : 'text-gray-400'
+                    }`}>
+                      {formatTime(msg.created_at)}
+                    </p>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 

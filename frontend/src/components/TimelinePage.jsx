@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getCalls, getEmails, getConversations, getMessageThread } from '../api';
-import { normalizeCall, normalizeEmail, normalizeSms } from './timeline/normalizeEvent';
+import { normalizeCall, normalizeEmail, normalizeSmsThread } from './timeline/normalizeEvent';
 import EventRow from './timeline/EventRow';
 import { parseTimestamp } from '../utils/phone';
 
@@ -106,16 +106,18 @@ export default function TimelinePage({ onContactClick }) {
         getConversations(),
       ]);
 
-      // Fetch all message threads in parallel (one request per unique phone)
+      // Fetch all message threads in parallel (one request per unique phone).
+      // Each thread is kept paired with its conversation so we can build one
+      // thread-level summary entry instead of flooding the timeline with
+      // individual message rows.
       const threads = await Promise.all(
         conversations.map(c => getMessageThread(c.phone).catch(() => []))
       );
-      const allMessages = threads.flat();
 
       const all = [
         ...calls.map(normalizeCall),
         ...emails.map(normalizeEmail),
-        ...allMessages.map(normalizeSms),
+        ...conversations.map((c, i) => normalizeSmsThread(c, threads[i])),
       ].sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
 
       setEvents(all);

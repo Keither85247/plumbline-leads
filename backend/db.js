@@ -171,6 +171,10 @@ db.exec(`
 
 // Link messages to their parent lead for thread-to-lead attachment
 try { db.exec('ALTER TABLE messages ADD COLUMN lead_id INTEGER REFERENCES leads(id)'); } catch {}
+// Read tracking — is_read = 1 once the contractor opens the conversation
+try { db.exec('ALTER TABLE messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0'); } catch {}
+// Seen tracking for missed calls — is_seen = 1 once the contractor views the Recent list
+try { db.exec('ALTER TABLE calls ADD COLUMN is_seen INTEGER NOT NULL DEFAULT 0'); } catch {}
 
 // ── User accounts (multi-tenant scaffolding) ──────────────────────────────────
 // The app starts as single-user; these tables/columns prepare it for multi-user.

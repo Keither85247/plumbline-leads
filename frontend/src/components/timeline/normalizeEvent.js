@@ -21,6 +21,7 @@ export const EVENT_TYPES = {
   OUTBOUND_EMAIL:     'email-outbound',
   INBOUND_SMS:        'sms-inbound',
   OUTBOUND_SMS:       'sms-outbound',
+  SMS_THREAD:         'sms-thread',
 };
 
 // Visual metadata per event type.
@@ -106,6 +107,14 @@ export const EVENT_META = {
     showDuration: false,
     iconType: 'sms-out',
   },
+  [EVENT_TYPES.SMS_THREAD]: {
+    label: 'Text Conversation',
+    labelColor: 'text-teal-600',
+    iconBg: 'bg-teal-50',
+    iconColor: 'text-teal-500',
+    showDuration: false,
+    iconType: 'sms',
+  },
 };
 
 // ── normalizeCall ─────────────────────────────────────────────────────────────
@@ -157,27 +166,36 @@ export function normalizeCall(call) {
   };
 }
 
-// ── normalizeSms ──────────────────────────────────────────────────────────────
+// ── normalizeSmsThread ────────────────────────────────────────────────────────
+// Collapses an entire conversation into a single timeline entry.
+// `conversation` comes from GET /api/messages (one row per phone).
+// `messages`     comes from GET /api/messages/:phone (full thread, oldest first).
 
-export function normalizeSms(msg) {
-  const isOutbound = msg.direction === 'outbound';
-  const type = isOutbound ? EVENT_TYPES.OUTBOUND_SMS : EVENT_TYPES.INBOUND_SMS;
+export function normalizeSmsThread(conversation, messages = []) {
+  // conversation.name is either the contact name or falls back to the phone number
+  const contactName = conversation.name && conversation.name !== conversation.phone
+    ? conversation.name
+    : null;
 
   return {
-    id:              `sms-${msg.id}`,
-    type,
-    isOutbound,
-    contactName:     msg.contact_name || null,
-    contactPhone:    msg.phone || '',
+    id:              `sms-thread-${conversation.phone}`,
+    type:            EVENT_TYPES.SMS_THREAD,
+    isOutbound:      conversation.lastMessageDir === 'outbound',
+    contactName,
+    contactPhone:    conversation.phone,
     contactEmail:    null,
     subject:         null,
-    summary:         msg.body || null,
+    summary:         conversation.lastMessage || null,  // latest message preview
     note:            null,
     keyPoints:       [],
-    timestamp:       msg.created_at,
+    timestamp:       conversation.timestamp,
     durationSeconds: null,
     classification:  null,
-    isExpandable:    !!(msg.body),
+    isExpandable:    messages.length > 0,
+    // Thread-specific fields consumed by EventRow's sms-thread expand section
+    messageCount:    messages.length,
+    unreadCount:     conversation.unread || 0,
+    messages,
   };
 }
 

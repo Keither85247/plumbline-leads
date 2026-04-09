@@ -149,12 +149,24 @@ export default function App() {
   );
 
   // ── Nav badge counts ──────────────────────────────────────────────────────
-  // calls/texts/emails come from the API; leads is computed from local state.
-  const [remoteCounts, setRemoteCounts] = useState({ calls: 0, texts: 0, emails: 0 });
+  // callsBadge is intentionally separate so it can ONLY be zeroed by the
+  // user actually viewing the Recent calls list — never by a nav click or
+  // any other indirect code path.
+  const [callsBadge, setCallsBadge] = useState(0);
+  const [remoteCounts, setRemoteCounts] = useState({ texts: 0, emails: 0 });
 
   useEffect(() => {
     let cancelled = false;
-    const fetch_ = () => getCounts().then(c => { if (!cancelled) setRemoteCounts(c); }).catch(() => {});
+    const fetch_ = () => getCounts().then(c => {
+      if (cancelled) return;
+      console.log('[Badge] poll returned calls:', c.calls);
+      setCallsBadge(prev => {
+        const next = c.calls || 0;
+        console.log('[Badge] setCallsBadge prev:', prev, '→ next:', next, '(via poll)');
+        return next;
+      });
+      setRemoteCounts({ texts: c.texts || 0, emails: c.emails || 0 });
+    }).catch(() => {});
     fetch_();
     const t = setInterval(fetch_, 30_000);
     return () => { cancelled = true; clearInterval(t); };
@@ -205,14 +217,8 @@ export default function App() {
 
   const isLeadsView = activeNav === 'overview' || activeNav === 'leads';
 
-  // When visiting a badged tab, clear its count locally so the badge disappears
-  // immediately. It will reappear on the next 30s poll if items are still unactioned.
   const handleNavChange = (id) => {
     setActiveNav(id);
-    if (id === 'calls') setRemoteCounts(p => ({ ...p, calls: 0 }));
-    if (id === 'text')  setRemoteCounts(p => ({ ...p, texts: 0 }));
-    if (id === 'email') setRemoteCounts(p => ({ ...p, emails: 0 }));
-    // leads badge clears naturally as leads are actioned (status leaves 'New')
   };
   // bottom nav: timeline counts as its own view, not leads
 
@@ -286,7 +292,13 @@ export default function App() {
             </div>
           )}
 
-          {activeNav === 'calls' && <CallsPage onContactClick={setCallsPagePhone} voiceDevice={voiceDevice} />}
+          {activeNav === 'calls' && (
+            <CallsPage
+              onContactClick={setCallsPagePhone}
+              voiceDevice={voiceDevice}
+              onCallsSeen={() => { console.log('[Badge] onCallsSeen fired → setCallsBadge(0)'); setCallsBadge(0); }}
+            />
+          )}
 
           {activeNav === 'text' && <InboxLayout />}
 
@@ -423,7 +435,7 @@ export default function App() {
             // Badge count per tab — only first 4 get badges
             const newLeads = leads.filter(l => l.status === 'New').length;
             const badgeCount =
-              item.id === 'calls'  ? remoteCounts.calls  :
+              item.id === 'calls'  ? callsBadge  :
               item.id === 'leads'  ? newLeads            :
               item.id === 'text'   ? remoteCounts.texts  :
               item.id === 'email'  ? remoteCounts.emails :

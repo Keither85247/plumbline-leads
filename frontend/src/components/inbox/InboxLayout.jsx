@@ -3,7 +3,7 @@ import ConversationList from './ConversationList';
 import MessageThread from './MessageThread';
 import LeadDetailsPanel from './LeadDetailsPanel';
 import NewMessageModal from './NewMessageModal';
-import { getConversations, getMessageThread, sendMessage } from '../../api';
+import { getConversations, getMessageThread, sendMessage, markMessagesRead } from '../../api';
 
 function EmptyThreadState() {
   return (
@@ -73,8 +73,9 @@ export default function InboxLayout() {
   const handleSelect = useCallback((id) => {
     setSelectedId(id);
     setMobileView('thread');
-    // Mark as read locally
+    // Mark as read locally + persist to backend so badge count clears
     setConversations(prev => prev.map(c => c.id === id ? { ...c, unread: 0 } : c));
+    markMessagesRead(id).catch(err => console.error('[Inbox] mark-read error:', err.message));
   }, []);
 
   const handleBack = useCallback(() => {

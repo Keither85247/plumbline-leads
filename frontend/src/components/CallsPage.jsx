@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { getCalls, getVoicemailLeads, API_BASE } from '../api';
+import { useState, useEffect, useRef } from 'react';
+import { getCalls, getVoicemailLeads, markCallsSeen, API_BASE } from '../api';
 import { parseTimestamp } from '../utils/phone';
 import PhoneActionSheet from './PhoneActionSheet';
 
@@ -77,7 +77,7 @@ function formatDuration(seconds) {
   return m === 0 ? `${s}s` : `${m}m ${s}s`;
 }
 
-export default function CallsPage({ onContactClick, voiceDevice = {} }) {
+export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSeen }) {
   const [dialInput, setDialInput] = useState('');
   const [activeTab, setActiveTab] = useState('Dialer');
   const [calls, setCalls] = useState([]);
@@ -85,6 +85,10 @@ export default function CallsPage({ onContactClick, voiceDevice = {} }) {
   const [loadingCalls, setLoadingCalls] = useState(false);
   const [expandedCallId, setExpandedCallId] = useState(null);
   const [actionSheetPhone, setActionSheetPhone] = useState(null);
+
+  // Guard: fires markCallsSeen at most once per CallsPage mount.
+  // Resets automatically when the component unmounts (user navigates away).
+  const hasMarkedSeenRef = useRef(false);
 
   const {
     status: deviceStatus = 'idle',
@@ -119,6 +123,21 @@ export default function CallsPage({ onContactClick, voiceDevice = {} }) {
         .finally(() => setLoadingCalls(false));
     }
   }, [activeTab]);
+
+  // Mark calls as seen once the Recent list has actually rendered.
+  // Fires at most once per CallsPage mount (hasMarkedSeenRef resets on unmount).
+  // Does NOT fire on: nav click to Calls tab, Dialer inner tab, Voicemail inner tab.
+  // After marking, triggers an immediate getCounts refresh in App so the badge
+  // clears right away instead of waiting up to 30 seconds for the next poll.
+  useEffect(() => {
+    console.log('[CallsPage] mark-seen effect: activeTab=', activeTab, 'calls.length=', calls.length, 'hasMarked=', hasMarkedSeenRef.current);
+    if (activeTab !== 'Recent' || calls.length === 0 || hasMarkedSeenRef.current) return;
+    hasMarkedSeenRef.current = true;
+    console.log('[CallsPage] → firing markCallsSeen');
+    markCallsSeen()
+      .then(() => { console.log('[CallsPage] markCallsSeen resolved → calling onCallsSeen'); onCallsSeen?.(); })
+      .catch(err => console.error('Failed to mark calls seen:', err));
+  }, [activeTab, calls, onCallsSeen]);
 
   const handleKeypad = (val) => setDialInput(prev => prev + val);
   const handleBackspace = () => setDialInput(prev => prev.slice(0, -1));
@@ -421,7 +440,7 @@ export default function CallsPage({ onContactClick, voiceDevice = {} }) {
                       <div className="mt-3 pt-3 border-t border-gray-200">
                         <audio
                           controls
-                          preload="none"
+                          preload="metadata"
                           src={`${API_BASE}/leads/${vm.id}/voicemail`}
                           className="w-full h-9"
                           style={{ colorScheme: 'light' }}

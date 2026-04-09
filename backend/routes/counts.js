@@ -12,20 +12,22 @@ const db = require('../db');
 
 router.get('/', (req, res) => {
   try {
-    // Missed inbound calls: no duration, no transcript, not Outbound, within 48h
+    // Missed inbound calls: no duration, no transcript, not Outbound, within 48h, not yet seen
     const { calls } = db.prepare(`
       SELECT COUNT(*) AS calls FROM calls
       WHERE classification != 'Outbound'
         AND (duration IS NULL OR duration = 0)
         AND transcript IS NULL
         AND created_at > datetime('now', '-48 hours')
+        AND (is_seen IS NULL OR is_seen = 0)
     `).get();
 
-    // Unread text conversations: phones where the most recent message is inbound
+    // Unread text conversations: phones where the most recent message is inbound AND unread
     const { texts } = db.prepare(`
       SELECT COUNT(DISTINCT m.phone) AS texts
       FROM messages m
       WHERE m.direction = 'inbound'
+        AND (m.is_read IS NULL OR m.is_read = 0)
         AND m.id = (
           SELECT id FROM messages m2
           WHERE m2.phone = m.phone
