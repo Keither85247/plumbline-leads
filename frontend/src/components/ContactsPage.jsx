@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { getCalls } from '../api';
+import { getCalls, getAllContactProfiles } from '../api';
 import { normalizePhone } from '../utils/phone';
 import ContactHistoryModal from './ContactHistoryModal';
 import PhoneActionSheet from './PhoneActionSheet';
@@ -41,6 +41,8 @@ function extractContext(summary) {
 
 export default function ContactsPage({ leads }) {
   const [calls,            setCalls]            = useState([]);
+  // profileNames: Map of normalizedPhone → saved name from contacts table
+  const [profileNames,     setProfileNames]     = useState(new Map());
   const [selectedPhone,    setSelectedPhone]    = useState(null);
   const [actionSheetPhone, setActionSheetPhone] = useState(null);
   const [search,           setSearch]           = useState('');
@@ -49,9 +51,32 @@ export default function ContactsPage({ leads }) {
     getCalls()
       .then(setCalls)
       .catch(err => console.error('[Contacts] calls fetch failed:', err));
+    // Load saved contact names to overlay on top of AI-extracted lead names
+    getAllContactProfiles()
+      .then(profiles => {
+        const map = new Map();
+        for (const p of profiles) {
+          if (p.name && p.phone) map.set(normalizePhone(p.phone) || p.phone, p.name);
+        }
+        setProfileNames(map);
+      })
+      .catch(() => {}); // non-fatal
   }, []);
 
+  // Called from ContactHistoryModal when a profile is saved — keep list in sync
+  const handleProfileSaved = (phone, profile) => {
+    if (!phone) return;
+    const normalized = normalizePhone(phone) || phone;
+    setProfileNames(prev => {
+      const next = new Map(prev);
+      if (profile?.name) next.set(normalized, profile.name);
+      else next.delete(normalized);
+      return next;
+    });
+  };
+
   // Derive a unified contact list from leads + calls, keyed by normalized phone.
+  // Saved profile names take precedence over AI-extracted names.
   const contacts = useMemo(() => {
     const map = new Map();
 
@@ -121,9 +146,14 @@ export default function ContactsPage({ leads }) {
       }
     }
 
+    // Overlay saved profile names — they win over anything AI-extracted
     return Array.from(map.values())
+      .map(c => ({
+        ...c,
+        name: profileNames.get(c.normalized) || c.name,
+      }))
       .sort((a, b) => b.lastActivity - a.lastActivity);
-  }, [leads, calls]);
+  }, [leads, calls, profileNames]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return contacts;
@@ -263,6 +293,7 @@ export default function ContactsPage({ leads }) {
           phone={selectedPhone}
           leads={leads}
           onClose={() => setSelectedPhone(null)}
+          onProfileSaved={handleProfileSaved}
         />
       )}
 

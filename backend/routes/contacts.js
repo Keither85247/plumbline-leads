@@ -3,6 +3,18 @@ const db = require('../db');
 
 const router = express.Router();
 
+// GET /api/contacts — all saved contact profiles (only rows that exist in the table)
+// Used by ContactsPage to overlay saved names on top of lead-derived names.
+router.get('/', (req, res) => {
+  try {
+    const rows = db.prepare('SELECT * FROM contacts ORDER BY updated_at DESC').all();
+    res.json(rows);
+  } catch (err) {
+    console.error('[Contacts] GET / failed:', err.message);
+    res.status(500).json({ error: 'Failed to fetch contacts' });
+  }
+});
+
 // GET /api/contacts/search?q=... ─────────────────────────────────────────────
 // Full-text search over contacts that have a saved email address.
 // Matches against the contact's email AND against the name derived from leads.

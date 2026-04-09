@@ -15,7 +15,7 @@ const CONTACT_METHODS = ['Call', 'Text', 'Email', 'Any'];
 
 // ── Profile section ──────────────────────────────────────────────────────────
 
-function ProfileSection({ phone, contact, latestLead }) {
+function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
   const [profile,   setProfile]   = useState(null);
   const [editing,   setEditing]   = useState(false);
   const [draft,     setDraft]     = useState({});
@@ -42,6 +42,7 @@ function ProfileSection({ phone, contact, latestLead }) {
       const saved = await saveContactProfile(phone, draft);
       setProfile(saved);
       setEditing(false);
+      onProfileSaved?.(phone, saved); // notify parent (ContactsPage) to update list
     } catch (err) {
       console.error('Save failed:', err);
     } finally {
@@ -319,7 +320,7 @@ function ProfileField({ icon, label, value }) {
 
 // ── Main modal ───────────────────────────────────────────────────────────────
 
-export default function ContactHistoryModal({ phone, leads, onClose }) {
+export default function ContactHistoryModal({ phone, leads, onClose, onProfileSaved }) {
   const [callNotes,        setCallNotes]        = useState([]);
   const [emailItems,       setEmailItems]       = useState([]);
   const [actionSheetPhone, setActionSheetPhone] = useState(null);
@@ -397,6 +398,7 @@ export default function ContactHistoryModal({ phone, leads, onClose }) {
             phone={normalizedTarget || primaryPhone}
             contact={contact}
             latestLead={history[0] || null}
+            onProfileSaved={onProfileSaved}
           />
 
           {/* ── Interaction history ── */}

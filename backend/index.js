@@ -22,6 +22,10 @@ const PORT = process.env.PORT || 3001;
 const corsOptions = process.env.FRONTEND_URL
   ? { origin: process.env.FRONTEND_URL, credentials: true }
   : {};
+// Explicitly handle OPTIONS preflight for all routes.
+// Without this, cross-origin POST with Content-Type: application/json
+// fails because the browser's preflight request gets no CORS headers back.
+app.options('*', cors(corsOptions));
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '2mb' }));
 

@@ -142,6 +142,13 @@ export async function logEmail(data) {
   return res.json();
 }
 
+/** Returns all saved contact profiles as an array. */
+export async function getAllContactProfiles() {
+  const res = await fetch(`${API_BASE}/contacts`);
+  if (!res.ok) throw new Error('Failed to fetch contact profiles');
+  return res.json();
+}
+
 export async function getContactProfile(phone) {
   const res = await fetch(`${API_BASE}/contacts/${encodeURIComponent(phone)}`);
   if (!res.ok) throw new Error('Failed to fetch contact profile');
