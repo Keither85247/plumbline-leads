@@ -101,6 +101,9 @@ db.exec(`
   )
 `);
 
+// Contact name — contractor-editable, takes precedence over AI-extracted names from leads
+try { db.exec('ALTER TABLE contacts ADD COLUMN name TEXT'); } catch {}
+
 // Structured address fields added to contacts for Mapbox Address Autofill integration
 try { db.exec('ALTER TABLE contacts ADD COLUMN formatted_address TEXT'); } catch {}
 try { db.exec('ALTER TABLE contacts ADD COLUMN address_line_1 TEXT'); } catch {}
@@ -165,6 +168,9 @@ db.exec(`
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
+
+// Link messages to their parent lead for thread-to-lead attachment
+try { db.exec('ALTER TABLE messages ADD COLUMN lead_id INTEGER REFERENCES leads(id)'); } catch {}
 
 // ── User accounts (multi-tenant scaffolding) ──────────────────────────────────
 // The app starts as single-user; these tables/columns prepare it for multi-user.

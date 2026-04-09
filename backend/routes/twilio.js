@@ -9,7 +9,7 @@ const OpenAI = require('openai');
 const twilio = require('twilio');
 const VoiceResponse = twilio.twiml.VoiceResponse;
 const db = require('../db');
-const { createLeadFromTranscript, isDuplicate } = require('./leads');
+const { createLeadFromTranscript, isDuplicate, hasLeadToday } = require('./leads');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -217,28 +217,60 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
   }
 
   // Always persist the inbound message FIRST so it appears in the inbox
-  // regardless of duplicate-lead detection below.
+  // regardless of lead creation logic below.
+  let messageRowId = null;
   try {
-    db.prepare(
+    const msgRow = db.prepare(
       "INSERT INTO messages (phone, direction, body, status) VALUES (?, 'inbound', ?, 'received')"
     ).run(From || 'unknown', Body.trim());
+    messageRowId = msgRow.lastInsertRowid;
   } catch (err) {
     console.error('[Twilio] Failed to save inbound SMS to messages table:', err.message);
   }
 
+  // If this phone already has an open lead today, attach the message to it
+  // instead of creating a duplicate lead card.
+  const existingLead = From
+    ? db.prepare(
+        `SELECT id FROM leads
+         WHERE (phone_number = ? OR callback_number = ?)
+           AND archived = 0
+         ORDER BY created_at DESC LIMIT 1`
+      ).get(From, From)
+    : null;
+
+  if (existingLead) {
+    if (messageRowId) {
+      try {
+        db.prepare('UPDATE messages SET lead_id = ? WHERE id = ?')
+          .run(existingLead.id, messageRowId);
+      } catch (err) {
+        console.error('[Twilio] Failed to stamp lead_id on message:', err.message);
+      }
+    }
+    if (isDuplicate(From, Body) || hasLeadToday(From)) {
+      console.log(`[Twilio] SMS from ${From} — attached to existing lead #${existingLead.id}, skipping new lead creation`);
+      return res.status(200).send('OK');
+    }
+  }
+
   if (isDuplicate(From, Body)) {
-    console.log(`[Twilio] SMS duplicate lead detected from ${From}, skipping lead creation`);
+    console.log(`[Twilio] SMS duplicate detected from ${From}, skipping lead creation`);
     return res.status(200).send('OK');
   }
 
   try {
-    await createLeadFromTranscript({
+    const newLead = await createLeadFromTranscript({
       transcript: Body,
       rawText: Body,
       contactNameFallback: From || 'Unknown',
       phoneNumber: From || null,
       source: 'sms'
     });
+    // Stamp newly-created lead on the message row
+    if (messageRowId && newLead?.id) {
+      db.prepare('UPDATE messages SET lead_id = ? WHERE id = ?').run(newLead.id, messageRowId);
+    }
   } catch (err) {
     console.error('Twilio SMS lead creation failed:', err);
   }

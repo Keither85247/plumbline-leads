@@ -66,6 +66,7 @@ router.get('/:phone', (req, res) => {
 router.put('/:phone', (req, res) => {
   const { phone } = req.params;
   const {
+    name,
     // legacy plain text address (kept for backwards compat)
     address,
     email,
@@ -84,11 +85,12 @@ router.put('/:phone', (req, res) => {
 
   db.prepare(`
     INSERT INTO contacts (
-      phone, address, email, notes, preferred_contact_method,
+      phone, name, address, email, notes, preferred_contact_method,
       formatted_address, address_line_1, city, state, postal_code, country, lat, lng,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(phone) DO UPDATE SET
+      name                     = excluded.name,
       address                  = excluded.address,
       email                    = excluded.email,
       notes                    = excluded.notes,
@@ -104,6 +106,7 @@ router.put('/:phone', (req, res) => {
       updated_at               = CURRENT_TIMESTAMP
   `).run(
     phone,
+    name               || null,
     address            || null,
     email              || null,
     notes              || null,

@@ -22,24 +22,34 @@ async function createLeadFromTranscript({ transcript, rawText, contactNameFallba
     ? '\n- IMPORTANT: Write the "summary", all "keyPoints" strings, and "followUpText" in Spanish (Español). Keep all JSON field names in English.'
     : '';
 
+  // Adjust prompt language based on how the contact reached out
+  const isSms = source === 'sms';
+  const medium = isSms ? 'SMS message' : 'call transcript or voicemail';
+  const summaryExamples = isSms
+    ? '"Mike – Texted about a leaking pipe under the kitchen sink", "Sandra – Asked for a quote on a water heater replacement", "Texted asking about availability, no name given"'
+    : '"Gonzo (Advanced Paint) – Called about paint pickup", "Mike – Asked for an estimate on a bathroom remodel", "Called about a broken water heater, no name given"';
+  const followUpExample = isSms
+    ? '"Hi Mike, this is [Your Name]. Got your text about the leaking pipe. Happy to help — what\'s a good time to swing by?"'
+    : '"Hi Mike, this is [Your Name]. Got your call about the breaker panel and outdoor lighting. Happy to help. Let me know a good time to connect."';
+
   const completion = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     response_format: { type: 'json_object' },
     messages: [
       {
         role: 'system',
-        content: `You are a CRM assistant that analyzes contractor call transcripts and voicemails. Return a JSON object with exactly these fields:
-- "contactName": string — the primary contact's full name extracted from the transcript, or "Unknown" if not identifiable
-- "companyName": string — the business or organization the caller represents. Only include if explicitly stated or clearly implied (e.g. "from Advanced Paint", "I'm with Roto-Rooter"). Do not guess. Return an empty string if unclear.
-- "category": string — classify the caller into exactly one of these values: "Lead" (new job inquiry, estimate request, potential sale), "Existing Customer" (service issue, follow-up, complaint, or existing project), "Vendor" (supplier, partner, subcontractor, or business contact), "Spam" (robocall, irrelevant solicitation, obvious junk), "Other" (unclear or does not fit above). Return only the exact string value.
-- "summary": string — a single concise sentence formatted exactly as: "[Caller Name] ([Company Name]) – [what the call was about]". If no company is known, omit the parenthetical entirely and use: "[Caller Name] – [what the call was about]". If the caller name is unknown, start with just the action. Keep it short and factual. Examples: "Gonzo (Advanced Paint) – Called about paint pickup", "Mike – Asked for an estimate on a bathroom remodel", "Called about a broken water heater, no name given"
-- "keyPoints": array of strings — up to 3 short, contractor-focused bullet points. Prioritize in this order: (1) job location or address if mentioned, (2) type of work or service requested, (3) urgency, timing, or requested next step. Do NOT include anything about contact info being provided or left — that is already shown on the card. Do NOT repeat what is already obvious from the summary. Every bullet should be new, specific, and actionable information a contractor needs before calling back.
-- "callbackNumber": string — if the caller explicitly states a different number to call them back at (e.g. "call me back at 203-555-1234" or "my cell is 555-9876"), extract that number exactly as spoken. If no alternate callback number is mentioned, return an empty string.
-- "followUpText": string — a short, natural SMS-style follow-up message a contractor would send to the customer after the call. It should reference the customer's specific request, suggest a next step, sound like a real person texting (not a template), and use no emojis. Use [Your Name] as a placeholder for the contractor's name. Example: "Hi Mike, this is [Your Name]. Got your call about the breaker panel and outdoor lighting. Happy to help. Let me know a good time to connect."${languageInstruction}`
+        content: `You are a CRM assistant that analyzes contractor ${medium}s. Return a JSON object with exactly these fields:
+- "contactName": string — the primary contact's full name extracted from the message, or "Unknown" if not identifiable
+- "companyName": string — the business or organization the contact represents. Only include if explicitly stated or clearly implied. Do not guess. Return an empty string if unclear.
+- "category": string — classify the contact into exactly one of these values: "Lead" (new job inquiry, estimate request, potential sale), "Existing Customer" (service issue, follow-up, complaint, or existing project), "Vendor" (supplier, partner, subcontractor, or business contact), "Spam" (robocall, irrelevant solicitation, obvious junk), "Other" (unclear or does not fit above). Return only the exact string value.
+- "summary": string — a single concise sentence: "[Name] – [what this was about]". If no company, omit the parenthetical. If name is unknown, start with just the action. Keep it short and factual. Examples: ${summaryExamples}
+- "keyPoints": array of strings — up to 3 short, contractor-focused bullet points. Prioritize: (1) job location or address if mentioned, (2) type of work or service requested, (3) urgency, timing, or requested next step. Do NOT include anything about contact info. Do NOT repeat what is already in the summary. Every bullet should be new, specific, actionable information a contractor needs.
+- "callbackNumber": string — if the contact explicitly states a different number to reach them (e.g. "call me back at 203-555-1234"), extract it. Otherwise return an empty string.
+- "followUpText": string — a short, natural SMS-style follow-up message the contractor would send. Reference the specific request, suggest a next step, sound like a real person texting (not a template), no emojis. Use [Your Name] as placeholder. Example: ${followUpExample}${languageInstruction}`
       },
       {
         role: 'user',
-        content: `Analyze this call transcript:\n\n${transcript}`
+        content: `Analyze this ${medium}:\n\n${transcript}`
       }
     ]
   });
@@ -77,13 +87,28 @@ async function createLeadFromTranscript({ transcript, rawText, contactNameFallba
   return newLead;
 }
 
-// Check for a duplicate: same phone number + transcript submitted within the last 5 minutes
+// Check for a duplicate: same phone number + exact transcript within the last 5 minutes
 function isDuplicate(phoneNumber, transcript) {
   if (!phoneNumber) return false;
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   const existing = db.prepare(
     'SELECT id FROM leads WHERE phone_number = ? AND transcript = ? AND created_at > ?'
   ).get(phoneNumber, transcript, fiveMinutesAgo);
+  return !!existing;
+}
+
+// Check if this phone number already has an open (non-archived) lead created today.
+// Used for SMS: repeated texts from the same person on the same day should not
+// create a new lead each time — they belong to the existing open conversation.
+function hasLeadToday(phoneNumber) {
+  if (!phoneNumber) return false;
+  const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const existing = db.prepare(
+    `SELECT id FROM leads
+     WHERE (phone_number = ? OR callback_number = ?)
+       AND created_at > ?
+       AND archived = 0`
+  ).get(phoneNumber, phoneNumber, oneDayAgo);
   return !!existing;
 }
 
@@ -117,13 +142,20 @@ router.get('/', (req, res) => {
     const showArchived = req.query.archived === 'true';
     const { source } = req.query;
 
-    let query = 'SELECT * FROM leads WHERE archived = ?';
+    let query = `
+      SELECT l.*,
+        (SELECT COUNT(*) FROM messages m
+         WHERE m.phone = l.phone_number OR m.phone = l.callback_number) AS message_count,
+        (SELECT MAX(m.created_at) FROM messages m
+         WHERE m.phone = l.phone_number OR m.phone = l.callback_number) AS last_message_at
+      FROM leads l
+      WHERE l.archived = ?`;
     const params = [showArchived ? 1 : 0];
     if (source) {
-      query += ' AND source = ?';
+      query += ' AND l.source = ?';
       params.push(source);
     }
-    query += ' ORDER BY created_at DESC';
+    query += ' ORDER BY l.created_at DESC';
 
     const leads = db.prepare(query).all(...params);
     const result = leads.map(lead => ({
@@ -287,3 +319,4 @@ router.delete('/:id', (req, res) => {
 module.exports = router;
 module.exports.createLeadFromTranscript = createLeadFromTranscript;
 module.exports.isDuplicate = isDuplicate;
+module.exports.hasLeadToday = hasLeadToday;

@@ -337,6 +337,11 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
             <span className="text-xs text-gray-400">{ageLabel}</span>
             {urgency === 'overdue' && <span className="text-xs font-medium text-red-600 bg-red-50 rounded px-1.5 py-0.5">Overdue</span>}
             {urgency === 'warning' && <span className="text-xs font-medium text-yellow-700 bg-yellow-50 rounded px-1.5 py-0.5">Needs follow-up</span>}
+            {lead.message_count > 0 && (
+              <span className="text-xs text-teal-700 bg-teal-50 rounded px-1.5 py-0.5 font-medium">
+                💬 {lead.message_count} {lead.message_count === 1 ? 'text' : 'texts'}
+              </span>
+            )}
           </div>
         </div>
 

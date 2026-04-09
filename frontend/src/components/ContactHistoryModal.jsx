@@ -54,8 +54,8 @@ function ProfileSection({ phone, contact, latestLead }) {
     setEditing(false);
   }
 
-  // Derive best display values: profile overrides auto-detected from leads/calls
-  const name    = contact.contact_name !== 'Unknown' ? contact.contact_name : null;
+  // Derive best display name: contact profile overrides AI-extracted lead name
+  const name    = profile?.name || (contact.contact_name !== 'Unknown' ? contact.contact_name : null);
   const company = contact.company_name || null;
 
   // Latest job context from most recent lead
@@ -75,6 +75,18 @@ function ProfileSection({ phone, contact, latestLead }) {
     return (
       <div className="px-6 py-4 border-b border-gray-100 space-y-3">
         <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Edit Profile</p>
+
+        {/* ── Name ── */}
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Name</label>
+          <input
+            type="text"
+            value={draft.name || ''}
+            onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
+            placeholder="Full name"
+            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400 placeholder:text-gray-400"
+          />
+        </div>
 
         {/* ── Address block ── */}
         <div className="space-y-2">
