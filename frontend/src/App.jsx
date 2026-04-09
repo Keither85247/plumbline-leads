@@ -11,7 +11,7 @@ import ContactHistoryModal from './components/ContactHistoryModal';
 import OutboundNoteModal from './components/OutboundNoteModal';
 import InboxLayout from './components/inbox/InboxLayout';
 import EmailPage from './components/EmailPage';
-import { getLeads, saveOutboundNote } from './api';
+import { getLeads, saveOutboundNote, getCounts } from './api';
 import { translations } from './i18n';
 import { useVoiceDevice } from './hooks/useVoiceDevice';
 
@@ -148,6 +148,18 @@ export default function App() {
     () => localStorage.getItem('businessName') || ''
   );
 
+  // ── Nav badge counts ──────────────────────────────────────────────────────
+  // calls/texts/emails come from the API; leads is computed from local state.
+  const [remoteCounts, setRemoteCounts] = useState({ calls: 0, texts: 0, emails: 0 });
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetch_ = () => getCounts().then(c => { if (!cancelled) setRemoteCounts(c); }).catch(() => {});
+    fetch_();
+    const t = setInterval(fetch_, 30_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
+
   const t = translations[language] || translations.en;
 
   const handleLanguageChange = (lang) => {
@@ -192,6 +204,16 @@ export default function App() {
     setLeads(prev => prev.filter(l => l.id !== id));
 
   const isLeadsView = activeNav === 'overview' || activeNav === 'leads';
+
+  // When visiting a badged tab, clear its count locally so the badge disappears
+  // immediately. It will reappear on the next 30s poll if items are still unactioned.
+  const handleNavChange = (id) => {
+    setActiveNav(id);
+    if (id === 'calls') setRemoteCounts(p => ({ ...p, calls: 0 }));
+    if (id === 'text')  setRemoteCounts(p => ({ ...p, texts: 0 }));
+    if (id === 'email') setRemoteCounts(p => ({ ...p, emails: 0 }));
+    // leads badge clears naturally as leads are actioned (status leaves 'New')
+  };
   // bottom nav: timeline counts as its own view, not leads
 
 
@@ -226,7 +248,7 @@ export default function App() {
           {SIDEBAR_NAV_ICONS.map(item => (
             <button
               key={item.id}
-              onClick={() => setActiveNav(item.id)}
+              onClick={() => handleNavChange(item.id)}
               className={`flex items-center gap-3 px-5 py-2.5 text-sm font-medium transition-colors text-left
                 ${activeNav === item.id
                   ? 'text-blue-600 bg-blue-50 border-r-2 border-blue-600'
@@ -397,17 +419,35 @@ export default function App() {
             const isActive = item.id === 'leads'
               ? activeNav === 'leads' || activeNav === 'overview'
               : activeNav === item.id;
+
+            // Badge count per tab — only first 4 get badges
+            const newLeads = leads.filter(l => l.status === 'New').length;
+            const badgeCount =
+              item.id === 'calls'  ? remoteCounts.calls  :
+              item.id === 'leads'  ? newLeads            :
+              item.id === 'text'   ? remoteCounts.texts  :
+              item.id === 'email'  ? remoteCounts.emails :
+              0;
+
             return (
               <button
                 key={item.id}
-                onClick={() => setActiveNav(item.id)}
+                onClick={() => handleNavChange(item.id)}
                 className={`flex-1 flex flex-col items-center justify-center gap-1 py-2.5 rounded-xl transition-all duration-150
                   ${isActive
                     ? 'text-blue-600 bg-blue-50'
                     : 'text-gray-400 hover:text-gray-600'
                   }`}
               >
-                {item.icon(isActive)}
+                {/* Icon wrapper — relative so badge can be positioned over it */}
+                <div className="relative">
+                  {item.icon(isActive)}
+                  {badgeCount > 0 && (
+                    <span className="absolute -top-1 -right-2 min-w-[16px] h-4 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center px-1 leading-none pointer-events-none">
+                      {badgeCount > 99 ? '99+' : badgeCount}
+                    </span>
+                  )}
+                </div>
                 <span className={`text-[10px] leading-none font-semibold tracking-wide ${isActive ? 'text-blue-600' : 'text-gray-400'}`}>
                   {(t[item.id] || item.id).toUpperCase()}
                 </span>

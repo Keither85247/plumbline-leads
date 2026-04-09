@@ -247,6 +247,15 @@ export async function softDeleteEmail(id) {
   return res.json();
 }
 
+// ── Nav badge counts ──────────────────────────────────────────────────────────
+
+/** Returns { calls, texts, emails } — actionable counts for nav badges. */
+export async function getCounts() {
+  const res = await fetch(`${API_BASE}/counts`);
+  if (!res.ok) throw new Error('Failed to fetch counts');
+  return res.json();
+}
+
 // ── SMS / Messages ────────────────────────────────────────────────────────────
 
 /** Returns conversation list (one entry per phone, latest message + unread count). */
