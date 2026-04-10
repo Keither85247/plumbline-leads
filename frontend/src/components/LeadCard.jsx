@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { updateLeadStatus, archiveLead, unarchiveLead, deleteLead, translateText, sendMessage } from '../api';
 import { normalizePhone } from '../utils/phone';
 import PhoneActionSheet from './PhoneActionSheet';
@@ -172,10 +172,9 @@ function Tag({ icon, text, variant = 'other' }) {
 
 export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contractorName, onContactClick, isArchived = false, language = 'en', replyTranslation = false }) {
   const t = translations[language] || translations.en;
-  const [expanded, setExpanded] = useState(false);
-  const hasAutoMarkedRef = useRef(false);
   const [updating, setUpdating] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
+  const [descExpanded, setDescExpanded] = useState(false);
   const [editingFollowUp, setEditingFollowUp] = useState(false);
   const [followUpDraft, setFollowUpDraft] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -195,29 +194,6 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [menuOpen]);
-
-  const rawText = lead.raw_text || lead.transcript;
-
-  // Toggle card open/closed. On first open, auto-mark New leads as Contacted
-  // so the badge decrements and the blue tint clears immediately.
-  const handleCardClick = useCallback((e) => {
-    // Let interactive elements (buttons, selects, inputs) handle their own clicks
-    if (e.target.closest('select, button, textarea, a, input')) return;
-    const opening = !expanded;
-    setExpanded(opening);
-    if (opening) {
-      // Always show the original message when expanding
-      if (rawText) setShowRaw(true);
-      // Mark New → Contacted on first open (optimistic + background persist)
-      if (lead.status === 'New' && !hasAutoMarkedRef.current) {
-        hasAutoMarkedRef.current = true;
-        onLeadUpdated({ ...lead, status: 'Contacted' });
-        updateLeadStatus(lead.id, 'Contacted').catch(err =>
-          console.error('[LeadCard] auto-mark failed:', err)
-        );
-      }
-    }
-  }, [expanded, lead, onLeadUpdated, rawText]);
 
   const baseFollowUp = contractorName
     ? (lead.follow_up_text || '').replace(/\[Your Name\]/g, contractorName)
@@ -324,13 +300,23 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
 
   const ageLabel = getAgeLabel(lead.created_at);
   const urgency = getUrgency(lead.created_at, lead.status);
+  const rawText = lead.raw_text || lead.transcript;
   const category = lead.category || 'Lead';
   const primaryPhone = lead.callback_number || lead.phone_number;
   const showCallerIdSecondary = lead.callback_number && lead.phone_number && lead.callback_number !== lead.phone_number;
 
+  const handleCardClick = () => {
+    if (lead.status === 'New') {
+      onLeadUpdated({ ...lead, status: 'Contacted' });
+      updateLeadStatus(lead.id, 'Contacted').catch(err =>
+        console.error('[LeadCard] mark-seen failed:', err)
+      );
+    }
+  };
+
   return (
     <div
-      className={`border rounded-lg p-3 transition-colors cursor-pointer
+      className={`border rounded-lg p-3 transition-colors
         ${urgency === 'overdue' && !isArchived ? 'border-l-[3px] border-l-amber-400' : ''}
         ${lead.status === 'New' && !isArchived ? 'bg-blue-50 border-blue-200 hover:border-blue-300' : 'border-gray-200 hover:border-gray-300'}`}
       onClick={handleCardClick}
@@ -371,7 +357,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
           </div>
         </div>
 
-        {/* Status + kebab menu + chevron */}
+        {/* Status + kebab menu */}
         <div className="flex items-center gap-1.5 shrink-0">
           {!isArchived && (
             <select
@@ -385,14 +371,6 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
               {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           )}
-
-          {/* Expand chevron */}
-          <svg
-            className={`w-4 h-4 text-gray-400 transition-transform duration-150 ${expanded ? 'rotate-180' : ''}`}
-            fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-          </svg>
 
           {/* Kebab menu */}
           <div className="relative" ref={menuRef}>
@@ -436,7 +414,10 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
       </div>
 
       {lead.summary && (
-        <p className={`text-sm text-gray-600 mt-2 leading-snug ${!expanded ? 'line-clamp-2' : ''}`}>
+        <p
+          className={`text-sm text-gray-600 mt-2 leading-snug cursor-pointer ${!descExpanded ? 'line-clamp-2' : ''}`}
+          onClick={() => setDescExpanded(v => !v)}
+        >
           {lead.summary}
         </p>
       )}
@@ -447,7 +428,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
           ))}
         </div>
       )}
-      {expanded && baseFollowUp && !isArchived && (
+      {baseFollowUp && !isArchived && (
         <div className="mt-2 border-t border-gray-100 pt-2">
           <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
             <div className="flex items-center justify-between mb-1">
@@ -509,12 +490,9 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
           </div>
         </div>
       )}
-      {expanded && rawText && (
+      {rawText && (
         <div className="mt-2 border-t border-gray-100 pt-2">
-          <button
-            onClick={(e) => { e.stopPropagation(); setShowRaw(p => !p); }}
-            className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
-          >
+          <button onClick={() => setShowRaw(p => !p)} className="text-xs text-gray-400 hover:text-gray-600 transition-colors">
             {showRaw ? 'Hide original message' : 'View original message'}
           </button>
           {showRaw && <p className="mt-2 text-xs text-gray-400 leading-relaxed whitespace-pre-wrap">{rawText}</p>}
