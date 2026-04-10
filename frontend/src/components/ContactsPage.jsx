@@ -235,11 +235,6 @@ export default function ContactsPage({ leads }) {
                           : null}
                       </p>
                     )}
-                    {contact.context && (
-                      <p className="text-[11px] text-gray-400 truncate mt-0.5 leading-snug">
-                        {contact.context}
-                      </p>
-                    )}
                   </div>
 
                   {/* Right: hover action + meta + chevron */}
