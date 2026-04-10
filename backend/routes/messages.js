@@ -51,15 +51,26 @@ router.get('/', (req, res) => {
       ORDER BY m.created_at DESC
     `).all();
 
-    return res.json(rows.map(r => ({
-      id:             r.phone,          // phone as stable conversation id
-      phone:          r.phone,
-      name:           r.contact_name || r.phone,
-      lastMessage:    r.lastMessage,
-      lastMessageDir: r.lastMessageDir,
-      timestamp:      r.timestamp,
-      unread:         r.unread ?? 0,
-    })));
+    return res.json(rows.map(r => {
+      // Normalize to 10-digit for contacts table lookup (contacts PK is always 10-digit)
+      const digits = (r.phone || '').replace(/\D/g, '');
+      const normalized10 = (digits.length === 11 && digits[0] === '1') ? digits.slice(1) : digits;
+
+      // Priority 1: contractor-saved name from contacts table
+      const contact = normalized10
+        ? db.prepare(`SELECT name FROM contacts WHERE phone = ? AND name IS NOT NULL AND trim(name) != ''`).get(normalized10)
+        : null;
+
+      return {
+        id:             r.phone,
+        phone:          r.phone,
+        name:           contact?.name || r.contact_name || r.phone,
+        lastMessage:    r.lastMessage,
+        lastMessageDir: r.lastMessageDir,
+        timestamp:      r.timestamp,
+        unread:         r.unread ?? 0,
+      };
+    }));
   } catch (err) {
     console.error('[Messages] GET / error:', err.message);
     return res.status(500).json({ error: 'Failed to fetch conversations' });

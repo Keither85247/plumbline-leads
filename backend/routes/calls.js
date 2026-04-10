@@ -24,21 +24,30 @@ router.get('/', (req, res) => {
       if (c.from_number) {
         const normalized = normalizePhone(c.from_number);
         if (normalized) {
-          // Find the most recent lead whose phone or callback number matches
-          const lead = db.prepare(`
-            SELECT contact_name FROM leads
-            WHERE (
-              REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone_number,    '+',''),'-',''),' ',''),'(',''),')','') = ?
-              OR
-              REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(callback_number, '+',''),'-',''),' ',''),'(',''),')','') = ?
-            )
-            AND contact_name IS NOT NULL
-            AND contact_name != 'Unknown'
-            ORDER BY created_at DESC
-            LIMIT 1
-          `).get(normalized, normalized);
+          // Priority 1: contractor-saved name from contacts table
+          const contact = db.prepare(
+            `SELECT name FROM contacts WHERE phone = ? AND name IS NOT NULL AND trim(name) != ''`
+          ).get(normalized);
 
-          if (lead) contactName = lead.contact_name;
+          if (contact) {
+            contactName = contact.name;
+          } else {
+            // Priority 2: AI-extracted name from leads table
+            const lead = db.prepare(`
+              SELECT contact_name FROM leads
+              WHERE (
+                REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone_number,    '+',''),'-',''),' ',''),'(',''),')','') = ?
+                OR
+                REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(callback_number, '+',''),'-',''),' ',''),'(',''),')','') = ?
+              )
+              AND contact_name IS NOT NULL
+              AND contact_name != 'Unknown'
+              ORDER BY created_at DESC
+              LIMIT 1
+            `).get(normalized, normalized);
+
+            if (lead) contactName = lead.contact_name;
+          }
         }
       }
 
