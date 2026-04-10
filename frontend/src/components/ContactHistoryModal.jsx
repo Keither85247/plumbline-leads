@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { normalizePhone, parseTimestamp } from '../utils/phone';
-import { getCallsByPhone, getEmailsByPhone, getContactProfile, saveContactProfile } from '../api';
+import { getCallsByPhone, getEmailsByPhone, getMessageThread, getContactProfile, saveContactProfile } from '../api';
 import PhoneActionSheet from './PhoneActionSheet';
 import AddressAutocomplete from './AddressAutocomplete';
 
@@ -323,6 +323,7 @@ function ProfileField({ icon, label, value }) {
 export default function ContactHistoryModal({ phone, leads, onClose, onProfileSaved }) {
   const [callNotes,        setCallNotes]        = useState([]);
   const [emailItems,       setEmailItems]       = useState([]);
+  const [textMessages,     setTextMessages]     = useState([]);
   const [actionSheetPhone, setActionSheetPhone] = useState(null);
 
   useEffect(() => {
@@ -333,6 +334,9 @@ export default function ContactHistoryModal({ phone, leads, onClose, onProfileSa
     getEmailsByPhone(phone)
       .then(setEmailItems)
       .catch(err => console.error('Failed to load email history:', err));
+    getMessageThread(phone)
+      .then(setTextMessages)
+      .catch(err => console.error('Failed to load text messages:', err));
   }, [phone]);
 
   if (!phone) return null;
@@ -350,11 +354,20 @@ export default function ContactHistoryModal({ phone, leads, onClose, onProfileSa
   const contact    = history[0] || {};
   const primaryPhone = contact.callback_number || contact.phone_number || phone;
 
-  // Merge leads, calls, and emails into a single timeline, newest first
+  // Wrap the full SMS thread as a single timeline entry so it doesn't flood history
+  const textThread = textMessages.length > 0 ? [{
+    _type:      'text-thread',
+    id:         `text-thread-${phone}`,
+    created_at: textMessages[textMessages.length - 1].created_at, // most recent = last
+    messages:   textMessages,
+  }] : [];
+
+  // Merge leads, calls, emails, and texts into a single timeline, newest first
   const timeline = [
-    ...history.map(l    => ({ ...l, _type: 'lead'  })),
-    ...callNotes.map(c  => ({ ...c, _type: 'call'  })),
-    ...emailItems.map(e => ({ ...e, _type: 'email' })),
+    ...history.map(l    => ({ ...l, _type: 'lead'       })),
+    ...callNotes.map(c  => ({ ...c, _type: 'call'       })),
+    ...emailItems.map(e => ({ ...e, _type: 'email'      })),
+    ...textThread,
   ].sort((a, b) => parseTimestamp(b.created_at) - parseTimestamp(a.created_at));
 
   return (
@@ -409,9 +422,10 @@ export default function ContactHistoryModal({ phone, leads, onClose, onProfileSa
               <>
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">History</p>
                 {timeline.map(item =>
-                  item._type === 'call'  ? <CallNoteItem  key={`call-${item.id}`}  item={item} /> :
-                  item._type === 'email' ? <EmailItem     key={`email-${item.id}`} item={item} /> :
-                                           <LeadItem      key={`lead-${item.id}`}  item={item} />
+                  item._type === 'call'        ? <CallNoteItem  key={`call-${item.id}`}        item={item} /> :
+                  item._type === 'email'       ? <EmailItem     key={`email-${item.id}`}       item={item} /> :
+                  item._type === 'text-thread' ? <TextThreadItem key={`texts-${item.id}`}      item={item} /> :
+                                                 <LeadItem      key={`lead-${item.id}`}        item={item} />
                 )}
               </>
             )}
@@ -523,6 +537,74 @@ function CallNoteItem({ item: call }) {
             <p className="mt-1.5 text-xs text-gray-400 leading-relaxed whitespace-pre-wrap">
               {call.transcript}
             </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TextThreadItem({ item }) {
+  const [expanded, setExpanded] = useState(false);
+  const messages = item.messages || [];
+  const latest   = messages[messages.length - 1];
+  const preview  = latest?.body || '';
+  const count    = messages.length;
+
+  // Show up to 20 most recent messages when expanded
+  const shown = expanded ? messages.slice(-20) : [];
+
+  return (
+    <div
+      className="border border-teal-100 rounded-lg bg-teal-50 overflow-hidden cursor-pointer"
+      onClick={() => setExpanded(e => !e)}
+    >
+      {/* Header row */}
+      <div className="flex items-start justify-between gap-3 p-3.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="text-xs text-gray-400">
+              {parseTimestamp(latest?.created_at).toLocaleDateString('en-US', {
+                month: 'short', day: 'numeric', year: 'numeric',
+              })}
+            </span>
+            <span className="text-xs text-gray-300">·</span>
+            <span className="text-xs font-semibold text-teal-700 bg-teal-100 rounded px-1.5 py-0.5">
+              Text Conversation
+            </span>
+            <span className="text-xs text-gray-400">{count} {count === 1 ? 'message' : 'messages'}</span>
+          </div>
+          <p className="text-sm text-gray-600 leading-snug truncate">{preview}</p>
+        </div>
+        <svg
+          className={`w-4 h-4 text-teal-300 shrink-0 mt-0.5 transition-transform ${expanded ? 'rotate-180' : ''}`}
+          fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </div>
+
+      {/* Expanded chat bubbles */}
+      {expanded && (
+        <div className="px-3.5 pb-3.5 border-t border-teal-100 pt-2.5 space-y-1.5">
+          {shown.map((msg, i) => (
+            <div key={msg.id ?? i} className={`flex ${msg.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}>
+              <div className={`max-w-[82%] rounded-2xl px-3 py-2 ${
+                msg.direction === 'outbound'
+                  ? 'bg-teal-500 text-white rounded-br-sm'
+                  : 'bg-white text-gray-800 rounded-bl-sm border border-teal-100'
+              }`}>
+                <p className="text-xs leading-snug">{msg.body}</p>
+                <p className={`text-[10px] mt-1 leading-none ${msg.direction === 'outbound' ? 'text-teal-200' : 'text-gray-400'}`}>
+                  {parseTimestamp(msg.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  {' '}
+                  {parseTimestamp(msg.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                </p>
+              </div>
+            </div>
+          ))}
+          {count > 20 && !expanded && (
+            <p className="text-xs text-gray-400 text-center">Showing last 20 of {count} messages</p>
           )}
         </div>
       )}
