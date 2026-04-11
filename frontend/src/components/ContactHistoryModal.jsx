@@ -347,7 +347,9 @@ export default function ContactHistoryModal({ phone, leads, onClose, onProfileSa
     .filter(l => {
       const primary  = normalizePhone(l.callback_number || l.phone_number);
       const fallback = normalizePhone(l.phone_number);
-      return primary === normalizedTarget || fallback === normalizedTarget;
+      if (primary !== normalizedTarget && fallback !== normalizedTarget) return false;
+      // SMS-sourced leads are already represented by the TextThreadItem — skip them
+      return l.source !== 'sms';
     })
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
