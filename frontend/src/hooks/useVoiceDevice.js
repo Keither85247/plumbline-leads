@@ -201,18 +201,31 @@ export function useVoiceDevice() {
       return;
     }
 
-    // Pre-warm the Render backend so it is fully awake when Twilio fires the
-    // TwiML webhook (~1 second after device.connect). On free-tier hosts that
-    // sleep between requests, skipping this step causes error 31000 because
-    // the webhook returns a 502 while the host is still starting up.
-    try {
-      console.log('[VoiceDevice] Pre-call health ping starting…');
-      const t0 = Date.now();
-      await fetch(`${API_BASE}/health`);
-      console.log(`[VoiceDevice] Pre-call health ping OK in ${Date.now() - t0}ms`);
-    } catch (pingErr) {
-      // Non-fatal — the backend may be reachable for Twilio even if this fails.
-      console.warn('[VoiceDevice] Pre-call health ping failed — proceeding anyway:', pingErr.message);
+    // Pre-warm the Render backend: retry until it responds 200 (up to 60s).
+    // Render free-tier returns 502 during cold starts (~30s) and fetch() throws
+    // immediately on a 502 with CORS headers missing. We must loop — not just
+    // try once — so the webhook arrives to a live process, not a waking one.
+    {
+      const TIMEOUT_MS  = 60_000;
+      const RETRY_MS    = 2_000;
+      const deadline    = Date.now() + TIMEOUT_MS;
+      let   backendReady = false;
+      console.log('[VoiceDevice] Waiting for backend to be ready…');
+      setStatus('registering'); // reuse 'registering' label so Dialer shows "Connecting to voice…"
+
+      while (Date.now() < deadline) {
+        try {
+          const res = await fetch(`${API_BASE}/health`);
+          if (res.ok) { backendReady = true; break; }
+        } catch { /* 502 / CORS error while Render is waking — keep retrying */ }
+        await new Promise(r => setTimeout(r, RETRY_MS));
+      }
+
+      if (!backendReady) {
+        console.warn('[VoiceDevice] Backend did not become ready in time — proceeding anyway');
+      } else {
+        console.log(`[VoiceDevice] Backend ready — placing call`);
+      }
     }
 
     const e164 = toE164(to);
