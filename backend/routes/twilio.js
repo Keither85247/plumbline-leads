@@ -419,6 +419,72 @@ Return a JSON object with exactly these fields:
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/twilio/diag
+// Diagnostic endpoint — verifies the full call-flow configuration without
+// placing an actual call. Hit this in a browser to see exactly what is wrong.
+// ---------------------------------------------------------------------------
+router.get('/diag', async (req, res) => {
+  const accountSid      = process.env.TWILIO_ACCOUNT_SID;
+  const authToken       = process.env.TWILIO_AUTH_TOKEN;
+  const apiKeySid       = process.env.TWILIO_API_KEY_SID   || process.env.TWILIO_API_KEY;
+  const apiKeySecret    = process.env.TWILIO_API_KEY_SECRET || process.env.TWILIO_API_SECRET;
+  const twimlAppSid     = process.env.TWILIO_TWIML_APP_SID;
+  const phoneNumber     = process.env.TWILIO_PHONE_NUMBER;
+  const baseUrl         = process.env.TWILIO_BASE_URL;
+
+  const envCheck = {
+    TWILIO_ACCOUNT_SID:   accountSid  ? '✓ set' : '✗ MISSING',
+    TWILIO_AUTH_TOKEN:    authToken   ? '✓ set' : '✗ MISSING',
+    TWILIO_API_KEY_SID:   apiKeySid   ? '✓ set' : '✗ MISSING',
+    TWILIO_API_KEY_SECRET:apiKeySecret? '✓ set' : '✗ MISSING',
+    TWILIO_TWIML_APP_SID: twimlAppSid ? `✓ ${twimlAppSid}` : '✗ MISSING',
+    TWILIO_PHONE_NUMBER:  phoneNumber ? `✓ ${phoneNumber}` : '✗ MISSING — calls will fail (no callerId)',
+    TWILIO_BASE_URL:      baseUrl     ? `✓ ${baseUrl}`     : '✗ MISSING',
+  };
+
+  const expectedVoiceUrl = baseUrl ? `${baseUrl}/api/twilio/voice-client` : '(TWILIO_BASE_URL not set)';
+
+  if (!accountSid || !authToken || !twimlAppSid) {
+    return res.json({ envCheck, twimlApp: null, expectedVoiceUrl, diagnosis: 'Cannot query Twilio — missing credentials or TwiML App SID' });
+  }
+
+  try {
+    const client = twilio(accountSid, authToken);
+    const app = await client.applications(twimlAppSid).fetch();
+
+    const voiceUrlMatch = app.voiceUrl === expectedVoiceUrl;
+    const voiceMethodOk = !app.voiceMethod || app.voiceMethod.toUpperCase() === 'POST';
+
+    return res.json({
+      envCheck,
+      twimlApp: {
+        sid:          app.sid,
+        friendlyName: app.friendlyName,
+        voiceUrl:     app.voiceUrl     || '(BLANK — THIS IS THE BUG)',
+        voiceMethod:  app.voiceMethod  || 'POST (default)',
+      },
+      expectedVoiceUrl,
+      voiceUrlMatch,
+      voiceMethodOk,
+      diagnosis: !app.voiceUrl
+        ? 'BUG: TwiML App Voice URL is blank. Set it to: ' + expectedVoiceUrl
+        : !voiceUrlMatch
+          ? 'BUG: TwiML App Voice URL mismatch. Expected: ' + expectedVoiceUrl + ' — Got: ' + app.voiceUrl
+          : !phoneNumber
+            ? 'WARNING: TWILIO_PHONE_NUMBER missing — outbound calls may fail (no callerId)'
+            : 'Configuration looks correct. If calls still fail, check Render logs for /voice-client.',
+    });
+  } catch (err) {
+    return res.json({
+      envCheck,
+      twimlApp: null,
+      expectedVoiceUrl,
+      diagnosis: `Twilio API error: ${err.message} — TWILIO_TWIML_APP_SID may be wrong or TWILIO_AUTH_TOKEN may be invalid`,
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/twilio/voice-client
 // TwiML App webhook — Twilio calls this URL when the browser Voice SDK places
 // an outbound call via device.connect({ params: { To: '+1...' } }).
