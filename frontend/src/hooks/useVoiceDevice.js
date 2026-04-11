@@ -113,7 +113,7 @@ export function useVoiceDevice() {
 
     call.on('error', (err) => {
       stopAllAlerts();
-      console.error('[VoiceDevice] Call error:', err.message);
+      console.error('[VoiceDevice] Call error — code:', err.code, '| message:', err.message, '| twilioError:', err.twilioError);
       setError(err.message);
       setActiveCall(null);
       setIncomingCall(null);
@@ -153,7 +153,7 @@ export function useVoiceDevice() {
       });
 
       device.on('error', (err) => {
-        console.error('[VoiceDevice] Device error:', err.message);
+        console.error('[VoiceDevice] Device error — code:', err.code, '| message:', err.message, '| twilioError:', err.twilioError);
         setError(err.message);
         setStatus('failed');
       });
@@ -206,10 +206,13 @@ export function useVoiceDevice() {
     // sleep between requests, skipping this step causes error 31000 because
     // the webhook returns a 502 while the host is still starting up.
     try {
+      console.log('[VoiceDevice] Pre-call health ping starting…');
+      const t0 = Date.now();
       await fetch(`${API_BASE}/health`);
-    } catch {
+      console.log(`[VoiceDevice] Pre-call health ping OK in ${Date.now() - t0}ms`);
+    } catch (pingErr) {
       // Non-fatal — the backend may be reachable for Twilio even if this fails.
-      console.warn('[VoiceDevice] Pre-call health ping failed — proceeding anyway');
+      console.warn('[VoiceDevice] Pre-call health ping failed — proceeding anyway:', pingErr.message);
     }
 
     const e164 = toE164(to);
