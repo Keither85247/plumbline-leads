@@ -307,7 +307,7 @@ export default function App() {
           {activeNav === 'timeline' && <TimelinePage onContactClick={setCallsPagePhone} />}
 
           {activeNav === 'contacts' && (
-            <ContactsPage leads={leads} />
+            <ContactsPage leads={leads} voiceDevice={voiceDevice} />
           )}
         </main>
       </div>

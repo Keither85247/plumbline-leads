@@ -39,7 +39,7 @@ function extractContext(summary) {
   return first.length > 4 ? first : null;
 }
 
-export default function ContactsPage({ leads }) {
+export default function ContactsPage({ leads, voiceDevice = {} }) {
   const [calls,            setCalls]            = useState([]);
   // profileNames: Map of normalizedPhone → saved name from contacts table
   const [profileNames,     setProfileNames]     = useState(new Map());
@@ -296,6 +296,7 @@ export default function ContactsPage({ leads }) {
       {actionSheetPhone && (
         <PhoneActionSheet
           phone={actionSheetPhone}
+          onCall={voiceDevice.makeCall ? (phone) => voiceDevice.makeCall(phone) : undefined}
           onViewHistory={() => {
             setSelectedPhone(actionSheetPhone);
             setActionSheetPhone(null);
