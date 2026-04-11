@@ -323,6 +323,20 @@ export default function App() {
         }}
       />
 
+      {/* Voice call error toast — shown when a call attempt fails from any page */}
+      {voiceDevice.status === 'failed' && voiceDevice.error && (
+        <div className="fixed inset-x-0 top-16 z-50 flex justify-center px-4 pointer-events-none">
+          <div className="w-full max-w-sm bg-red-50 border border-red-200 rounded-xl shadow-lg px-4 py-3 flex items-center gap-3 pointer-events-auto">
+            <svg className="w-5 h-5 text-red-500 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            </svg>
+            <p className="flex-1 text-sm text-red-700 font-medium">
+              Call failed — {voiceDevice.error}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Inbound call banner — shown over everything when a call is incoming or active */}
       {(voiceDevice.status === 'incoming' || voiceDevice.status === 'connected') && (
         <div className="fixed inset-x-0 top-16 z-50 flex justify-center px-4">

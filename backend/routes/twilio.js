@@ -432,43 +432,54 @@ Return a JSON object with exactly these fields:
 // ---------------------------------------------------------------------------
 router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) => {
   const { To, CallSid } = req.body;
+  console.log(`[Twilio] /voice-client received — To: ${To}, CallSid: ${CallSid}`);
+
   const twiml = new VoiceResponse();
   const baseUrl = process.env.TWILIO_BASE_URL;
   const callerId = process.env.TWILIO_PHONE_NUMBER;
 
-  if (!To) {
-    console.error('[Twilio] /voice-client: missing To param');
-    twiml.say('No destination number provided.');
+  try {
+    if (!To) {
+      console.error('[Twilio] /voice-client: missing To param');
+      twiml.say('No destination number provided.');
+      return res.type('text/xml').send(twiml.toString());
+    }
+
+    const isClient = To.startsWith('client:');
+    const destination = isClient ? To.replace(/^client:/, '') : To;
+
+    if (isClient) {
+      console.log(`[Twilio] /voice-client: routing to browser client "${destination}" (CallSid: ${CallSid})`);
+    } else {
+      console.log(`[Twilio] /voice-client: dialing PSTN number ${To} (CallSid: ${CallSid})`);
+    }
+
+    logCall(To, CallSid, 'Outbound');
+
+    const dial = twiml.dial({
+      ...(callerId && !isClient && { callerId }),
+      record: 'record-from-answer',
+      ...(baseUrl && {
+        recordingStatusCallback:       `${baseUrl}/api/twilio/recording`,
+        recordingStatusCallbackMethod: 'POST',
+      }),
+    });
+
+    if (isClient) {
+      dial.client(destination);
+    } else {
+      dial.number(To);
+    }
+
+    console.log(`[Twilio] /voice-client: responding with TwiML — callerId: ${callerId || 'none'}, baseUrl: ${baseUrl || 'none'}`);
     return res.type('text/xml').send(twiml.toString());
+  } catch (err) {
+    console.error('[Twilio] /voice-client error:', err.message, err.stack);
+    // Always return valid TwiML — a 500 here causes Twilio SDK error 31000
+    const errTwiml = new VoiceResponse();
+    errTwiml.say('An error occurred while connecting your call. Please try again.');
+    return res.type('text/xml').send(errTwiml.toString());
   }
-
-  const isClient = To.startsWith('client:');
-  const destination = isClient ? To.replace(/^client:/, '') : To;
-
-  if (isClient) {
-    console.log(`[Twilio] /voice-client: routing to browser client "${destination}" (CallSid: ${CallSid})`);
-  } else {
-    console.log(`[Twilio] /voice-client: dialing PSTN number ${To} (CallSid: ${CallSid})`);
-  }
-
-  logCall(To, CallSid, 'Outbound');
-
-  const dial = twiml.dial({
-    ...(callerId && !isClient && { callerId }),
-    record: 'record-from-answer',
-    ...(baseUrl && {
-      recordingStatusCallback:       `${baseUrl}/api/twilio/recording`,
-      recordingStatusCallbackMethod: 'POST',
-    }),
-  });
-
-  if (isClient) {
-    dial.client(destination);
-  } else {
-    dial.number(To);
-  }
-
-  res.type('text/xml').send(twiml.toString());
 });
 
 // ---------------------------------------------------------------------------

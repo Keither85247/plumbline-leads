@@ -40,6 +40,11 @@ function extractContext(summary) {
 }
 
 export default function ContactsPage({ leads, voiceDevice = {} }) {
+  const {
+    makeCall,
+    status: deviceStatus = 'idle',
+  } = voiceDevice;
+  const isBusy = ['dialing', 'ringing', 'connected', 'ended'].includes(deviceStatus);
   const [calls,            setCalls]            = useState([]);
   // profileNames: Map of normalizedPhone → saved name from contacts table
   const [profileNames,     setProfileNames]     = useState(new Map());
@@ -296,7 +301,7 @@ export default function ContactsPage({ leads, voiceDevice = {} }) {
       {actionSheetPhone && (
         <PhoneActionSheet
           phone={actionSheetPhone}
-          onCall={voiceDevice.makeCall ? (phone) => voiceDevice.makeCall(phone) : undefined}
+          onCall={makeCall && !isBusy ? (phone) => makeCall(phone) : undefined}
           onViewHistory={() => {
             setSelectedPhone(actionSheetPhone);
             setActionSheetPhone(null);

@@ -200,6 +200,18 @@ export function useVoiceDevice() {
       setError('Voice device not initialized. Tap the mic button to connect.');
       return;
     }
+
+    // Pre-warm the Render backend so it is fully awake when Twilio fires the
+    // TwiML webhook (~1 second after device.connect). On free-tier hosts that
+    // sleep between requests, skipping this step causes error 31000 because
+    // the webhook returns a 502 while the host is still starting up.
+    try {
+      await fetch(`${API_BASE}/health`);
+    } catch {
+      // Non-fatal — the backend may be reachable for Twilio even if this fails.
+      console.warn('[VoiceDevice] Pre-call health ping failed — proceeding anyway');
+    }
+
     const e164 = toE164(to);
     setRemoteIdentity(e164);
     setStatus('dialing');
