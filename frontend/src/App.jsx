@@ -11,7 +11,7 @@ import ContactHistoryModal from './components/ContactHistoryModal';
 import OutboundNoteModal from './components/OutboundNoteModal';
 import InboxLayout from './components/inbox/InboxLayout';
 import EmailPage from './components/EmailPage';
-import { getLeads, saveOutboundNote, getCounts } from './api';
+import { getLeads, saveOutboundNote, getCounts, API_BASE } from './api';
 import { translations } from './i18n';
 import { useVoiceDevice } from './hooks/useVoiceDevice';
 
@@ -172,6 +172,25 @@ export default function App() {
     return () => { cancelled = true; clearInterval(t); };
   }, []);
 
+  // ── Backend health indicator ──────────────────────────────────────────────
+  // 'checking' → gray pulse  |  'up' → green  |  'down' → red
+  const [backendStatus, setBackendStatus] = useState('checking');
+
+  useEffect(() => {
+    let cancelled = false;
+    async function ping() {
+      try {
+        const res = await fetch(`${API_BASE}/health`, { cache: 'no-store' });
+        if (!cancelled) setBackendStatus(res.ok ? 'up' : 'down');
+      } catch {
+        if (!cancelled) setBackendStatus('down');
+      }
+    }
+    ping();
+    const t = setInterval(ping, 30_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
+
   const t = translations[language] || translations.en;
 
   const handleLanguageChange = (lang) => {
@@ -233,6 +252,26 @@ export default function App() {
             <span className="text-gray-900 font-bold text-lg tracking-tight">PlumbLine</span>
             <span className="text-gray-400 font-semibold text-lg tracking-tight"> Leads</span>
           </div>
+          {/* Backend status dot */}
+          <div className="flex items-center gap-1.5 mr-1" title={
+            backendStatus === 'up'       ? 'Backend online' :
+            backendStatus === 'down'     ? 'Backend offline' :
+            'Checking backend…'
+          }>
+            <span className={`w-2 h-2 rounded-full ${
+              backendStatus === 'up'   ? 'bg-green-400' :
+              backendStatus === 'down' ? 'bg-red-500'   :
+              'bg-gray-300 animate-pulse'
+            }`} />
+            <span className={`text-[11px] font-medium hidden sm:inline ${
+              backendStatus === 'up'   ? 'text-green-600' :
+              backendStatus === 'down' ? 'text-red-500'   :
+              'text-gray-400'
+            }`}>
+              {backendStatus === 'up' ? 'Online' : backendStatus === 'down' ? 'Offline' : '…'}
+            </span>
+          </div>
+
           <button
             onClick={() => setSettingsOpen(true)}
             className="p-2 text-gray-500 hover:text-gray-700 transition-colors rounded-lg hover:bg-gray-100"
