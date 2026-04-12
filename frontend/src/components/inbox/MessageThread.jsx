@@ -89,7 +89,7 @@ export default function MessageThread({
     <div className="flex flex-col h-full min-w-0 pb-[calc(56px+env(safe-area-inset-bottom))] md:pb-0">
 
       {/* ── Thread header ──────────────────────────────────────────────────── */}
-      <div className="shrink-0 h-14 border-b border-gray-100 flex items-center px-4 gap-3 bg-white">
+      <div className="shrink-0 h-14 border-b border-gray-100 flex items-center px-4 gap-3 bg-white sticky top-0 z-10">
 
         {/* Back button — mobile only */}
         <button
