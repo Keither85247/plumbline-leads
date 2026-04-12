@@ -208,7 +208,7 @@ export default function InboxLayout() {
 
       {/* ── Center: message thread ──────────────────────────────── */}
       <div className={`
-        flex-1 min-w-0 flex flex-col
+        flex-1 min-w-0 flex flex-col overflow-hidden
         ${mobileView === 'list' ? 'hidden md:flex' : 'flex'}
       `}>
         {selected
