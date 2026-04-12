@@ -272,12 +272,25 @@ export async function getMessageThread(phone) {
   return res.json();
 }
 
-/** Sends an outbound SMS via Twilio and persists it. */
-export async function sendMessage(to, body) {
+/**
+ * Sends an outbound SMS or MMS via Twilio and persists it.
+ * Always uses FormData so the backend multer middleware works consistently
+ * for both text-only and media sends.
+ *
+ * @param {string}   to    Destination phone number
+ * @param {string}   body  Message text (may be empty if files provided)
+ * @param {File[]}   files Optional image attachments (max 5, ≤5 MB each)
+ */
+export async function sendMessage(to, body, files = []) {
+  const form = new FormData();
+  form.append('to', to);
+  if (body) form.append('body', body);
+  files.forEach(file => form.append('media', file, file.name));
+
   const res = await fetch(`${API_BASE}/messages/send`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to, body }),
+    // Do NOT set Content-Type — browser sets it automatically with boundary
+    body: form,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

@@ -211,18 +211,28 @@ router.post('/missed-call', express.urlencoded({ extended: true }), (req, res) =
 // ---------------------------------------------------------------------------
 router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => {
   const { From, Body } = req.body;
+  const numMedia = parseInt(req.body.NumMedia || '0', 10);
 
-  if (!Body || Body.trim().length === 0) {
+  // Drop messages that have neither text nor media
+  if (!Body?.trim() && numMedia === 0) {
     return res.status(200).send('OK');
   }
+
+  // Collect inbound MMS media URLs (Twilio sends MediaUrl0, MediaUrl1, …)
+  const inboundMediaUrls = [];
+  for (let i = 0; i < numMedia; i++) {
+    const url = req.body[`MediaUrl${i}`];
+    if (url) inboundMediaUrls.push(url);
+  }
+  const mediaUrlsJson = inboundMediaUrls.length > 0 ? JSON.stringify(inboundMediaUrls) : null;
 
   // Always persist the inbound message FIRST so it appears in the inbox
   // regardless of lead creation logic below.
   let messageRowId = null;
   try {
     const msgRow = db.prepare(
-      "INSERT INTO messages (phone, direction, body, status) VALUES (?, 'inbound', ?, 'received')"
-    ).run(From || 'unknown', Body.trim());
+      "INSERT INTO messages (phone, direction, body, status, media_urls) VALUES (?, 'inbound', ?, 'received', ?)"
+    ).run(From || 'unknown', (Body || '').trim(), mediaUrlsJson);
     messageRowId = msgRow.lastInsertRowid;
   } catch (err) {
     console.error('[Twilio] Failed to save inbound SMS to messages table:', err.message);

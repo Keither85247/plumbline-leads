@@ -83,14 +83,20 @@ export default function InboxLayout() {
   }, []);
 
   // ── Send a message in the current thread ───────────────────────────────────
-  const handleSend = useCallback(async (text) => {
-    if (!selectedId || !text.trim()) return;
+  const handleSend = useCallback(async (text, files = []) => {
+    if (!selectedId || (!text.trim() && files.length === 0)) return;
+
+    // Build object URLs for any attached images so we can show them immediately
+    const optimisticMediaUrls = files.length > 0
+      ? JSON.stringify(files.map(f => URL.createObjectURL(f)))
+      : null;
 
     // Optimistic UI update first
     const optimisticMsg = {
-      id:        `optimistic-${Date.now()}`,
-      body:      text.trim(),
-      direction: 'outbound',
+      id:         `optimistic-${Date.now()}`,
+      body:       text.trim(),
+      media_urls: optimisticMediaUrls,
+      direction:  'outbound',
       created_at: new Date().toISOString(),
     };
     setMessageMap(prev => ({
@@ -99,15 +105,19 @@ export default function InboxLayout() {
     }));
     setConversations(prev => prev.map(c =>
       c.id === selectedId
-        ? { ...c, lastMessage: text.trim(), lastMessageDir: 'outbound', timestamp: new Date().toISOString() }
+        ? { ...c, lastMessage: text.trim() || '📷 Photo', lastMessageDir: 'outbound', timestamp: new Date().toISOString() }
         : c
     ));
 
     // Real send
     try {
-      await sendMessage(selectedId, text.trim());
+      await sendMessage(selectedId, text.trim(), files);
     } catch (err) {
       console.error('[Inbox] Send failed:', err.message);
+      // Revoke optimistic object URLs
+      if (optimisticMediaUrls) {
+        JSON.parse(optimisticMediaUrls).forEach(u => URL.revokeObjectURL(u));
+      }
       // Remove optimistic message on failure
       setMessageMap(prev => ({
         ...prev,

@@ -1,8 +1,18 @@
 import { useState, useEffect } from 'react';
 import { normalizePhone, parseTimestamp } from '../utils/phone';
-import { getCallsByPhone, getEmailsByPhone, getMessageThread, getContactProfile, saveContactProfile } from '../api';
+import { API_BASE, getCallsByPhone, getEmailsByPhone, getMessageThread, getContactProfile, saveContactProfile } from '../api';
 import PhoneActionSheet from './PhoneActionSheet';
 import AddressAutocomplete from './AddressAutocomplete';
+
+/** Resolve a media URL — Twilio CDN URLs need to be proxied through our backend. */
+function resolveMediaUrl(url) {
+  if (!url) return url;
+  if (url.startsWith('blob:')) return url;
+  if (url.includes('api.twilio.com') || url.includes('twilio.com/2010')) {
+    return `${API_BASE}/messages/media-proxy?url=${encodeURIComponent(url)}`;
+  }
+  return url;
+}
 
 const STATUS_COLORS = {
   New:       'bg-blue-100 text-blue-800',
@@ -550,7 +560,8 @@ function TextThreadItem({ item }) {
   const [expanded, setExpanded] = useState(false);
   const messages = item.messages || [];
   const latest   = messages[messages.length - 1];
-  const preview  = latest?.body || '';
+  const hasLatestMedia = latest?.media_urls && latest.media_urls !== 'null';
+  const preview  = latest?.body || (hasLatestMedia ? '📷 Photo' : '');
   const count    = messages.length;
 
   // Show up to 20 most recent messages when expanded
@@ -589,22 +600,67 @@ function TextThreadItem({ item }) {
       {/* Expanded chat bubbles */}
       {expanded && (
         <div className="px-3.5 pb-3.5 border-t border-teal-100 pt-2.5 space-y-1.5">
-          {shown.map((msg, i) => (
-            <div key={msg.id ?? i} className={`flex ${msg.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[82%] rounded-2xl px-3 py-2 ${
-                msg.direction === 'outbound'
-                  ? 'bg-teal-500 text-white rounded-br-sm'
-                  : 'bg-white text-gray-800 rounded-bl-sm border border-teal-100'
-              }`}>
-                <p className="text-xs leading-snug">{msg.body}</p>
-                <p className={`text-[10px] mt-1 leading-none ${msg.direction === 'outbound' ? 'text-teal-200' : 'text-gray-400'}`}>
-                  {parseTimestamp(msg.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  {' '}
-                  {parseTimestamp(msg.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-                </p>
+          {shown.map((msg, i) => {
+            const isOut = msg.direction === 'outbound';
+
+            // Parse media_urls for this message
+            let mediaUrls = [];
+            if (msg.media_urls) {
+              try {
+                const parsed = typeof msg.media_urls === 'string'
+                  ? JSON.parse(msg.media_urls)
+                  : msg.media_urls;
+                if (Array.isArray(parsed)) mediaUrls = parsed;
+              } catch {}
+            }
+
+            return (
+              <div key={msg.id ?? i} className={`flex flex-col ${isOut ? 'items-end' : 'items-start'}`}>
+
+                {/* Media images */}
+                {mediaUrls.length > 0 && (
+                  <div className={`flex flex-wrap gap-1 mb-1 max-w-[82%] ${isOut ? 'justify-end' : 'justify-start'}`}>
+                    {mediaUrls.map((url, j) => (
+                      <a key={j} href={resolveMediaUrl(url)} target="_blank" rel="noopener noreferrer"
+                         className="block rounded-xl overflow-hidden border border-white/20">
+                        <img
+                          src={resolveMediaUrl(url)}
+                          alt="MMS attachment"
+                          className="max-w-[140px] max-h-[140px] object-cover block"
+                          loading="lazy"
+                        />
+                      </a>
+                    ))}
+                  </div>
+                )}
+
+                {/* Text bubble */}
+                {msg.body && (
+                  <div className={`max-w-[82%] rounded-2xl px-3 py-2 ${
+                    isOut
+                      ? 'bg-teal-500 text-white rounded-br-sm'
+                      : 'bg-white text-gray-800 rounded-bl-sm border border-teal-100'
+                  }`}>
+                    <p className="text-xs leading-snug">{msg.body}</p>
+                    <p className={`text-[10px] mt-1 leading-none ${isOut ? 'text-teal-200' : 'text-gray-400'}`}>
+                      {parseTimestamp(msg.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                      {' '}
+                      {parseTimestamp(msg.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                    </p>
+                  </div>
+                )}
+
+                {/* Timestamp shown on media-only messages (no text bubble) */}
+                {!msg.body && mediaUrls.length > 0 && (
+                  <p className={`text-[10px] mt-0.5 leading-none ${isOut ? 'text-teal-400' : 'text-gray-400'}`}>
+                    {parseTimestamp(msg.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    {' '}
+                    {parseTimestamp(msg.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                  </p>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
           {count > 20 && !expanded && (
             <p className="text-xs text-gray-400 text-center">Showing last 20 of {count} messages</p>
           )}

@@ -175,6 +175,8 @@ try { db.exec('ALTER TABLE messages ADD COLUMN lead_id INTEGER REFERENCES leads(
 try { db.exec('ALTER TABLE messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0'); } catch {}
 // Seen tracking for missed calls — is_seen = 1 once the contractor views the Recent list
 try { db.exec('ALTER TABLE calls ADD COLUMN is_seen INTEGER NOT NULL DEFAULT 0'); } catch {}
+// MMS support — JSON array of media URLs (outbound: our CDN path; inbound: Twilio CDN URLs)
+try { db.exec('ALTER TABLE messages ADD COLUMN media_urls TEXT'); } catch {}
 
 // ── User accounts (multi-tenant scaffolding) ──────────────────────────────────
 // The app starts as single-user; these tables/columns prepare it for multi-user.
