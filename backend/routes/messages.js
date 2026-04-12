@@ -244,26 +244,32 @@ router.post('/send', upload.array('media', 5), async (req, res) => {
     return res.status(500).json({ error: 'Twilio credentials are not configured' });
   }
 
-  // Write uploaded files to temp dir and build public URLs for Twilio
+  // Write uploaded files to temp dir and build public URLs for Twilio.
+  // All of this is inside the try so file-write failures are caught and
+  // returned as JSON (not an unhandled Express HTML 500).
   const mediaUrls = [];
   const tempPaths = [];
 
-  for (const file of files) {
-    const ext      = file.mimetype.split('/')[1].replace('jpeg', 'jpg');
-    const name     = `mms-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
-    const filePath = path.join(MMS_TMP_DIR, name);
-    fs.writeFileSync(filePath, file.buffer);
-    tempPaths.push(filePath);
-    mediaUrls.push(`${baseUrl}/api/messages/media/${name}`);
-  }
-
   try {
+    for (const file of files) {
+      const ext      = file.mimetype.split('/')[1].replace('jpeg', 'jpg');
+      const name     = `mms-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
+      const filePath = path.join(MMS_TMP_DIR, name);
+      fs.writeFileSync(filePath, file.buffer);
+      tempPaths.push(filePath);
+      const publicUrl = `${baseUrl}/api/messages/media/${name}`;
+      mediaUrls.push(publicUrl);
+      console.log(`[Messages] MMS temp file written: ${filePath} → public URL: ${publicUrl}`);
+    }
+
     const params = {
       body: (body || '').trim(),
       from: fromNumber,
       to:   toE164,
     };
     if (mediaUrls.length > 0) params.mediaUrl = mediaUrls;
+
+    console.log(`[Messages] Calling Twilio messages.create — to: ${toE164}, body: "${params.body}", mediaUrl: ${JSON.stringify(mediaUrls)}`);
 
     const message = await client.messages.create(params);
 
@@ -284,9 +290,12 @@ router.post('/send', upload.array('media', 5), async (req, res) => {
     console.log(`[Messages] Sent ${mediaUrls.length > 0 ? 'MMS' : 'SMS'} to ${toE164} — SID: ${message.sid}`);
     return res.json({ ok: true, id: row.lastInsertRowid, sid: message.sid });
   } catch (err) {
-    // Clean up temp files on failure
+    // Clean up any temp files that were written before the failure
     tempPaths.forEach(p => { try { fs.unlinkSync(p); } catch {} });
-    console.error('[Messages] Twilio send error:', err.message);
+    // Log the full Twilio error: message + code + moreInfo
+    const twilioCode = err.code || err.status || '';
+    const twilioMore = err.moreInfo || '';
+    console.error(`[Messages] Send error${twilioCode ? ` (Twilio ${twilioCode})` : ''}:`, err.message, twilioMore);
     return res.status(500).json({ error: err.message });
   }
 });
