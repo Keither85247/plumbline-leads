@@ -243,7 +243,7 @@ export default function App() {
 
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="h-dvh bg-gray-50 flex flex-col overflow-hidden">
 
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-4 md:px-6 sticky top-0 z-30 h-14 flex items-center">
