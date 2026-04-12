@@ -128,7 +128,7 @@ export default function InboxLayout() {
   }, [selectedId]);
 
   // ── Compose: start a new conversation or open an existing one ──────────────
-  const handleComposeSend = useCallback(async (phone, text) => {
+  const handleComposeSend = useCallback(async (phone, text, files = []) => {
     const normalizedPhone = phone.trim();
     const existing = conversations.find(c => c.phone === normalizedPhone);
 
@@ -140,7 +140,7 @@ export default function InboxLayout() {
         id:             normalizedPhone,
         phone:          normalizedPhone,
         name:           normalizedPhone,
-        lastMessage:    text,
+        lastMessage:    text || (files.length > 0 ? '📷 Photo' : ''),
         lastMessageDir: 'outbound',
         timestamp:      new Date().toISOString(),
         unread:         0,
@@ -154,10 +154,17 @@ export default function InboxLayout() {
     // Send the message (goes through handleSend after selectedId is set,
     // but selectedId state update is async — call sendMessage directly here)
     const targetId = existing ? existing.id : normalizedPhone;
+
+    // Build optimistic object URLs for any attached images
+    const optimisticMediaUrls = files.length > 0
+      ? JSON.stringify(files.map(f => URL.createObjectURL(f)))
+      : null;
+
     const optimisticMsg = {
-      id:        `optimistic-${Date.now()}`,
-      body:      text.trim(),
-      direction: 'outbound',
+      id:         `optimistic-${Date.now()}`,
+      body:       text.trim(),
+      media_urls: optimisticMediaUrls,
+      direction:  'outbound',
       created_at: new Date().toISOString(),
     };
     setMessageMap(prev => ({
@@ -166,9 +173,12 @@ export default function InboxLayout() {
     }));
 
     try {
-      await sendMessage(normalizedPhone, text.trim());
+      await sendMessage(normalizedPhone, text.trim(), files);
     } catch (err) {
       console.error('[Inbox] Compose send failed:', err.message);
+      if (optimisticMediaUrls) {
+        JSON.parse(optimisticMediaUrls).forEach(u => URL.revokeObjectURL(u));
+      }
       setMessageMap(prev => ({
         ...prev,
         [targetId]: (prev[targetId] ?? []).filter(m => m.id !== optimisticMsg.id),
@@ -226,6 +236,7 @@ export default function InboxLayout() {
         <NewMessageModal
           onSend={handleComposeSend}
           onClose={() => setComposeOpen(false)}
+          conversations={conversations}
         />
       )}
     </div>

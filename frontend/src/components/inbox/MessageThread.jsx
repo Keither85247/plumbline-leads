@@ -94,12 +94,13 @@ export default function MessageThread({
         {/* Back button — mobile only */}
         <button
           onClick={onBack}
-          className="md:hidden p-1.5 -ml-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
-          aria-label="Back"
+          className="md:hidden flex items-center gap-0.5 -ml-1 pl-1 pr-2.5 py-1.5 rounded-lg text-blue-600 hover:bg-blue-50 transition-colors"
+          aria-label="Back to inbox"
         >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
           </svg>
+          <span className="text-sm font-medium">Inbox</span>
         </button>
 
         {/* Avatar + name */}
