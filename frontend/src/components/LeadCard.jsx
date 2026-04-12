@@ -224,6 +224,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
   };
 
   const [isSending, setIsSending] = useState(false);
+  const [hasSent, setHasSent] = useState(false);
 
   const handleSend = async () => {
     const to = lead.callback_number || lead.phone_number;
@@ -233,6 +234,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
     setIsSending(true);
     try {
       await sendMessage(to, text.trim());
+      setHasSent(true);   // lock button before alert so it can't be tapped again
       alert('Message sent!');
     } catch (err) {
       alert(`Failed to send: ${err.message}`);
@@ -439,8 +441,16 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                   : <button onClick={() => setEditingFollowUp(false)} className="text-xs text-blue-500 hover:text-blue-700 transition-colors">Done</button>
                 }
               </div>
-              <button onClick={handleSend} disabled={isSending} className="text-xs text-blue-500 hover:text-blue-700 transition-colors disabled:opacity-50">
-                {isSending ? 'Sending…' : 'Send'}
+              <button
+                onClick={handleSend}
+                disabled={isSending || hasSent}
+                className={`text-xs transition-colors ${
+                  hasSent
+                    ? 'text-gray-400 cursor-not-allowed'
+                    : 'text-blue-500 hover:text-blue-700 disabled:opacity-50'
+                }`}
+              >
+                {hasSent ? 'Sent ✓' : isSending ? 'Sending…' : 'Send'}
               </button>
             </div>
             {editingFollowUp ? (
