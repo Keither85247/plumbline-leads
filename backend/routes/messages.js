@@ -1,5 +1,6 @@
 const express = require('express');
 const router  = express.Router();
+const log     = require('../logger').for('Messages');
 const path    = require('path');
 const os      = require('os');
 const fs      = require('fs');
@@ -148,6 +149,7 @@ router.get('/', (req, res) => {
     }));
   } catch (err) {
     console.error('[Messages] GET / error:', err.message);
+    log.error('GET / failed', { err: err.message });
     return res.status(500).json({ error: 'Failed to fetch conversations' });
   }
 });
@@ -259,7 +261,7 @@ router.post('/send', upload.array('media', 5), async (req, res) => {
       tempPaths.push(filePath);
       const publicUrl = `${baseUrl}/api/messages/media/${name}`;
       mediaUrls.push(publicUrl);
-      console.log(`[Messages] MMS temp file written: ${filePath} → public URL: ${publicUrl}`);
+      log.info('MMS temp file written', { publicUrl });
     }
 
     const params = {
@@ -269,7 +271,7 @@ router.post('/send', upload.array('media', 5), async (req, res) => {
     };
     if (mediaUrls.length > 0) params.mediaUrl = mediaUrls;
 
-    console.log(`[Messages] Calling Twilio messages.create — to: ${toE164}, body: "${params.body}", mediaUrl: ${JSON.stringify(mediaUrls)}`);
+    log.info('Calling Twilio messages.create', { to: toE164, bodyLen: params.body?.length, mediaCount: mediaUrls.length });
 
     const message = await client.messages.create(params);
 
@@ -287,7 +289,7 @@ router.post('/send', upload.array('media', 5), async (req, res) => {
       }, 30 * 60 * 1000);
     }
 
-    console.log(`[Messages] Sent ${mediaUrls.length > 0 ? 'MMS' : 'SMS'} to ${toE164} — SID: ${message.sid}`);
+    log.info(`${mediaUrls.length > 0 ? 'MMS' : 'SMS'} sent`, { to: toE164, sid: message.sid, status: message.status });
     return res.json({ ok: true, id: row.lastInsertRowid, sid: message.sid });
   } catch (err) {
     // Clean up any temp files that were written before the failure
@@ -295,7 +297,7 @@ router.post('/send', upload.array('media', 5), async (req, res) => {
     // Log the full Twilio error: message + code + moreInfo
     const twilioCode = err.code || err.status || '';
     const twilioMore = err.moreInfo || '';
-    console.error(`[Messages] Send error${twilioCode ? ` (Twilio ${twilioCode})` : ''}:`, err.message, twilioMore);
+    log.error('Send failed', { to: toE164, twilioCode, err: err.message, moreInfo: twilioMore });
     return res.status(500).json({ error: err.message });
   }
 });

@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const log = require('../logger').for('Twilio');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
@@ -51,7 +52,7 @@ function logCall(fromNumber, callSid, classification) {
       'INSERT INTO calls (from_number, call_sid, classification) VALUES (?, ?, ?)'
     ).run(fromNumber || null, callSid || null, classification);
   } catch (err) {
-    console.error('[Twilio] Failed to log call:', err.message);
+    log.error('Failed to log call to DB', { err: err.message });
   }
 }
 
@@ -101,19 +102,19 @@ async function downloadToTemp(url, destPath) {
   let lastError;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    console.log(`[Twilio] Download attempt ${attempt}/${MAX_ATTEMPTS}: ${audioUrl}`);
+    log.info(`Recording download attempt ${attempt}/${MAX_ATTEMPTS}`, { url: audioUrl });
     try {
       await attemptDownload(audioUrl, destPath);
-      console.log(`[Twilio] Download succeeded on attempt ${attempt}`);
+      log.info(`Recording download succeeded`, { attempt });
       return destPath;
     } catch (err) {
       lastError = err;
-      console.warn(`[Twilio] Download attempt ${attempt} failed: ${err.message}`);
+      log.warn(`Recording download attempt ${attempt} failed`, { err: err.message });
       if (attempt < MAX_ATTEMPTS) await sleep(RETRY_DELAY_MS);
     }
   }
 
-  console.error(`[Twilio] All ${MAX_ATTEMPTS} attempts failed. Last error: ${lastError.message}`);
+  log.error(`All ${MAX_ATTEMPTS} download attempts failed`, { err: lastError.message });
   throw lastError;
 }
 
@@ -149,12 +150,12 @@ router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
 
   const classification = classifyIncomingCall(From);
   logCall(From, CallSid, classification);
-  console.log(`[Twilio] Incoming call from ${From || 'unknown'} — classified as: ${classification}`);
+  log.info('Incoming call', { from: From || 'unknown', callSid: CallSid, classification });
 
   const baseUrl = process.env.TWILIO_BASE_URL;
 
   if (!baseUrl) {
-    console.error('[Twilio] TWILIO_BASE_URL not set — cannot build callback URLs');
+    log.error('TWILIO_BASE_URL not set — cannot build callback URLs');
     twiml.say('Sorry, there is a configuration error. Please try again later.');
     return res.type('text/xml').send(twiml.toString());
   }
@@ -196,12 +197,12 @@ router.post('/missed-call', express.urlencoded({ extended: true }), (req, res) =
 
   const baseUrl = process.env.TWILIO_BASE_URL;
   if (!baseUrl) {
-    console.error('[Twilio] TWILIO_BASE_URL not set — cannot build voicemail action URL');
+    log.error('TWILIO_BASE_URL not set — cannot build voicemail action URL');
     twiml.say('Sorry, we are unable to take a message right now. Please try again later.');
     return res.type('text/xml').send(twiml.toString());
   }
 
-  console.log(`[Twilio] Call unanswered (DialCallStatus: ${DialCallStatus}) — routing to voicemail`);
+  log.info('Call unanswered — routing to voicemail', { dialCallStatus: DialCallStatus });
   buildVoicemailTwiml(twiml, baseUrl);
   res.type('text/xml').send(twiml.toString());
 });
@@ -226,6 +227,8 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
   }
   const mediaUrlsJson = inboundMediaUrls.length > 0 ? JSON.stringify(inboundMediaUrls) : null;
 
+  log.info('Inbound SMS', { from: From, chars: (Body || '').length, mediaCount: numMedia });
+
   // Always persist the inbound message FIRST so it appears in the inbox
   // regardless of lead creation logic below.
   let messageRowId = null;
@@ -234,8 +237,9 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
       "INSERT INTO messages (phone, direction, body, status, media_urls) VALUES (?, 'inbound', ?, 'received', ?)"
     ).run(From || 'unknown', (Body || '').trim(), mediaUrlsJson);
     messageRowId = msgRow.lastInsertRowid;
+    log.info('Inbound SMS saved to messages', { messageId: messageRowId });
   } catch (err) {
-    console.error('[Twilio] Failed to save inbound SMS to messages table:', err.message);
+    log.error('Failed to save inbound SMS to messages table', { err: err.message });
   }
 
   // If this phone already has an open lead today, attach the message to it
@@ -255,17 +259,17 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
         db.prepare('UPDATE messages SET lead_id = ? WHERE id = ?')
           .run(existingLead.id, messageRowId);
       } catch (err) {
-        console.error('[Twilio] Failed to stamp lead_id on message:', err.message);
+        log.error('Failed to stamp lead_id on message', { err: err.message });
       }
     }
     if (isDuplicate(From, Body) || hasLeadToday(From)) {
-      console.log(`[Twilio] SMS from ${From} — attached to existing lead #${existingLead.id}, skipping new lead creation`);
+      log.info('SMS attached to existing lead, skipping new lead creation', { from: From, leadId: existingLead.id });
       return res.status(200).send('OK');
     }
   }
 
   if (isDuplicate(From, Body)) {
-    console.log(`[Twilio] SMS duplicate detected from ${From}, skipping lead creation`);
+    log.info('SMS duplicate detected, skipping lead creation', { from: From });
     return res.status(200).send('OK');
   }
 
@@ -282,7 +286,7 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
       db.prepare('UPDATE messages SET lead_id = ? WHERE id = ?').run(newLead.id, messageRowId);
     }
   } catch (err) {
-    console.error('Twilio SMS lead creation failed:', err);
+    log.error('SMS lead creation failed', { from: From, err: err.message });
   }
 
   return res.status(200).send('OK');
@@ -300,11 +304,11 @@ router.post('/voicemail', express.urlencoded({ extended: true }), async (req, re
   res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
 
   if (!RecordingUrl) {
-    console.error('[Twilio] Voicemail webhook: missing RecordingUrl');
+    log.error('Voicemail webhook: missing RecordingUrl', { from: From });
     return;
   }
 
-  console.log(`[Twilio] Voicemail from ${From || 'unknown'}, RecordingUrl: ${RecordingUrl}`);
+  log.info('Voicemail received', { from: From || 'unknown', recordingUrl: RecordingUrl });
 
   const tempPath = path.join(os.tmpdir(), `twilio-vm-${Date.now()}.mp3`);
 
@@ -321,12 +325,12 @@ router.post('/voicemail', express.urlencoded({ extended: true }), async (req, re
     const transcript = transcription.text?.trim();
 
     if (!transcript) {
-      console.error('[Twilio] Voicemail: transcription returned empty text');
+      log.error('Voicemail transcription returned empty text', { from: From });
       return;
     }
 
     if (isDuplicate(From, transcript)) {
-      console.log(`[Twilio] Voicemail duplicate detected from ${From}, skipping`);
+      log.info('Voicemail duplicate detected, skipping', { from: From });
       return;
     }
 
@@ -338,10 +342,10 @@ router.post('/voicemail', express.urlencoded({ extended: true }), async (req, re
       recordingUrl: RecordingUrl || null,
     });
 
-    console.log(`[Twilio] Voicemail lead created from ${From || 'unknown'} — recording stored: ${RecordingUrl ? 'yes' : 'no'}`);
+    log.info('Voicemail lead created', { from: From || 'unknown', hasRecording: !!RecordingUrl });
   } catch (err) {
     try { fs.unlinkSync(tempPath); } catch {}
-    console.error('[Twilio] Voicemail lead creation failed:', err);
+    log.error('Voicemail lead creation failed', { from: From, err: err.message, stack: err.stack });
   }
 });
 
@@ -358,11 +362,11 @@ router.post('/recording', express.urlencoded({ extended: true }), async (req, re
   const { CallSid, RecordingUrl, RecordingDuration } = req.body;
 
   if (!RecordingUrl) {
-    console.error('[Twilio] /recording webhook: missing RecordingUrl');
+    log.error('/recording webhook: missing RecordingUrl', { callSid: CallSid });
     return;
   }
 
-  console.log(`[Twilio] Answered-call recording ready. CallSid: ${CallSid}, URL: ${RecordingUrl}`);
+  log.info('Answered-call recording ready', { callSid: CallSid, recordingUrl: RecordingUrl, duration: RecordingDuration });
 
   // Look up the original call to get the caller's number
   const callRow = db.prepare('SELECT * FROM calls WHERE call_sid = ?').get(CallSid);
@@ -383,7 +387,7 @@ router.post('/recording', express.urlencoded({ extended: true }), async (req, re
     const transcript = transcription.text?.trim();
 
     if (!transcript) {
-      console.error('[Twilio] call-recording: transcription returned empty text');
+      log.error('Call recording transcription returned empty text', { callSid: CallSid });
       return;
     }
 
@@ -421,10 +425,10 @@ Return a JSON object with exactly these fields:
       ).run(fromNumber, CallSid, 'Unknown', RecordingUrl, parseInt(RecordingDuration) || null, transcript, summary, JSON.stringify(keyPoints));
     }
 
-    console.log(`[Twilio] Call notes saved for CallSid ${CallSid} (from: ${fromNumber || 'unknown'})`);
+    log.info('Call notes saved', { callSid: CallSid, from: fromNumber || 'unknown', summaryLen: summary.length });
   } catch (err) {
     try { fs.unlinkSync(tempPath); } catch {}
-    console.error('[Twilio] /recording processing failed:', err);
+    log.error('/recording processing failed', { callSid: CallSid, err: err.message });
   }
 });
 
@@ -508,7 +512,7 @@ router.get('/diag', async (req, res) => {
 // ---------------------------------------------------------------------------
 router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) => {
   const { To, CallSid } = req.body;
-  console.log(`[Twilio] /voice-client received — To: ${To}, CallSid: ${CallSid}`);
+  log.info('/voice-client received', { to: To, callSid: CallSid });
 
   const twiml = new VoiceResponse();
   const baseUrl = process.env.TWILIO_BASE_URL;
@@ -516,7 +520,7 @@ router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) 
 
   try {
     if (!To) {
-      console.error('[Twilio] /voice-client: missing To param');
+      log.error('/voice-client: missing To param', { callSid: CallSid });
       twiml.say('No destination number provided.');
       return res.type('text/xml').send(twiml.toString());
     }
@@ -525,9 +529,9 @@ router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) 
     const destination = isClient ? To.replace(/^client:/, '') : To;
 
     if (isClient) {
-      console.log(`[Twilio] /voice-client: routing to browser client "${destination}" (CallSid: ${CallSid})`);
+      log.info('/voice-client routing to browser client', { destination, callSid: CallSid });
     } else {
-      console.log(`[Twilio] /voice-client: dialing PSTN number ${To} (CallSid: ${CallSid})`);
+      log.info('/voice-client dialing PSTN', { to: To, callSid: CallSid });
     }
 
     logCall(To, CallSid, 'Outbound');
@@ -547,10 +551,10 @@ router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) 
       dial.number(To);
     }
 
-    console.log(`[Twilio] /voice-client: responding with TwiML — callerId: ${callerId || 'none'}, baseUrl: ${baseUrl || 'none'}`);
+    log.info('/voice-client responding with TwiML', { callerId: callerId || 'none', hasBaseUrl: !!baseUrl });
     return res.type('text/xml').send(twiml.toString());
   } catch (err) {
-    console.error('[Twilio] /voice-client error:', err.message, err.stack);
+    log.error('/voice-client unhandled error', { err: err.message, callSid: CallSid });
     // Always return valid TwiML — a 500 here causes Twilio SDK error 31000
     const errTwiml = new VoiceResponse();
     errTwiml.say('An error occurred while connecting your call. Please try again.');
@@ -579,7 +583,7 @@ router.post('/outbound', express.json(), async (req, res) => {
   const authToken = process.env.TWILIO_AUTH_TOKEN;
 
   if (!baseUrl || !fromNumber || !contractorPhone || !accountSid || !authToken) {
-    console.error('[Twilio] /outbound: missing required env vars');
+    log.error('/outbound: missing required env vars', { hasBaseUrl: !!baseUrl, hasFrom: !!fromNumber, hasContractor: !!contractorPhone });
     return res.status(500).json({ error: 'Twilio is not fully configured' });
   }
 
@@ -587,7 +591,7 @@ router.post('/outbound', express.json(), async (req, res) => {
   const digits = to.replace(/\D/g, '');
   const e164 = digits.length === 10 ? `+1${digits}` : digits.length === 11 && digits[0] === '1' ? `+${digits}` : to.trim();
 
-  console.log(`[Twilio] /outbound: contractor=${contractorPhone} → customer=${e164}`);
+  log.info('/outbound: initiating call', { contractor: contractorPhone, customer: e164 });
 
   try {
     const client = twilio(accountSid, authToken);
@@ -602,11 +606,11 @@ router.post('/outbound', express.json(), async (req, res) => {
 
     // Log the outbound attempt so it appears in the call timeline
     logCall(contractorPhone, call.sid, 'Outbound');
-    console.log(`[Twilio] /outbound: call initiated — SID ${call.sid}, status ${call.status}`);
+    log.info('/outbound: call initiated', { sid: call.sid, status: call.status });
 
     return res.json({ sid: call.sid, status: call.status });
   } catch (err) {
-    console.error('[Twilio] /outbound: call failed:', err.message);
+    log.error('/outbound: call failed', { err: err.message, to: e164 });
     return res.status(500).json({ error: err.message });
   }
 });
@@ -624,14 +628,14 @@ router.post('/outbound-bridge', express.urlencoded({ extended: true }), (req, re
   const baseUrl = process.env.TWILIO_BASE_URL;
 
   if (!customer) {
-    console.error('[Twilio] /outbound-bridge: missing customer param');
+    log.error('/outbound-bridge: missing customer param');
     twiml.say('No customer number was specified. Goodbye.');
     return res.type('text/xml').send(twiml.toString());
   }
 
   // Route to the browser client, not a PSTN number.
   // 'contractor' must match the identity issued by /api/twilio/token.
-  console.log(`[Twilio] /outbound-bridge: routing to browser client "contractor" (customer context: ${customer})`);
+  log.info('/outbound-bridge: routing to browser client', { customer });
   twiml.say({ voice: 'alice' }, 'Connecting your call.');
   const dial = twiml.dial({
     record: 'record-from-answer',

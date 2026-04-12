@@ -1,4 +1,16 @@
 require('dotenv').config();
+
+// ── Sentry — must be initialised before any other requires ───────────────────
+const Sentry = require('@sentry/node');
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || 'production',
+    tracesSampleRate: 0.1, // capture 10 % of requests for performance tracing
+  });
+  console.log('[Sentry] Backend error tracking enabled');
+}
+
 const express = require('express');
 const cors    = require('cors');
 const leadsRouter      = require('./routes/leads');
@@ -70,6 +82,20 @@ app.post('/api/migrate', (req, res) => {
 });
 // ── END TEMPORARY MIGRATION ENDPOINT ─────────────────────────────────────────
 
+
+// ── Error handling — must be after all routes ─────────────────────────────
+// Sentry captures the error first, then the generic handler sends the response.
+if (process.env.SENTRY_DSN) {
+  app.use(Sentry.expressErrorHandler());
+}
+// Global catch-all: prevents Express from sending an HTML 500 page on unhandled errors.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error(`[Express] Unhandled error on ${req.method} ${req.path}:`, err.message);
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);

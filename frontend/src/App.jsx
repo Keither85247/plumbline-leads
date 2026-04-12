@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import * as Sentry from '@sentry/react';
 import TranscriptForm from './components/TranscriptForm';
 import AudioUploadForm from './components/AudioUploadForm';
 import LeadList from './components/LeadList';
@@ -243,6 +244,15 @@ export default function App() {
 
 
   return (
+    <Sentry.ErrorBoundary fallback={
+      <div className="h-dvh flex flex-col items-center justify-center gap-3 p-8 text-center bg-gray-50">
+        <p className="text-sm font-semibold text-gray-700">Something went wrong.</p>
+        <p className="text-xs text-gray-400">The error has been reported. Try reloading the page.</p>
+        <button onClick={() => window.location.reload()} className="text-sm px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+          Reload
+        </button>
+      </div>
+    }>
     <div className="h-dvh bg-gray-50 flex flex-col overflow-hidden">
 
       {/* Header */}
@@ -518,5 +528,6 @@ export default function App() {
       </div>
 
     </div>
+    </Sentry.ErrorBoundary>
   );
 }
