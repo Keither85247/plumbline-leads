@@ -252,23 +252,18 @@ export default function App() {
             <span className="text-gray-900 font-bold text-lg tracking-tight">PlumbLine</span>
             <span className="text-gray-400 font-semibold text-lg tracking-tight"> Leads</span>
           </div>
-          {/* Backend status dot */}
-          <div className="flex items-center gap-1.5 mr-1" title={
-            backendStatus === 'up'       ? 'Backend online' :
-            backendStatus === 'down'     ? 'Backend offline' :
-            'Checking backend…'
-          }>
+          {/* Backend status dot — green when up, gray pulse when deploying/checking/down */}
+          <div
+            className="flex items-center gap-1.5 mr-1"
+            title={backendStatus === 'up' ? 'Backend online' : 'Deploying update…'}
+          >
             <span className={`w-2 h-2 rounded-full ${
-              backendStatus === 'up'   ? 'bg-green-400' :
-              backendStatus === 'down' ? 'bg-red-500'   :
-              'bg-gray-300 animate-pulse'
+              backendStatus === 'up' ? 'bg-green-400' : 'bg-gray-300 animate-pulse'
             }`} />
             <span className={`text-[11px] font-medium hidden sm:inline ${
-              backendStatus === 'up'   ? 'text-green-600' :
-              backendStatus === 'down' ? 'text-red-500'   :
-              'text-gray-400'
+              backendStatus === 'up' ? 'text-green-600' : 'text-gray-400'
             }`}>
-              {backendStatus === 'up' ? 'Online' : backendStatus === 'down' ? 'Offline' : '…'}
+              {backendStatus === 'up' ? 'Online' : 'Updating…'}
             </span>
           </div>
 
