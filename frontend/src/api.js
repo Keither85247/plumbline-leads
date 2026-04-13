@@ -4,8 +4,32 @@ export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || '';
 export const API_BASE    = `${BACKEND_URL}/api`;
 const AUTH_BASE          = `${BACKEND_URL}/auth`;
 
+import * as Sentry from '@sentry/react';
+
+/**
+ * Thin fetch wrapper that automatically reports failures to Sentry.
+ * Uses globalThis.fetch internally so replace_all swapping fetch→apiFetch
+ * in this file doesn't cause infinite recursion.
+ */
+async function apiFetch(url, options = {}) {
+  try {
+    const res = await globalThis.fetch(url, options);
+    if (!res.ok) {
+      Sentry.captureException(
+        new Error(`${options.method || 'GET'} ${url} → HTTP ${res.status}`),
+        { extra: { url, status: res.status, method: options.method || 'GET' } }
+      );
+    }
+    return res;
+  } catch (networkErr) {
+    // Covers: backend down, CORS block, no network
+    Sentry.captureException(networkErr, { extra: { url, method: options.method || 'GET' } });
+    throw networkErr;
+  }
+}
+
 export async function createLead(transcript, language) {
-  const res = await fetch(`${API_BASE}/leads`, {
+  const res = await apiFetch(`${API_BASE}/leads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ transcript, ...(language && { language }) })
@@ -18,13 +42,13 @@ export async function createLead(transcript, language) {
 }
 
 export async function getLeads() {
-  const res = await fetch(`${API_BASE}/leads`);
+  const res = await apiFetch(`${API_BASE}/leads`);
   if (!res.ok) throw new Error('Failed to fetch leads');
   return res.json();
 }
 
 export async function updateLeadStatus(id, status) {
-  const res = await fetch(`${API_BASE}/leads/${id}/status`, {
+  const res = await apiFetch(`${API_BASE}/leads/${id}/status`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status })
@@ -37,13 +61,13 @@ export async function updateLeadStatus(id, status) {
 }
 
 export async function getArchivedLeads() {
-  const res = await fetch(`${API_BASE}/leads?archived=true`);
+  const res = await apiFetch(`${API_BASE}/leads?archived=true`);
   if (!res.ok) throw new Error('Failed to fetch archived leads');
   return res.json();
 }
 
 export async function archiveLead(id) {
-  const res = await fetch(`${API_BASE}/leads/${id}/archive`, {
+  const res = await apiFetch(`${API_BASE}/leads/${id}/archive`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ archived: true })
@@ -53,7 +77,7 @@ export async function archiveLead(id) {
 }
 
 export async function unarchiveLead(id) {
-  const res = await fetch(`${API_BASE}/leads/${id}/archive`, {
+  const res = await apiFetch(`${API_BASE}/leads/${id}/archive`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ archived: false })
@@ -63,31 +87,31 @@ export async function unarchiveLead(id) {
 }
 
 export async function deleteLead(id) {
-  const res = await fetch(`${API_BASE}/leads/${id}`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/leads/${id}`, { method: 'DELETE' });
   if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Failed to delete lead'); }
   return res.json();
 }
 
 export async function getCalls() {
-  const res = await fetch(`${API_BASE}/calls`);
+  const res = await apiFetch(`${API_BASE}/calls`);
   if (!res.ok) throw new Error('Failed to fetch calls');
   return res.json();
 }
 
 export async function getCallsByPhone(number) {
-  const res = await fetch(`${API_BASE}/calls/by-phone/${encodeURIComponent(number)}`);
+  const res = await apiFetch(`${API_BASE}/calls/by-phone/${encodeURIComponent(number)}`);
   if (!res.ok) throw new Error('Failed to fetch call notes');
   return res.json();
 }
 
 export async function getVoicemailLeads() {
-  const res = await fetch(`${API_BASE}/leads?source=voicemail`);
+  const res = await apiFetch(`${API_BASE}/leads?source=voicemail`);
   if (!res.ok) throw new Error('Failed to fetch voicemail leads');
   return res.json();
 }
 
 export async function initiateCall(to) {
-  const res = await fetch(`${API_BASE}/twilio/outbound`, {
+  const res = await apiFetch(`${API_BASE}/twilio/outbound`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ to }),
@@ -97,7 +121,7 @@ export async function initiateCall(to) {
 }
 
 export async function translateText(text, targetLang) {
-  const res = await fetch(`${API_BASE}/translate`, {
+  const res = await apiFetch(`${API_BASE}/translate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, targetLang }),
@@ -110,7 +134,7 @@ export async function translateText(text, targetLang) {
 // Associates the note with the most recent outbound call to `phone`.
 // outcome: 'answered' | 'voicemail' | 'no-answer' | null
 export async function saveOutboundNote(phone, note, outcome) {
-  const res = await fetch(`${API_BASE}/calls/outbound-note`, {
+  const res = await apiFetch(`${API_BASE}/calls/outbound-note`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ phone, note, outcome }),
@@ -121,19 +145,19 @@ export async function saveOutboundNote(phone, note, outcome) {
 
 export async function getEmails(mailbox) {
   const url = mailbox ? `${API_BASE}/emails?mailbox=${encodeURIComponent(mailbox)}` : `${API_BASE}/emails`;
-  const res = await fetch(url);
+  const res = await apiFetch(url);
   if (!res.ok) throw new Error('Failed to fetch emails');
   return res.json();
 }
 
 export async function getEmailsByPhone(phone) {
-  const res = await fetch(`${API_BASE}/emails/by-phone/${encodeURIComponent(phone)}`);
+  const res = await apiFetch(`${API_BASE}/emails/by-phone/${encodeURIComponent(phone)}`);
   if (!res.ok) throw new Error('Failed to fetch emails by phone');
   return res.json();
 }
 
 export async function logEmail(data) {
-  const res = await fetch(`${API_BASE}/emails`, {
+  const res = await apiFetch(`${API_BASE}/emails`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -144,19 +168,19 @@ export async function logEmail(data) {
 
 /** Returns all saved contact profiles as an array. */
 export async function getAllContactProfiles() {
-  const res = await fetch(`${API_BASE}/contacts`);
+  const res = await apiFetch(`${API_BASE}/contacts`);
   if (!res.ok) throw new Error('Failed to fetch contact profiles');
   return res.json();
 }
 
 export async function getContactProfile(phone) {
-  const res = await fetch(`${API_BASE}/contacts/${encodeURIComponent(phone)}`);
+  const res = await apiFetch(`${API_BASE}/contacts/${encodeURIComponent(phone)}`);
   if (!res.ok) throw new Error('Failed to fetch contact profile');
   return res.json(); // null if no saved profile
 }
 
 export async function saveContactProfile(phone, data) {
-  const res = await fetch(`${API_BASE}/contacts/${encodeURIComponent(phone)}`, {
+  const res = await apiFetch(`${API_BASE}/contacts/${encodeURIComponent(phone)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -169,14 +193,14 @@ export async function saveContactProfile(phone, data) {
 
 /** Returns { connected: bool, email: string|null } */
 export async function getGmailStatus() {
-  const res = await fetch(`${AUTH_BASE}/gmail-status`);
+  const res = await apiFetch(`${AUTH_BASE}/gmail-status`);
   if (!res.ok) throw new Error('Failed to get Gmail status');
   return res.json();
 }
 
 /** Removes stored Gmail tokens. */
 export async function disconnectGmail() {
-  const res = await fetch(`${AUTH_BASE}/gmail-disconnect`, { method: 'DELETE' });
+  const res = await apiFetch(`${AUTH_BASE}/gmail-disconnect`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to disconnect Gmail');
   return res.json();
 }
@@ -208,7 +232,7 @@ export async function sendEmail({ to, subject, body, attachments = [] }) {
     };
   }
 
-  const res = await fetch(`${API_BASE}/emails`, fetchInit);
+  const res = await apiFetch(`${API_BASE}/emails`, fetchInit);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to send email');
@@ -224,14 +248,14 @@ export async function sendEmail({ to, subject, body, attachments = [] }) {
  */
 export async function searchContacts(q) {
   if (!q || !q.trim()) return [];
-  const res = await fetch(`${API_BASE}/contacts/search?q=${encodeURIComponent(q.trim())}`);
+  const res = await apiFetch(`${API_BASE}/contacts/search?q=${encodeURIComponent(q.trim())}`);
   if (!res.ok) return [];
   return res.json();
 }
 
 /** Patch email state fields (is_read, is_archived, is_deleted). */
 export async function patchEmail(id, data) {
-  const res = await fetch(`${API_BASE}/emails/${id}`, {
+  const res = await apiFetch(`${API_BASE}/emails/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -242,7 +266,7 @@ export async function patchEmail(id, data) {
 
 /** Soft-delete an email (sets is_deleted = 1 on the server). */
 export async function softDeleteEmail(id) {
-  const res = await fetch(`${API_BASE}/emails/${id}`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/emails/${id}`, { method: 'DELETE' });
   if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Failed to delete email'); }
   return res.json();
 }
@@ -251,7 +275,7 @@ export async function softDeleteEmail(id) {
 
 /** Returns { calls, texts, emails } — actionable counts for nav badges. */
 export async function getCounts() {
-  const res = await fetch(`${API_BASE}/counts`);
+  const res = await apiFetch(`${API_BASE}/counts`);
   if (!res.ok) throw new Error('Failed to fetch counts');
   return res.json();
 }
@@ -260,14 +284,14 @@ export async function getCounts() {
 
 /** Returns conversation list (one entry per phone, latest message + unread count). */
 export async function getConversations() {
-  const res = await fetch(`${API_BASE}/messages`);
+  const res = await apiFetch(`${API_BASE}/messages`);
   if (!res.ok) throw new Error('Failed to fetch conversations');
   return res.json();
 }
 
 /** Returns all messages for a single phone number, oldest first. */
 export async function getMessageThread(phone) {
-  const res = await fetch(`${API_BASE}/messages/${encodeURIComponent(phone)}`);
+  const res = await apiFetch(`${API_BASE}/messages/${encodeURIComponent(phone)}`);
   if (!res.ok) throw new Error('Failed to fetch message thread');
   return res.json();
 }
@@ -287,7 +311,7 @@ export async function sendMessage(to, body, files = []) {
   if (body) form.append('body', body);
   files.forEach(file => form.append('media', file, file.name));
 
-  const res = await fetch(`${API_BASE}/messages/send`, {
+  const res = await apiFetch(`${API_BASE}/messages/send`, {
     method: 'POST',
     // Do NOT set Content-Type — browser sets it automatically with boundary
     body: form,
@@ -301,20 +325,20 @@ export async function sendMessage(to, body, files = []) {
 
 /** Mark all inbound messages for a phone as read. */
 export async function markMessagesRead(phone) {
-  const res = await fetch(`${API_BASE}/messages/${encodeURIComponent(phone)}/read`, { method: 'PATCH' });
+  const res = await apiFetch(`${API_BASE}/messages/${encodeURIComponent(phone)}/read`, { method: 'PATCH' });
   if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Failed to mark read'); }
   return res.json();
 }
 
 /** Mark all unseen missed calls (within 48h) as seen. */
 export async function markCallsSeen() {
-  const res = await fetch(`${API_BASE}/calls/mark-seen`, { method: 'POST' });
+  const res = await apiFetch(`${API_BASE}/calls/mark-seen`, { method: 'POST' });
   if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Failed to mark seen'); }
   return res.json();
 }
 
 export async function updateLeadCategory(id, category) {
-  const res = await fetch(`${API_BASE}/leads/${id}/category`, {
+  const res = await apiFetch(`${API_BASE}/leads/${id}/category`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ category })

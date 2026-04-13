@@ -12,11 +12,14 @@ if (import.meta.env.VITE_SENTRY_DSN) {
   Sentry.init({
     dsn: import.meta.env.VITE_SENTRY_DSN,
     environment: import.meta.env.MODE,          // 'production' on Vercel
-    tracesSampleRate: 0.1,                       // 10 % of page loads for perf tracing
+    tracesSampleRate: 1.0,                       // 100% while getting started — drop to 0.1 after a week
     integrations: [
       Sentry.browserTracingIntegration(),        // instruments fetch + navigation
     ],
   });
+
+  // Tag every error with the user so you can filter by them in Sentry
+  Sentry.setUser({ id: 'contractor' });
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(
