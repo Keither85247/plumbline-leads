@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * One-time bootstrap script — creates the first user account.
+ * Create a user account for Plumbline Leads.
  *
  * Usage (run from the backend directory):
- *   node scripts/create-user.js
+ *   node scripts/create-user.js           # regular user
+ *   node scripts/create-user.js --owner   # owner account (can access /api/admin/*)
  *
  * You will be prompted for:
  *   email        — the login email address
@@ -13,6 +14,7 @@
  * After creating the user, the script offers to assign all legacy data rows
  * (user_id IS NULL) to this user. Say yes for the first real user so that
  * all historical leads, calls, messages, emails, and contacts belong to them.
+ * Say no for the demo account — it should start empty (then run seed-demo.js).
  *
  * Run multiple times to add more users — existing emails are skipped.
  */
@@ -57,7 +59,8 @@ function askPassword(question) {
 }
 
 async function main() {
-  console.log('\nPlumbline Leads — create user\n');
+  const isOwner = process.argv.includes('--owner');
+  console.log(`\nPlumbline Leads — create ${isOwner ? 'OWNER' : 'user'} account\n`);
 
   const email       = (await ask('Email address: ')).trim().toLowerCase();
   const displayName = (await ask('Display name:  ')).trim();
@@ -80,12 +83,13 @@ async function main() {
   const apiKey = crypto.randomBytes(24).toString('hex');
 
   const result = db.prepare(`
-    INSERT INTO users (email, display_name, password_hash, api_key)
-    VALUES (?, ?, ?, ?)
-  `).run(email, displayName || email, hash, apiKey);
+    INSERT INTO users (email, display_name, password_hash, api_key, is_owner)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(email, displayName || email, hash, apiKey, isOwner ? 1 : 0);
 
   const userId = result.lastInsertRowid;
-  console.log(`\n✓ User created — id: ${userId}  email: ${email}`);
+  const ownerTag = isOwner ? '  [OWNER]' : '';
+  console.log(`\n✓ User created — id: ${userId}  email: ${email}${ownerTag}`);
 
   // ── Assign legacy data ─────────────────────────────────────────────────────
   // All rows with user_id IS NULL were created before auth existed.

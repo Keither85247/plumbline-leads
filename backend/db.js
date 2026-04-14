@@ -189,11 +189,13 @@ db.exec(`
     display_name  TEXT,
     api_key       TEXT    UNIQUE,
     password_hash TEXT,
+    is_owner      INTEGER NOT NULL DEFAULT 0,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
-// Safe migration: add password_hash to existing users table
+// Safe migrations: add columns to existing users table
 try { db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch {}
+try { db.exec('ALTER TABLE users ADD COLUMN is_owner INTEGER NOT NULL DEFAULT 0'); } catch {}
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 // One row per active login. Token is a 32-byte random hex string stored in an
