@@ -3,24 +3,24 @@ const router = express.Router();
 const db = require('../db');
 
 // GET /api/counts
-// Returns actionable badge counts for the four nav tabs.
-// One lightweight query per table, one request from the client.
-//
-//  calls  — missed inbound calls in last 48h (rang but no answer, no voicemail)
-//  texts  — conversations where the last message is inbound (waiting for a reply)
-//  emails — unread inbound emails that haven't been deleted or archived
+// Returns badge counts scoped to the authenticated user.
+// TRANSITIONAL: each query includes NULL user_id rows so legacy data counts
+// until all rows are assigned (create-user.js --assign step).
 
 router.get('/', (req, res) => {
   try {
+    const userId = req.userId;
+
     // Missed inbound calls: no duration, no transcript, not Outbound, within 48h, not yet seen
     const { calls } = db.prepare(`
       SELECT COUNT(*) AS calls FROM calls
-      WHERE classification != 'Outbound'
+      WHERE (user_id = ? OR user_id IS NULL)
+        AND classification != 'Outbound'
         AND (duration IS NULL OR duration = 0)
         AND transcript IS NULL
         AND created_at > datetime('now', '-48 hours')
         AND (is_seen IS NULL OR is_seen = 0)
-    `).get();
+    `).get(userId);
 
     // Unread text conversations: phones where the most recent message is inbound AND unread
     const { texts } = db.prepare(`
@@ -28,22 +28,25 @@ router.get('/', (req, res) => {
       FROM messages m
       WHERE m.direction = 'inbound'
         AND (m.is_read IS NULL OR m.is_read = 0)
+        AND (m.user_id = ? OR m.user_id IS NULL)
         AND m.id = (
           SELECT id FROM messages m2
           WHERE m2.phone = m.phone
+            AND (m2.user_id = ? OR m2.user_id IS NULL)
           ORDER BY m2.created_at DESC
           LIMIT 1
         )
-    `).get();
+    `).get(userId, userId);
 
-    // Unread inbound emails (is_read = 0 set by Gmail poller for new mail)
+    // Unread inbound emails
     const { emails } = db.prepare(`
       SELECT COUNT(*) AS emails FROM emails
       WHERE direction = 'inbound'
         AND is_read = 0
         AND (is_deleted  IS NULL OR is_deleted  = 0)
         AND (is_archived IS NULL OR is_archived = 0)
-    `).get();
+        AND (user_id = ? OR user_id IS NULL)
+    `).get(userId);
 
     res.json({ calls: calls || 0, texts: texts || 0, emails: emails || 0 });
   } catch (err) {

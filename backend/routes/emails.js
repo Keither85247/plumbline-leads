@@ -5,8 +5,6 @@ const router  = express.Router();
 const db      = require('../db');
 const gmailService = require('../services/gmailService');
 
-// Multer: memory storage, 10 MB total limit, max 5 files
-// Allowed mime types checked per-file below.
 const ALLOWED_MIME_TYPES = new Set([
   'application/pdf',
   'image/jpeg', 'image/png', 'image/gif', 'image/webp',
@@ -20,12 +18,9 @@ const ALLOWED_MIME_TYPES = new Set([
 const upload = multer({
   storage: multer.memoryStorage(),
   limits:  { fileSize: 10 * 1024 * 1024, files: 5 },
-  fileFilter(_req, file, cb) {
-    cb(null, ALLOWED_MIME_TYPES.has(file.mimetype));
-  },
+  fileFilter(_req, file, cb) { cb(null, ALLOWED_MIME_TYPES.has(file.mimetype)); },
 });
 
-// Normalize phone to 10 digits for matching (mirrors calls.js)
 function normalizePhone(num) {
   if (!num) return null;
   const digits = num.replace(/\D/g, '');
@@ -33,25 +28,13 @@ function normalizePhone(num) {
 }
 
 // ── GET /api/emails ───────────────────────────────────────────────────────────
-// Excludes soft-deleted and archived emails.
-// Enriches each row with `contact_name` by matching the counterpart address
-// against contacts.email then resolving from leads.
-//
-// Optional query param:
-//   ?mailbox=sent   → outbound messages only
-//   ?mailbox=inbox  → inbound messages only
-//   ?mailbox=trash  → messages with mailbox = 'trash'
-//   ?mailbox=spam   → messages with mailbox = 'spam'
-//   (omit for all)
-//
-// These four values form a whitelist; any other value is ignored (returns all).
+// TRANSITIONAL: includes NULL user_id rows (Gmail poller creates rows without a
+// user_id until Phase 3 adds per-user Gmail isolation).
 
 const VALID_MAILBOX_FILTERS = new Set(['sent', 'inbox', 'trash', 'spam']);
 
 router.get('/', (req, res) => {
   try {
-    // Build a safe direction/mailbox filter from the query param.
-    // Only ever inserts one of four hardcoded SQL fragments — not user input.
     const mb = req.query.mailbox;
     const filterClause =
       mb === 'sent'  ? "AND e.direction = 'outbound'" :
@@ -73,6 +56,7 @@ router.get('/', (req, res) => {
                   COALESCE(l.callback_number, l.phone_number, ''),
                   '+',''),'-',''),' ',''),'(',''),')','') = c.phone
                 AND l.contact_name != 'Unknown'
+                AND (l.user_id = ? OR l.user_id IS NULL)
               ORDER BY l.created_at DESC
               LIMIT 1
             ),
@@ -82,6 +66,7 @@ router.get('/', (req, res) => {
           WHERE
             c.email IS NOT NULL
             AND trim(c.email) != ''
+            AND (c.user_id = ? OR c.user_id IS NULL)
             AND instr(
                   lower(CASE WHEN e.direction = 'outbound'
                               THEN COALESCE(e.to_address,   '')
@@ -94,10 +79,12 @@ router.get('/', (req, res) => {
       FROM emails e
       WHERE (e.is_deleted IS NULL OR e.is_deleted = 0)
         AND (e.is_archived IS NULL OR e.is_archived = 0)
+        AND (e.user_id = ? OR e.user_id IS NULL)
         ${filterClause}
       ORDER BY e.created_at DESC
       LIMIT 200
-    `).all();
+    `).all(req.userId, req.userId, req.userId);
+
     res.json(emails);
   } catch (err) {
     console.error('[Emails] Failed to fetch emails:', err.message);
@@ -106,47 +93,37 @@ router.get('/', (req, res) => {
 });
 
 // ── GET /api/emails/by-phone/:phone ──────────────────────────────────────────
-// Returns all non-deleted emails for a contact.
-// Matches on EITHER:
-//   (a) the phone column on the email row (manually-logged emails), OR
-//   (b) the contact's saved email address matching from_address / to_address
-//       (covers Gmail-synced mail sent/received from another client).
-//
-// The contact email lookup uses contacts.phone = normalizedPhone,
-// since ContactHistoryModal always passes the 10-digit normalised form.
-
 router.get('/by-phone/:phone', (req, res) => {
   try {
     const normalized = normalizePhone(req.params.phone);
     if (!normalized) return res.json([]);
 
-    // Look up this contact's email address (if any) from the profiles table.
-    const contactRow   = db.prepare('SELECT email FROM contacts WHERE phone = ?').get(normalized);
+    const contactRow = db.prepare(
+      'SELECT email FROM contacts WHERE phone = ? AND (user_id = ? OR user_id IS NULL)'
+    ).get(normalized, req.userId);
     const contactEmail = (contactRow?.email || '').trim().toLowerCase();
 
     let emails;
-
     if (contactEmail) {
-      // Match by phone column OR by from/to address containing the contact email.
-      // INSTR handles both plain "user@example.com" and "Name <user@example.com>" formats.
       emails = db.prepare(`
         SELECT * FROM emails
         WHERE (is_deleted IS NULL OR is_deleted = 0)
+          AND (user_id = ? OR user_id IS NULL)
           AND (
             REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''),'(',''),')','') = ?
             OR instr(lower(from_address), ?) > 0
             OR instr(lower(to_address),   ?) > 0
           )
         ORDER BY created_at DESC
-      `).all(normalized, contactEmail, contactEmail);
+      `).all(req.userId, normalized, contactEmail, contactEmail);
     } else {
-      // No email on the contact profile — fall back to phone-only match.
       emails = db.prepare(`
         SELECT * FROM emails
         WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''),'(',''),')','') = ?
           AND (is_deleted IS NULL OR is_deleted = 0)
+          AND (user_id = ? OR user_id IS NULL)
         ORDER BY created_at DESC
-      `).all(normalized);
+      `).all(normalized, req.userId);
     }
 
     res.json(emails);
@@ -157,12 +134,7 @@ router.get('/by-phone/:phone', (req, res) => {
 });
 
 // ── POST /api/emails ──────────────────────────────────────────────────────────
-// Sends an outbound email via Gmail (if connected) and logs it to the DB.
-// Accepts multipart/form-data (for attachments) or application/json (no attachments).
-// For inbound emails logged by the poller, direction = 'inbound'.
-
 router.post('/', upload.array('attachments', 5), async (req, res) => {
-  // Support both JSON and multipart/form-data bodies
   const body_raw = req.body;
   const {
     phone,
@@ -170,9 +142,9 @@ router.post('/', upload.array('attachments', 5), async (req, res) => {
     from_address,
     to_address,
     subject,
-    body,          // full email body — used for sending only, not stored
-    body_preview,  // short preview stored in DB
-    status         = 'sent',
+    body,
+    body_preview,
+    status       = 'sent',
     external_id,
   } = body_raw;
 
@@ -180,22 +152,10 @@ router.post('/', upload.array('attachments', 5), async (req, res) => {
     return res.status(400).json({ error: 'direction must be "inbound" or "outbound"' });
   }
 
-  // Build attachment list from uploaded files (multer puts them in req.files)
-  const uploadedFiles = req.files ?? [];
-  const attachments   = uploadedFiles.map(f => ({
-    filename: f.originalname,
-    mimeType: f.mimetype,
-    buffer:   f.buffer,
-  }));
+  const uploadedFiles  = req.files ?? [];
+  const attachments    = uploadedFiles.map(f => ({ filename: f.originalname, mimeType: f.mimetype, buffer: f.buffer }));
+  const attachmentsMeta = uploadedFiles.map(f => ({ filename: f.originalname, mime_type: f.mimetype, size: f.size }));
 
-  // Attachment metadata to persist (no binary content, just meta)
-  const attachmentsMeta = uploadedFiles.map(f => ({
-    filename:  f.originalname,
-    mime_type: f.mimetype,
-    size:      f.size,
-  }));
-
-  // ── Outbound: attempt to send via Gmail ────────────────────────────────────
   let gmailMessageId = null;
   let threadId       = null;
 
@@ -204,12 +164,7 @@ router.post('/', upload.array('attachments', 5), async (req, res) => {
       return res.status(400).json({ error: 'Gmail not connected. Connect your account first.' });
     }
     try {
-      const sent = await gmailService.sendEmail({
-        to:      to_address,
-        subject: subject || '',
-        body,
-        attachments,
-      });
+      const sent = await gmailService.sendEmail({ to: to_address, subject: subject || '', body, attachments });
       gmailMessageId = sent.id       ?? null;
       threadId       = sent.threadId ?? null;
       console.log(`[Emails] Sent via Gmail to ${to_address} (msgId: ${gmailMessageId}, attachments: ${attachments.length})`);
@@ -219,20 +174,17 @@ router.post('/', upload.array('attachments', 5), async (req, res) => {
     }
   }
 
-  // ── Persist to DB ──────────────────────────────────────────────────────────
   try {
     const preview         = body_preview ?? (body ? body.slice(0, 300) : null);
     const is_read         = direction === 'outbound' ? 1 : 0;
-    const attachmentsJson = attachmentsMeta.length > 0
-      ? JSON.stringify(attachmentsMeta)
-      : null;
+    const attachmentsJson = attachmentsMeta.length > 0 ? JSON.stringify(attachmentsMeta) : null;
 
     const result = db.prepare(`
       INSERT INTO emails
         (phone, direction, from_address, to_address, subject,
          body_preview, status, external_id, gmail_message_id, thread_id,
-         is_read, attachments_json, mailbox)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         is_read, attachments_json, mailbox, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       phone          || null,
       direction,
@@ -247,6 +199,7 @@ router.post('/', upload.array('attachments', 5), async (req, res) => {
       is_read,
       attachmentsJson,
       direction === 'outbound' ? 'sent' : 'inbox',
+      req.userId,
     );
 
     const row = db.prepare('SELECT * FROM emails WHERE id = ?').get(result.lastInsertRowid);
@@ -258,10 +211,11 @@ router.post('/', upload.array('attachments', 5), async (req, res) => {
 });
 
 // ── GET /api/emails/:id ───────────────────────────────────────────────────────
-
 router.get('/:id', (req, res) => {
   try {
-    const row = db.prepare('SELECT * FROM emails WHERE id = ?').get(req.params.id);
+    const row = db.prepare(
+      'SELECT * FROM emails WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+    ).get(req.params.id, req.userId);
     if (!row) return res.status(404).json({ error: 'Email not found' });
     res.json(row);
   } catch (err) {
@@ -271,8 +225,6 @@ router.get('/:id', (req, res) => {
 });
 
 // ── PATCH /api/emails/:id ─────────────────────────────────────────────────────
-// Accepts: is_read, is_archived, is_deleted (as booleans or 0/1 integers)
-
 router.patch('/:id', (req, res) => {
   const { is_read, is_archived, is_deleted } = req.body;
   const fields = {};
@@ -289,7 +241,10 @@ router.patch('/:id', (req, res) => {
   const values    = Object.values(fields);
 
   try {
-    db.prepare(`UPDATE emails SET ${setClause} WHERE id = ?`).run(...values, req.params.id);
+    db.prepare(
+      `UPDATE emails SET ${setClause} WHERE id = ? AND (user_id = ? OR user_id IS NULL)`
+    ).run(...values, req.params.id, req.userId);
+
     const row = db.prepare('SELECT * FROM emails WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Email not found' });
     res.json(row);
@@ -300,11 +255,11 @@ router.patch('/:id', (req, res) => {
 });
 
 // ── DELETE /api/emails/:id ────────────────────────────────────────────────────
-// Soft-deletes: sets is_deleted = 1 (email remains in DB for audit trail).
-
 router.delete('/:id', (req, res) => {
   try {
-    const info = db.prepare('UPDATE emails SET is_deleted = 1 WHERE id = ?').run(req.params.id);
+    const info = db.prepare(
+      'UPDATE emails SET is_deleted = 1 WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+    ).run(req.params.id, req.userId);
     if (info.changes === 0) return res.status(404).json({ error: 'Email not found' });
     res.json({ ok: true });
   } catch (err) {

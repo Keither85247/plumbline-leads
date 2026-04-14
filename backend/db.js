@@ -178,27 +178,95 @@ try { db.exec('ALTER TABLE calls ADD COLUMN is_seen INTEGER NOT NULL DEFAULT 0')
 // MMS support — JSON array of media URLs (outbound: our CDN path; inbound: Twilio CDN URLs)
 try { db.exec('ALTER TABLE messages ADD COLUMN media_urls TEXT'); } catch {}
 
-// ── User accounts (multi-tenant scaffolding) ──────────────────────────────────
-// The app starts as single-user; these tables/columns prepare it for multi-user.
-// user_id on data tables is nullable so existing rows are unaffected.
-// Authentication and row-level scoping are enforced in auth middleware.
+// ── User accounts ─────────────────────────────────────────────────────────────
+// One row per contractor account. password_hash stored as bcrypt.
+// api_key kept for potential CLI/tester use (not used by session auth).
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    email        TEXT    NOT NULL UNIQUE,
-    display_name TEXT,
-    api_key      TEXT    UNIQUE,           -- simple tester auth token
-    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    email         TEXT    NOT NULL UNIQUE,
+    display_name  TEXT,
+    api_key       TEXT    UNIQUE,
+    password_hash TEXT,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+// Safe migration: add password_hash to existing users table
+try { db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch {}
+
+// ── Sessions ──────────────────────────────────────────────────────────────────
+// One row per active login. Token is a 32-byte random hex string stored in an
+// httpOnly cookie. Rows are invalidated by deleting them (logout) or by
+// expires_at passing (checked on every protected request).
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS sessions (
+    token      TEXT    PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    expires_at DATETIME NOT NULL
   )
 `);
 
-// Scaffold user_id onto all data-bearing tables.
-// All nullable + no default — existing rows stay NULL (treated as "legacy / shared").
+// ── user_id scaffolding on data tables ────────────────────────────────────────
+// All nullable so existing rows stay intact (NULL = legacy / pre-auth row).
+// Row-level scoping is enforced in route handlers via (user_id = ? OR user_id IS NULL).
+// Once all legacy data is claimed (create-user.js --assign), remove the NULL clause.
+
 try { db.exec('ALTER TABLE leads    ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
 try { db.exec('ALTER TABLE calls    ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
-try { db.exec('ALTER TABLE contacts ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
 try { db.exec('ALTER TABLE emails   ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
 try { db.exec('ALTER TABLE gmail_tokens ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
+try { db.exec('ALTER TABLE messages ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
+
+// ── Contacts table migration ───────────────────────────────────────────────────
+// Old schema: phone TEXT PRIMARY KEY — globally unique, blocks multi-user.
+// New schema: UNIQUE(user_id, phone) — each user can save the same phone number.
+// Runs once; safe to re-deploy (the regex check prevents re-running).
+try {
+  const tableInfo = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='contacts'"
+  ).get();
+
+  // Only migrate if the old PRIMARY KEY declaration is still present
+  if (tableInfo && /phone\s+TEXT\s+PRIMARY\s+KEY/i.test(tableInfo.sql)) {
+    db.exec(`
+      CREATE TABLE contacts_new (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id                  INTEGER REFERENCES users(id),
+        phone                    TEXT    NOT NULL,
+        name                     TEXT,
+        address                  TEXT,
+        email                    TEXT,
+        notes                    TEXT,
+        preferred_contact_method TEXT,
+        formatted_address        TEXT,
+        address_line_1           TEXT,
+        city                     TEXT,
+        state                    TEXT,
+        postal_code              TEXT,
+        country                  TEXT,
+        lat                      REAL,
+        lng                      REAL,
+        updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, phone)
+      );
+      INSERT INTO contacts_new
+        (user_id, phone, name, address, email, notes, preferred_contact_method,
+         formatted_address, address_line_1, city, state, postal_code, country,
+         lat, lng, updated_at)
+      SELECT
+        user_id, phone, name, address, email, notes, preferred_contact_method,
+        formatted_address, address_line_1, city, state, postal_code, country,
+        lat, lng, updated_at
+      FROM contacts;
+      DROP TABLE contacts;
+      ALTER TABLE contacts_new RENAME TO contacts;
+    `);
+    console.log('[DB] Contacts table migrated to per-user uniqueness');
+  }
+} catch (err) {
+  console.error('[DB] Contacts migration error:', err.message);
+}
 
 module.exports = db;

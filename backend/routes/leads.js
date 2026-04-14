@@ -5,24 +5,31 @@ const db = require('../db');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const VALID_STATUSES = ['New', 'Contacted', 'Qualified', 'Closed'];
+const VALID_STATUSES   = ['New', 'Contacted', 'Qualified', 'Closed'];
 const VALID_CATEGORIES = ['Lead', 'Existing Customer', 'Vendor', 'Spam', 'Other'];
+const STATUS_ORDER     = { New: 0, Contacted: 1, Qualified: 2, Closed: 3 };
 
-// Status sort order: New first, Closed last
-const STATUS_ORDER = { New: 0, Contacted: 1, Qualified: 2, Closed: 3 };
-
+// ---------------------------------------------------------------------------
+// createLeadFromTranscript
 // Shared logic: call OpenAI, save lead, return the saved row.
-// contactNameFallback is used when OpenAI cannot extract a name from the transcript.
-// phoneNumber is pre-extracted from inbound caller ID (Twilio From field) when available.
-// language: 'en' | 'es' — controls the output language for summary, keyPoints, followUpText.
-//   Falls back to the LANGUAGE env var, then 'en'.
-async function createLeadFromTranscript({ transcript, rawText, contactNameFallback = 'Unknown', phoneNumber = null, source = 'voicemail', language, recordingUrl = null }) {
+// userId is optional — Twilio webhook callers pass null (legacy row); the
+// /api/leads POST route passes req.userId so the lead is user-scoped.
+// ---------------------------------------------------------------------------
+async function createLeadFromTranscript({
+  transcript,
+  rawText,
+  contactNameFallback = 'Unknown',
+  phoneNumber         = null,
+  source              = 'voicemail',
+  language,
+  recordingUrl        = null,
+  userId              = null,    // ← Phase 1 addition
+}) {
   const lang = language || process.env.LANGUAGE || 'en';
   const languageInstruction = lang === 'es'
     ? '\n- IMPORTANT: Write the "summary", all "keyPoints" strings, and "followUpText" in Spanish (Español). Keep all JSON field names in English.'
     : '';
 
-  // Adjust prompt language based on how the contact reached out
   const isSms = source === 'sms';
   const medium = isSms ? 'SMS message' : 'call transcript or voicemail';
   const summaryExamples = isSms
@@ -55,17 +62,27 @@ async function createLeadFromTranscript({ transcript, rawText, contactNameFallba
   });
 
   const parsed = JSON.parse(completion.choices[0].message.content);
-  const { contactName = 'Unknown', companyName = '', category = 'Other', summary = '', keyPoints = [], callbackNumber = '', followUpText = '' } = parsed;
+  const {
+    contactName  = 'Unknown',
+    companyName  = '',
+    category     = 'Other',
+    summary      = '',
+    keyPoints    = [],
+    callbackNumber = '',
+    followUpText = '',
+  } = parsed;
 
-  const resolvedName = contactName === 'Unknown' ? contactNameFallback : contactName;
-  const resolvedCompany = typeof companyName === 'string' ? companyName.trim() : '';
+  const resolvedName     = contactName === 'Unknown' ? contactNameFallback : contactName;
+  const resolvedCompany  = typeof companyName === 'string' ? companyName.trim() : '';
   const resolvedCategory = VALID_CATEGORIES.includes(category) ? category : 'Other';
-
-  // Prefer the callback number explicitly given in the transcript; fall back to caller ID
   const extractedCallback = typeof callbackNumber === 'string' ? callbackNumber.trim() : '';
 
   const result = db.prepare(
-    'INSERT INTO leads (transcript, raw_text, contact_name, company_name, phone_number, callback_number, summary, key_points, follow_up_text, category, source, recording_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    `INSERT INTO leads
+       (transcript, raw_text, contact_name, company_name, phone_number,
+        callback_number, summary, key_points, follow_up_text, category,
+        source, recording_url, user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     transcript,
     rawText ?? transcript,
@@ -78,16 +95,17 @@ async function createLeadFromTranscript({ transcript, rawText, contactNameFallba
     followUpText,
     resolvedCategory,
     source,
-    recordingUrl || null
+    recordingUrl || null,
+    userId,
   );
-  console.log(`[Leads] Lead created — id:${result.lastInsertRowid} source:${source} recording:${recordingUrl ? 'yes' : 'none'}`);
+  console.log(`[Leads] Lead created — id:${result.lastInsertRowid} source:${source} user:${userId ?? 'legacy'}`);
 
   const newLead = db.prepare('SELECT * FROM leads WHERE id = ?').get(result.lastInsertRowid);
   newLead.key_points = JSON.parse(newLead.key_points);
   return newLead;
 }
 
-// Check for a duplicate: same phone number + exact transcript within the last 5 minutes
+// Duplicate check — global (prevents double-processing the same Twilio webhook)
 function isDuplicate(phoneNumber, transcript) {
   if (!phoneNumber) return false;
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
@@ -97,9 +115,7 @@ function isDuplicate(phoneNumber, transcript) {
   return !!existing;
 }
 
-// Check if this phone number already has an open (non-archived) lead created today.
-// Used for SMS: repeated texts from the same person on the same day should not
-// create a new lead each time — they belong to the existing open conversation.
+// Same-day lead check — global (prevents repeated SMS creating duplicate leads)
 function hasLeadToday(phoneNumber) {
   if (!phoneNumber) return false;
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -112,7 +128,9 @@ function hasLeadToday(phoneNumber) {
   return !!existing;
 }
 
-// POST /api/leads — accept transcript, summarize via OpenAI, save and return lead
+// ---------------------------------------------------------------------------
+// POST /api/leads — manual transcript submission (user-initiated from the UI)
+// ---------------------------------------------------------------------------
 router.post('/', async (req, res) => {
   const { transcript } = req.body;
 
@@ -123,8 +141,9 @@ router.post('/', async (req, res) => {
   try {
     const newLead = await createLeadFromTranscript({
       transcript,
-      rawText: req.body.rawText || transcript,
+      rawText:  req.body.rawText || transcript,
       language: req.body.language || undefined,
+      userId:   req.userId,   // ← scoped to the logged-in user
     });
     return res.status(201).json(newLead);
   } catch (err) {
@@ -136,7 +155,12 @@ router.post('/', async (req, res) => {
   }
 });
 
-// GET /api/leads — return leads; ?archived=true returns only archived; ?source=voicemail filters by source
+// ---------------------------------------------------------------------------
+// GET /api/leads
+// TRANSITIONAL: includes NULL user_id rows so legacy + Twilio-created leads
+// remain visible until all rows are claimed (see scripts/create-user.js).
+// Remove the "OR l.user_id IS NULL" clause once Phase 2 Twilio scoping is done.
+// ---------------------------------------------------------------------------
 router.get('/', (req, res) => {
   try {
     const showArchived = req.query.archived === 'true';
@@ -149,8 +173,10 @@ router.get('/', (req, res) => {
         (SELECT MAX(m.created_at) FROM messages m
          WHERE m.phone = l.phone_number OR m.phone = l.callback_number) AS last_message_at
       FROM leads l
-      WHERE l.archived = ?`;
-    const params = [showArchived ? 1 : 0];
+      WHERE l.archived = ?
+        AND (l.user_id = ? OR l.user_id IS NULL)`;
+    const params = [showArchived ? 1 : 0, req.userId];
+
     if (source) {
       query += ' AND l.source = ?';
       params.push(source);
@@ -160,8 +186,9 @@ router.get('/', (req, res) => {
     const leads = db.prepare(query).all(...params);
     const result = leads.map(lead => ({
       ...lead,
-      key_points: JSON.parse(lead.key_points)
+      key_points: JSON.parse(lead.key_points),
     }));
+
     if (!showArchived) {
       result.sort((a, b) => {
         const statusDiff = (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99);
@@ -176,26 +203,25 @@ router.get('/', (req, res) => {
   }
 });
 
-// GET /api/leads/:id/voicemail — proxy voicemail audio from Twilio with Basic auth
-// The browser cannot authenticate directly against Twilio recording URLs, so
-// this route fetches the audio server-side and streams it to the client.
+// ---------------------------------------------------------------------------
+// GET /api/leads/:id/voicemail — proxy Twilio recording audio with Basic auth
+// ---------------------------------------------------------------------------
 router.get('/:id/voicemail', (req, res) => {
-  const lead = db.prepare('SELECT recording_url FROM leads WHERE id = ?').get(req.params.id);
+  const lead = db.prepare(
+    'SELECT recording_url FROM leads WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+  ).get(req.params.id, req.userId);
 
   if (!lead) {
-    console.warn(`[Leads] Voicemail playback: lead ${req.params.id} not found`);
+    console.warn(`[Leads] Voicemail: lead ${req.params.id} not found or not owned by user ${req.userId}`);
     return res.status(404).json({ error: 'Lead not found' });
   }
   if (!lead.recording_url) {
-    console.warn(`[Leads] Voicemail playback: lead ${req.params.id} has no recording_url`);
     return res.status(404).json({ error: 'No recording available for this lead' });
   }
 
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken  = process.env.TWILIO_AUTH_TOKEN;
-
   if (!accountSid || !authToken) {
-    console.error('[Leads] Voicemail playback: TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN missing');
     return res.status(500).json({ error: 'Twilio credentials not configured' });
   }
 
@@ -203,70 +229,45 @@ router.get('/:id/voicemail', (req, res) => {
     ? lead.recording_url
     : `${lead.recording_url}.mp3`;
 
-  console.log(`[Leads] Voicemail playback: proxying lead ${req.params.id} → ${audioUrl}`);
-
-  const credentials = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
-  const protocol = audioUrl.startsWith('https') ? require('https') : require('http');
-
-  // Pass any Range header from the browser through to Twilio so seeking works.
-  // Without this, the browser sends a Range request (because the player wants to
-  // seek) and gets back the full file — confusing the scrubber into showing 100%.
+  const credentials  = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+  const protocol     = audioUrl.startsWith('https') ? require('https') : require('http');
   const upstreamHeaders = { Authorization: `Basic ${credentials}` };
-  if (req.headers.range) {
-    upstreamHeaders['Range'] = req.headers.range;
-  }
+  if (req.headers.range) upstreamHeaders['Range'] = req.headers.range;
 
   protocol.get(audioUrl, { headers: upstreamHeaders }, (twilioRes) => {
     const status = twilioRes.statusCode;
-
-    // 200 OK (full file) and 206 Partial Content (range request) are both valid
     if (status !== 200 && status !== 206) {
-      console.error(`[Leads] Voicemail playback: Twilio returned ${status} for lead ${req.params.id}`);
       twilioRes.resume();
       return res.status(502).json({ error: `Twilio returned ${status}` });
     }
-
-    // Forward headers that the browser needs to track playback progress and seek:
-    //   content-type     — so the browser knows it's audio
-    //   content-length   — lets the browser calculate duration (without this, scrubber breaks)
-    //   accept-ranges    — only advertise range support if Twilio actually provides it
-    //   content-range    — required for 206 Partial Content responses
     res.setHeader('Content-Type', twilioRes.headers['content-type'] || 'audio/mpeg');
-    if (twilioRes.headers['content-length']) {
-      res.setHeader('Content-Length', twilioRes.headers['content-length']);
-    }
-    if (twilioRes.headers['accept-ranges']) {
-      res.setHeader('Accept-Ranges', twilioRes.headers['accept-ranges']);
-    }
-    if (twilioRes.headers['content-range']) {
-      res.setHeader('Content-Range', twilioRes.headers['content-range']);
-    }
-
+    if (twilioRes.headers['content-length']) res.setHeader('Content-Length', twilioRes.headers['content-length']);
+    if (twilioRes.headers['accept-ranges'])  res.setHeader('Accept-Ranges',  twilioRes.headers['accept-ranges']);
+    if (twilioRes.headers['content-range'])  res.setHeader('Content-Range',  twilioRes.headers['content-range']);
     res.status(status);
     twilioRes.pipe(res);
   }).on('error', (err) => {
-    console.error(`[Leads] Voicemail playback: fetch failed for lead ${req.params.id}:`, err.message);
     res.status(500).json({ error: 'Failed to fetch recording' });
   });
 });
 
-// PATCH /api/leads/:id/status — update lead status
+// ---------------------------------------------------------------------------
+// PATCH /api/leads/:id/status
+// ---------------------------------------------------------------------------
 router.patch('/:id/status', (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
 
   if (!VALID_STATUSES.includes(status)) {
-    return res.status(400).json({
-      error: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}`
-    });
+    return res.status(400).json({ error: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}` });
   }
 
   try {
-    const result = db.prepare('UPDATE leads SET status = ? WHERE id = ?').run(status, id);
+    const result = db.prepare(
+      'UPDATE leads SET status = ? WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+    ).run(status, id, req.userId);
 
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Lead not found' });
-    }
+    if (result.changes === 0) return res.status(404).json({ error: 'Lead not found' });
 
     const updated = db.prepare('SELECT * FROM leads WHERE id = ?').get(id);
     updated.key_points = JSON.parse(updated.key_points);
@@ -277,23 +278,23 @@ router.patch('/:id/status', (req, res) => {
   }
 });
 
-// PATCH /api/leads/:id/category — update lead category
+// ---------------------------------------------------------------------------
+// PATCH /api/leads/:id/category
+// ---------------------------------------------------------------------------
 router.patch('/:id/category', (req, res) => {
   const { id } = req.params;
   const { category } = req.body;
 
   if (!VALID_CATEGORIES.includes(category)) {
-    return res.status(400).json({
-      error: `Invalid category. Must be one of: ${VALID_CATEGORIES.join(', ')}`
-    });
+    return res.status(400).json({ error: `Invalid category. Must be one of: ${VALID_CATEGORIES.join(', ')}` });
   }
 
   try {
-    const result = db.prepare('UPDATE leads SET category = ? WHERE id = ?').run(category, id);
+    const result = db.prepare(
+      'UPDATE leads SET category = ? WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+    ).run(category, id, req.userId);
 
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Lead not found' });
-    }
+    if (result.changes === 0) return res.status(404).json({ error: 'Lead not found' });
 
     const updated = db.prepare('SELECT * FROM leads WHERE id = ?').get(id);
     updated.key_points = JSON.parse(updated.key_points);
@@ -304,17 +305,19 @@ router.patch('/:id/category', (req, res) => {
   }
 });
 
-// PATCH /api/leads/:id/archive — toggle archived state
+// ---------------------------------------------------------------------------
+// PATCH /api/leads/:id/archive
+// ---------------------------------------------------------------------------
 router.patch('/:id/archive', (req, res) => {
   const { id } = req.params;
-  const { archived } = req.body; // boolean
+  const { archived } = req.body;
 
   try {
-    const result = db.prepare('UPDATE leads SET archived = ? WHERE id = ?').run(archived ? 1 : 0, id);
+    const result = db.prepare(
+      'UPDATE leads SET archived = ? WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+    ).run(archived ? 1 : 0, id, req.userId);
 
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Lead not found' });
-    }
+    if (result.changes === 0) return res.status(404).json({ error: 'Lead not found' });
 
     const updated = db.prepare('SELECT * FROM leads WHERE id = ?').get(id);
     updated.key_points = JSON.parse(updated.key_points);
@@ -325,16 +328,18 @@ router.patch('/:id/archive', (req, res) => {
   }
 });
 
-// DELETE /api/leads/:id — permanently delete a lead
+// ---------------------------------------------------------------------------
+// DELETE /api/leads/:id
+// ---------------------------------------------------------------------------
 router.delete('/:id', (req, res) => {
   const { id } = req.params;
 
   try {
-    const result = db.prepare('DELETE FROM leads WHERE id = ?').run(id);
+    const result = db.prepare(
+      'DELETE FROM leads WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+    ).run(id, req.userId);
 
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Lead not found' });
-    }
+    if (result.changes === 0) return res.status(404).json({ error: 'Lead not found' });
 
     return res.json({ ok: true });
   } catch (err) {

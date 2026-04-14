@@ -3,11 +3,14 @@ const db = require('../db');
 
 const router = express.Router();
 
-// GET /api/contacts — all saved contact profiles (only rows that exist in the table)
-// Used by ContactsPage to overlay saved names on top of lead-derived names.
+// ---------------------------------------------------------------------------
+// GET /api/contacts
+// ---------------------------------------------------------------------------
 router.get('/', (req, res) => {
   try {
-    const rows = db.prepare('SELECT * FROM contacts ORDER BY updated_at DESC').all();
+    const rows = db.prepare(
+      'SELECT * FROM contacts WHERE (user_id = ? OR user_id IS NULL) ORDER BY updated_at DESC'
+    ).all(req.userId);
     res.json(rows);
   } catch (err) {
     console.error('[Contacts] GET / failed:', err.message);
@@ -15,20 +18,15 @@ router.get('/', (req, res) => {
   }
 });
 
-// GET /api/contacts/search?q=... ─────────────────────────────────────────────
-// Full-text search over contacts that have a saved email address.
-// Matches against the contact's email AND against the name derived from leads.
-// NOTE: must be defined BEFORE the /:phone wildcard route.
-
+// ---------------------------------------------------------------------------
+// GET /api/contacts/search?q=...
+// Must be defined BEFORE the /:phone wildcard route.
+// ---------------------------------------------------------------------------
 router.get('/search', (req, res) => {
   const q = (req.query.q || '').trim().toLowerCase();
-  // Require at least one character to avoid returning the full list
   if (!q) return res.json([]);
 
   try {
-    // Build a derived table that pairs each contact (with email) with the best
-    // name from their most-recent non-unknown lead record. Falls back to the
-    // email address itself so the row is always selectable.
     const rows = db.prepare(`
       SELECT t.phone, t.email, t.name
       FROM (
@@ -44,6 +42,7 @@ router.get('/search', (req, res) => {
                   COALESCE(l.callback_number, l.phone_number, ''),
                   '+',''),'-',''),' ',''),'(',''),')','') = c.phone
                 AND l.contact_name != 'Unknown'
+                AND (l.user_id = ? OR l.user_id IS NULL)
               ORDER BY l.created_at DESC
               LIMIT 1
             ),
@@ -51,13 +50,14 @@ router.get('/search', (req, res) => {
           ) AS name
         FROM contacts c
         WHERE c.email IS NOT NULL AND trim(c.email) != ''
+          AND (c.user_id = ? OR c.user_id IS NULL)
       ) t
       WHERE
         instr(lower(t.email), ?) > 0
         OR instr(lower(t.name),  ?) > 0
       ORDER BY t.name ASC
       LIMIT 8
-    `).all(q, q);
+    `).all(req.userId, req.userId, q, q);
 
     res.json(rows);
   } catch (err) {
@@ -66,25 +66,32 @@ router.get('/search', (req, res) => {
   }
 });
 
-// GET /api/contacts/:phone — fetch saved profile for a normalized phone number
+// ---------------------------------------------------------------------------
+// GET /api/contacts/:phone
+// ---------------------------------------------------------------------------
 router.get('/:phone', (req, res) => {
   const { phone } = req.params;
-  const row = db.prepare('SELECT * FROM contacts WHERE phone = ?').get(phone);
+  const row = db.prepare(
+    'SELECT * FROM contacts WHERE phone = ? AND (user_id = ? OR user_id IS NULL)'
+  ).get(phone, req.userId);
   if (!row) return res.json(null);
   res.json(row);
 });
 
-// PUT /api/contacts/:phone — upsert full profile including structured address fields
+// ---------------------------------------------------------------------------
+// PUT /api/contacts/:phone
+// Upsert: if a row for this (user, phone) pair exists, update it; else insert.
+// Also claims ownership of any legacy NULL user_id row for this phone.
+// ---------------------------------------------------------------------------
 router.put('/:phone', (req, res) => {
-  const { phone } = req.params;
+  const { phone }  = req.params;
+  const userId     = req.userId;
   const {
     name,
-    // legacy plain text address (kept for backwards compat)
     address,
     email,
     notes,
     preferred_contact_method,
-    // structured address fields from Mapbox
     formatted_address,
     address_line_1,
     city,
@@ -95,46 +102,84 @@ router.put('/:phone', (req, res) => {
     lng,
   } = req.body;
 
-  db.prepare(`
-    INSERT INTO contacts (
-      phone, name, address, email, notes, preferred_contact_method,
-      formatted_address, address_line_1, city, state, postal_code, country, lat, lng,
-      updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(phone) DO UPDATE SET
-      name                     = excluded.name,
-      address                  = excluded.address,
-      email                    = excluded.email,
-      notes                    = excluded.notes,
-      preferred_contact_method = excluded.preferred_contact_method,
-      formatted_address        = excluded.formatted_address,
-      address_line_1           = excluded.address_line_1,
-      city                     = excluded.city,
-      state                    = excluded.state,
-      postal_code              = excluded.postal_code,
-      country                  = excluded.country,
-      lat                      = excluded.lat,
-      lng                      = excluded.lng,
-      updated_at               = CURRENT_TIMESTAMP
-  `).run(
-    phone,
-    name               || null,
-    address            || null,
-    email              || null,
-    notes              || null,
-    preferred_contact_method || null,
-    formatted_address  || null,
-    address_line_1     || null,
-    city               || null,
-    state              || null,
-    postal_code        || null,
-    country            || null,
-    lat                ?? null,
-    lng                ?? null,
-  );
+  try {
+    // Find an existing row this user owns or a legacy (NULL) row to claim
+    const existing = db.prepare(
+      'SELECT id FROM contacts WHERE phone = ? AND (user_id = ? OR user_id IS NULL) LIMIT 1'
+    ).get(phone, userId);
 
-  const row = db.prepare('SELECT * FROM contacts WHERE phone = ?').get(phone);
-  res.json(row);
+    if (existing) {
+      // Update in place — also stamps user_id so the NULL row becomes owned
+      db.prepare(`
+        UPDATE contacts SET
+          user_id                  = ?,
+          name                     = ?,
+          address                  = ?,
+          email                    = ?,
+          notes                    = ?,
+          preferred_contact_method = ?,
+          formatted_address        = ?,
+          address_line_1           = ?,
+          city                     = ?,
+          state                    = ?,
+          postal_code              = ?,
+          country                  = ?,
+          lat                      = ?,
+          lng                      = ?,
+          updated_at               = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        userId,
+        name               || null,
+        address            || null,
+        email              || null,
+        notes              || null,
+        preferred_contact_method || null,
+        formatted_address  || null,
+        address_line_1     || null,
+        city               || null,
+        state              || null,
+        postal_code        || null,
+        country            || null,
+        lat                ?? null,
+        lng                ?? null,
+        existing.id,
+      );
+    } else {
+      // No existing row — insert a fresh one for this user
+      db.prepare(`
+        INSERT INTO contacts
+          (user_id, phone, name, address, email, notes, preferred_contact_method,
+           formatted_address, address_line_1, city, state, postal_code, country,
+           lat, lng, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `).run(
+        userId,
+        phone,
+        name               || null,
+        address            || null,
+        email              || null,
+        notes              || null,
+        preferred_contact_method || null,
+        formatted_address  || null,
+        address_line_1     || null,
+        city               || null,
+        state              || null,
+        postal_code        || null,
+        country            || null,
+        lat                ?? null,
+        lng                ?? null,
+      );
+    }
+
+    const row = db.prepare(
+      'SELECT * FROM contacts WHERE phone = ? AND user_id = ?'
+    ).get(phone, userId);
+    res.json(row);
+  } catch (err) {
+    console.error('[Contacts] PUT failed:', err.message);
+    res.status(500).json({ error: 'Failed to save contact' });
+  }
 });
 
 module.exports = router;

@@ -12,7 +12,8 @@ import ContactHistoryModal from './components/ContactHistoryModal';
 import OutboundNoteModal from './components/OutboundNoteModal';
 import InboxLayout from './components/inbox/InboxLayout';
 import EmailPage from './components/EmailPage';
-import { getLeads, saveOutboundNote, getCounts, API_BASE } from './api';
+import LoginPage from './components/LoginPage';
+import { getLeads, saveOutboundNote, getCounts, getMe, logout, API_BASE } from './api';
 import { translations } from './i18n';
 import { useVoiceDevice } from './hooks/useVoiceDevice';
 
@@ -123,10 +124,55 @@ function sortLeads(leads) {
 }
 
 export default function App() {
+  // ── Authentication ────────────────────────────────────────────────────────
+  // On mount: ask the backend whether the session cookie is still valid.
+  // While checking: render nothing (avoids flash of login page on reload).
+  // If unauthenticated: show LoginPage.
+  // If authenticated: render the full app and update Sentry user context.
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  useEffect(() => {
+    async function checkAuth() {
+      let user = null;
+      try {
+        user = await getMe();
+      } catch {
+        // First attempt failed — likely Render cold-starting (free tier spins down).
+        // Wait 4 s and try once more before deciding the user is unauthenticated.
+        // This prevents a cold-start timeout from bouncing a logged-in user to the
+        // login page on the very first page load after a period of inactivity.
+        await new Promise(r => setTimeout(r, 4000));
+        try {
+          user = await getMe();
+        } catch {
+          // Second failure — genuinely unreachable; fall through with user = null
+        }
+      }
+      setCurrentUser(user);
+      if (user) Sentry.setUser({ id: String(user.id), email: user.email });
+      setAuthChecked(true);
+    }
+    checkAuth();
+  }, []);
+
+  const handleLoginSuccess = (user) => {
+    setCurrentUser(user);
+    Sentry.setUser({ id: String(user.id), email: user.email });
+  };
+
+  const handleLogout = async () => {
+    await logout().catch(() => {});
+    setCurrentUser(null);
+    Sentry.setUser(null);
+  };
+
   const voiceDevice = useVoiceDevice();
 
   // Register the voice device on mount so inbound calls ring in the app
-  useEffect(() => { voiceDevice.initialize(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (currentUser) voiceDevice.initialize();
+  }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [leads, setLeads] = useState([]);
   const [loadingLeads, setLoadingLeads] = useState(true);
@@ -157,6 +203,7 @@ export default function App() {
   const [remoteCounts, setRemoteCounts] = useState({ texts: 0, emails: 0 });
 
   useEffect(() => {
+    if (!currentUser) return; // don't poll while logged out
     let cancelled = false;
     const fetch_ = () => getCounts().then(c => {
       if (cancelled) return;
@@ -171,7 +218,7 @@ export default function App() {
     fetch_();
     const t = setInterval(fetch_, 30_000);
     return () => { cancelled = true; clearInterval(t); };
-  }, []);
+  }, [currentUser]);
 
   // ── Backend health indicator ──────────────────────────────────────────────
   // 'checking' → gray pulse  |  'up' → green  |  'down' → red
@@ -215,7 +262,7 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => { fetchLeads(); }, [fetchLeads]);
+  useEffect(() => { if (currentUser) fetchLeads(); }, [fetchLeads, currentUser]);
 
   const handleContractorNameChange = (e) => {
     const val = e.target.value;
@@ -242,6 +289,25 @@ export default function App() {
   };
   // bottom nav: timeline counts as its own view, not leads
 
+
+  // ── Auth gate ─────────────────────────────────────────────────────────────
+  // Waiting for the initial /auth/me call → blank screen (no flash)
+  if (!authChecked) {
+    return (
+      <div className="h-dvh flex items-center justify-center bg-gray-50">
+        <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // Not logged in → show login page
+  if (!currentUser) {
+    return (
+      <Sentry.ErrorBoundary fallback={<div className="h-dvh flex items-center justify-center"><p className="text-sm text-gray-500">Something went wrong.</p></div>}>
+        <LoginPage onSuccess={handleLoginSuccess} />
+      </Sentry.ErrorBoundary>
+    );
+  }
 
   return (
     <Sentry.ErrorBoundary fallback={
@@ -285,6 +351,17 @@ export default function App() {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
               <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </button>
+          {/* Log out — small button, visible on all screen sizes */}
+          <button
+            onClick={handleLogout}
+            className="p-2 text-gray-400 hover:text-gray-600 transition-colors rounded-lg hover:bg-gray-100"
+            aria-label="Log out"
+            title={`Log out (${currentUser.email})`}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
             </svg>
           </button>
         </div>

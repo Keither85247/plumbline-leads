@@ -2,30 +2,85 @@
 // In production (VITE_BACKEND_URL=https://your-backend.onrender.com): absolute cross-origin URLs
 export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || '';
 export const API_BASE    = `${BACKEND_URL}/api`;
-const AUTH_BASE          = `${BACKEND_URL}/auth`;
+export const AUTH_BASE   = `${BACKEND_URL}/auth`;
 
 import * as Sentry from '@sentry/react';
 
 /**
- * Thin fetch wrapper that automatically reports failures to Sentry.
- * Uses globalThis.fetch internally so replace_all swapping fetch→apiFetch
- * in this file doesn't cause infinite recursion.
+ * Thin fetch wrapper that:
+ *  1. Always sends credentials (session cookie) — required for cross-origin requests
+ *     between the Vercel frontend and the Render backend.
+ *  2. Reports unexpected non-2xx responses and network errors to Sentry.
+ *
+ * Uses globalThis.fetch internally so renaming fetch→apiFetch in this file
+ * doesn't cause infinite recursion.
+ *
+ * @param {string}   url
+ * @param {object}   options        Standard fetch options
+ * @param {number[]} options.skipSentryOn  HTTP status codes NOT to report to Sentry.
+ *                                         Use for expected non-2xx (e.g. 401 from /auth/me).
  */
 async function apiFetch(url, options = {}) {
+  const { skipSentryOn = [], ...fetchOptions } = options;
   try {
-    const res = await globalThis.fetch(url, options);
-    if (!res.ok) {
+    const res = await globalThis.fetch(url, {
+      credentials: 'include',   // send session cookie on every request
+      ...fetchOptions,
+    });
+    if (!res.ok && !skipSentryOn.includes(res.status)) {
       Sentry.captureException(
-        new Error(`${options.method || 'GET'} ${url} → HTTP ${res.status}`),
-        { extra: { url, status: res.status, method: options.method || 'GET' } }
+        new Error(`${fetchOptions.method || 'GET'} ${url} → HTTP ${res.status}`),
+        { extra: { url, status: res.status, method: fetchOptions.method || 'GET' } }
       );
     }
     return res;
   } catch (networkErr) {
-    // Covers: backend down, CORS block, no network
-    Sentry.captureException(networkErr, { extra: { url, method: options.method || 'GET' } });
+    // Covers: CORS block (wildcard origin + credentials), backend down, no network
+    Sentry.captureException(networkErr, { extra: { url, method: fetchOptions.method || 'GET' } });
     throw networkErr;
   }
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Log in with email + password.
+ * On success the backend sets an httpOnly session cookie — no token to store.
+ * @returns {{ id: number, email: string, display_name: string }}
+ */
+export async function login(email, password) {
+  // 401 means wrong password — expected, not an error worth sending to Sentry
+  const res = await apiFetch(`${AUTH_BASE}/login`, {
+    method:       'POST',
+    headers:      { 'Content-Type': 'application/json' },
+    body:         JSON.stringify({ email, password }),
+    skipSentryOn: [401],
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Login failed');
+  }
+  return res.json();
+}
+
+/**
+ * Log out — deletes the server-side session and clears the cookie.
+ */
+export async function logout() {
+  await apiFetch(`${AUTH_BASE}/logout`, { method: 'POST' });
+}
+
+/**
+ * Check whether the current session is still valid.
+ * Returns the user object if authenticated, or null if not.
+ * @returns {{ id: number, email: string, display_name: string } | null}
+ */
+export async function getMe() {
+  // 401 is the normal response when no session exists — not an error worth tracking
+  const res = await apiFetch(`${AUTH_BASE}/me`, { skipSentryOn: [401] });
+  if (res.status === 401) return null;
+  if (!res.ok) return null;
+  return res.json();
 }
 
 export async function createLead(transcript, language) {

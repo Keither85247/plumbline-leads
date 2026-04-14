@@ -18,8 +18,7 @@ if (import.meta.env.VITE_SENTRY_DSN) {
     ],
   });
 
-  // Tag every error with the user so you can filter by them in Sentry
-  Sentry.setUser({ id: 'contractor' });
+  // Sentry user context is set dynamically in App.jsx once auth resolves
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(
