@@ -146,7 +146,10 @@ export function normalizeCall(call) {
   // Classification badge only makes sense for inbound calls (it's the lead category).
   const classification = isOutbound ? null : (call.classification || null);
 
-  const hasContent = !!(call.summary || call.contractor_note || keyPoints.length > 0);
+  // A call with a recording is expandable even when the AI pipeline produced
+  // no summary/key points (e.g. short call, pipeline failure, or outbound call
+  // with no contractor note but with a Twilio recording).
+  const hasContent = !!(call.summary || call.contractor_note || keyPoints.length > 0 || call.recording_url);
 
   return {
     id:              call.id,
@@ -162,7 +165,8 @@ export function normalizeCall(call) {
     timestamp:       call.created_at,
     durationSeconds: call.duration        || null,
     classification,
-    isExpandable: hasContent,
+    isExpandable:    hasContent,
+    recordingUrl:    call.recording_url   || null,
   };
 }
 

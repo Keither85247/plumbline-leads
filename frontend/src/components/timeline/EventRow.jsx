@@ -1,5 +1,6 @@
 import { EVENT_META } from './normalizeEvent';
 import { parseTimestamp } from '../../utils/phone';
+import { API_BASE } from '../../api';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -318,6 +319,24 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
                 Your Note
               </p>
               <p className="text-xs text-gray-700 leading-relaxed">{event.note}</p>
+            </div>
+          )}
+
+          {/* Recording player — only for call events that have a recording */}
+          {!isEmail && !isSms && !isSmsThread && event.recordingUrl && (
+            <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">
+                Recording
+              </p>
+              <audio
+                controls
+                preload="metadata"
+                src={`${API_BASE}/calls/${event.id}/recording`}
+                className="w-full h-9"
+                style={{ colorScheme: 'light' }}
+              >
+                Your browser does not support audio playback.
+              </audio>
             </div>
           )}
         </div>

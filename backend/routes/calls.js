@@ -93,6 +93,51 @@ router.get('/by-phone/:number', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/calls/:id/recording
+// Proxies the Twilio recording for a call row using Basic auth, exactly as
+// GET /api/leads/:id/voicemail does for voicemail leads.
+// The browser <audio> element hits this route — Twilio credentials never leave
+// the server.
+// ---------------------------------------------------------------------------
+router.get('/:id/recording', (req, res) => {
+  const call = db.prepare(
+    'SELECT recording_url FROM calls WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+  ).get(req.params.id, req.userId);
+
+  if (!call) return res.status(404).json({ error: 'Call not found' });
+  if (!call.recording_url) return res.status(404).json({ error: 'No recording available for this call' });
+
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken  = process.env.TWILIO_AUTH_TOKEN;
+  if (!accountSid || !authToken) {
+    return res.status(500).json({ error: 'Twilio credentials not configured' });
+  }
+
+  const audioUrl = call.recording_url.endsWith('.mp3')
+    ? call.recording_url
+    : `${call.recording_url}.mp3`;
+
+  const credentials     = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+  const protocol        = audioUrl.startsWith('https') ? require('https') : require('http');
+  const upstreamHeaders = { Authorization: `Basic ${credentials}` };
+  if (req.headers.range) upstreamHeaders['Range'] = req.headers.range;
+
+  protocol.get(audioUrl, { headers: upstreamHeaders }, (twilioRes) => {
+    const status = twilioRes.statusCode;
+    if (status !== 200 && status !== 206) {
+      twilioRes.resume();
+      return res.status(502).json({ error: `Twilio returned ${status}` });
+    }
+    res.setHeader('Content-Type', twilioRes.headers['content-type'] || 'audio/mpeg');
+    if (twilioRes.headers['content-length']) res.setHeader('Content-Length', twilioRes.headers['content-length']);
+    if (twilioRes.headers['accept-ranges'])  res.setHeader('Accept-Ranges',  twilioRes.headers['accept-ranges']);
+    if (twilioRes.headers['content-range'])  res.setHeader('Content-Range',  twilioRes.headers['content-range']);
+    res.status(status);
+    twilioRes.pipe(res);
+  }).on('error', () => res.status(500).json({ error: 'Failed to fetch recording' }));
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/calls/outbound-note
 // ---------------------------------------------------------------------------
 router.post('/outbound-note', express.json(), (req, res) => {

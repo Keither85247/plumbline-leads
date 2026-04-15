@@ -41,14 +41,17 @@ function formatPhone(num) {
 }
 
 // Mirrors the same logic in TimelinePage — outcome-aware label for any call row.
+// `hasRecording` makes any call with a recording_url expandable even when there
+// is no transcript or contractor note (e.g. a short answered call with no AI output).
 function getCallMeta(call) {
-  const isOutbound = call.classification === 'Outbound';
+  const isOutbound   = call.classification === 'Outbound';
+  const hasRecording = !!call.recording_url;
   if (isOutbound) {
     switch (call.outcome) {
-      case 'answered':  return { text: 'Answered',           labelClass: 'text-blue-600 font-medium',  isExpandable: !!(call.contractor_note) };
-      case 'voicemail': return { text: 'You Left a Message', labelClass: 'text-amber-600 font-medium', isExpandable: !!(call.contractor_note) };
-      case 'no-answer': return { text: 'No Answer',          labelClass: 'text-gray-400',              isExpandable: false };
-      default:          return { text: 'Outbound',           labelClass: 'text-gray-400',              isExpandable: !!(call.contractor_note) };
+      case 'answered':  return { text: 'Answered',           labelClass: 'text-blue-600 font-medium',  isExpandable: !!(call.contractor_note) || hasRecording };
+      case 'voicemail': return { text: 'You Left a Message', labelClass: 'text-amber-600 font-medium', isExpandable: !!(call.contractor_note) || hasRecording };
+      case 'no-answer': return { text: 'No Answer',          labelClass: 'text-gray-400',              isExpandable: hasRecording };
+      default:          return { text: 'Outbound',           labelClass: 'text-gray-400',              isExpandable: !!(call.contractor_note) || hasRecording };
     }
   }
   // transcript OR duration > 0 means the call was answered
@@ -56,7 +59,7 @@ function getCallMeta(call) {
   return {
     text: answered ? 'Answered' : 'Missed',
     labelClass: answered ? 'text-green-600 font-medium' : 'text-red-400 font-medium',
-    isExpandable: answered,
+    isExpandable: answered || hasRecording,
   };
 }
 
@@ -380,6 +383,21 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                           <div className="bg-amber-50 rounded-lg p-3">
                             <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-1.5">Your Note</p>
                             <p className="text-sm text-gray-700 leading-relaxed">{call.contractor_note}</p>
+                          </div>
+                        )}
+                        {/* Recording player — shown whenever a recording exists */}
+                        {call.recording_url && (
+                          <div className="bg-gray-50 rounded-lg p-3">
+                            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Recording</p>
+                            <audio
+                              controls
+                              preload="metadata"
+                              src={`${API_BASE}/calls/${call.id}/recording`}
+                              className="w-full h-9"
+                              style={{ colorScheme: 'light' }}
+                            >
+                              Your browser does not support audio playback.
+                            </audio>
                           </div>
                         )}
                       </div>
