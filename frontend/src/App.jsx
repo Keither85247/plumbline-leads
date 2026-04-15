@@ -268,12 +268,12 @@ export default function App() {
       setLeads(data);
     } catch (err) {
       if (err instanceof AuthError) {
-        // Session expired — clear auth state and show login.
-        setCurrentUser(null);
-        Sentry.setUser(null);
-      } else {
-        console.error('Failed to load leads:', err);
+        // A single 401 on the initial load shouldn't immediately kick the user out —
+        // it could be a cold-start race. The getCounts polling loop is the right
+        // place to detect session expiry (fires every 30s, more reliable signal).
+        return;
       }
+      console.error('Failed to load leads:', err);
     } finally {
       setLoadingLeads(false);
     }

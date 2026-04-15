@@ -129,11 +129,14 @@ export function useVoiceDevice() {
     setError(null);
 
     try {
-      // Prime ringtone inside the user-gesture window so browsers allow
-      // it to play later when an incoming call arrives (no gesture available).
+      // Preload the ringtone so it's ready to play instantly when an incoming
+      // call arrives. We intentionally do NOT call play() here — playing then
+      // immediately pausing was supposed to "prime" the audio context but it
+      // caused the ringtone to play audibly on every login. load() buffers the
+      // file without making any sound.
       const ringtone = new Audio('/ringtone.mp3');
       ringtone.loop = true;
-      ringtone.play().then(() => ringtone.pause()).catch(() => {});
+      ringtone.load();
       ringtoneRef.current = ringtone;
 
       const token = await fetchToken();
