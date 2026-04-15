@@ -219,9 +219,18 @@ export default function App() {
       } catch (err) {
         if (cancelled) return;
         if (err instanceof AuthError) {
-          // Session expired while app was open — clear auth state and show login.
-          setCurrentUser(null);
-          Sentry.setUser(null);
+          // Don't trust a single 401 from a background poll — it could be a
+          // cold-start race right after login. Re-verify with /auth/me before
+          // clearing the session, so a transient blip doesn't boot the user out.
+          try {
+            const me = await getMe();
+            if (!cancelled && !me) {
+              setCurrentUser(null);
+              Sentry.setUser(null);
+            }
+          } catch {
+            // Network error on the re-check — leave auth state alone.
+          }
         }
         // Network blips, 5xx: ignore silently — badge just doesn't update this tick.
       }
