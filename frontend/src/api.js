@@ -7,38 +7,60 @@ export const AUTH_BASE   = `${BACKEND_URL}/auth`;
 import * as Sentry from '@sentry/react';
 
 /**
+ * Thrown whenever the backend returns HTTP 401.
+ * Treated as a session/auth event (not logged in, or session expired) —
+ * never reported to Sentry as a production error.
+ * Callers that need to react (e.g. polling loops) catch this and clear auth state.
+ */
+export class AuthError extends Error {
+  constructor() {
+    super('Session expired or not authenticated');
+    this.name = 'AuthError';
+  }
+}
+
+/**
  * Thin fetch wrapper that:
  *  1. Always sends credentials (session cookie) — required for cross-origin requests
  *     between the Vercel frontend and the Render backend.
- *  2. Reports unexpected non-2xx responses and network errors to Sentry.
+ *  2. Throws AuthError (silently) on HTTP 401 — callers treat this as a session event.
+ *  3. Reports unexpected non-2xx/non-401 responses and network errors to Sentry.
  *
  * Uses globalThis.fetch internally so renaming fetch→apiFetch in this file
  * doesn't cause infinite recursion.
  *
  * @param {string}   url
  * @param {object}   options        Standard fetch options
- * @param {number[]} options.skipSentryOn  HTTP status codes NOT to report to Sentry.
- *                                         Use for expected non-2xx (e.g. 401 from /auth/me).
+ * @param {number[]} options.skipSentryOn  Additional HTTP status codes NOT to report to Sentry.
  */
 async function apiFetch(url, options = {}) {
   const { skipSentryOn = [], ...fetchOptions } = options;
+
+  // Isolate the network call so its catch block never swallows our own thrown errors.
+  let res;
   try {
-    const res = await globalThis.fetch(url, {
+    res = await globalThis.fetch(url, {
       credentials: 'include',   // send session cookie on every request
       ...fetchOptions,
     });
-    if (!res.ok && !skipSentryOn.includes(res.status)) {
-      Sentry.captureException(
-        new Error(`${fetchOptions.method || 'GET'} ${url} → HTTP ${res.status}`),
-        { extra: { url, status: res.status, method: fetchOptions.method || 'GET' } }
-      );
-    }
-    return res;
   } catch (networkErr) {
     // Covers: CORS block (wildcard origin + credentials), backend down, no network
     Sentry.captureException(networkErr, { extra: { url, method: fetchOptions.method || 'GET' } });
     throw networkErr;
   }
+
+  // 401 = auth state (not logged in / session expired).
+  // This is never a bug — throw a typed error so callers can detect it,
+  // but do NOT report it to Sentry.
+  if (res.status === 401) throw new AuthError();
+
+  if (!res.ok && !skipSentryOn.includes(res.status)) {
+    Sentry.captureException(
+      new Error(`${fetchOptions.method || 'GET'} ${url} → HTTP ${res.status}`),
+      { extra: { url, status: res.status, method: fetchOptions.method || 'GET' } }
+    );
+  }
+  return res;
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -49,18 +71,23 @@ async function apiFetch(url, options = {}) {
  * @returns {{ id: number, email: string, display_name: string }}
  */
 export async function login(email, password) {
-  // 401 means wrong password — expected, not an error worth sending to Sentry
-  const res = await apiFetch(`${AUTH_BASE}/login`, {
-    method:       'POST',
-    headers:      { 'Content-Type': 'application/json' },
-    body:         JSON.stringify({ email, password }),
-    skipSentryOn: [401],
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Login failed');
+  try {
+    const res = await apiFetch(`${AUTH_BASE}/login`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ email, password }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Login failed');
+    }
+    return res.json();
+  } catch (err) {
+    // 401 from /auth/login = wrong email or password, not a session expiry event.
+    // Translate to a human-readable message rather than letting AuthError surface.
+    if (err instanceof AuthError) throw new Error('Invalid email or password');
+    throw err;
   }
-  return res.json();
 }
 
 /**
@@ -76,11 +103,15 @@ export async function logout() {
  * @returns {{ id: number, email: string, display_name: string } | null}
  */
 export async function getMe() {
-  // 401 is the normal response when no session exists — not an error worth tracking
-  const res = await apiFetch(`${AUTH_BASE}/me`, { skipSentryOn: [401] });
-  if (res.status === 401) return null;
-  if (!res.ok) return null;
-  return res.json();
+  // AuthError (401) = no active session — return null so the app shows the login page.
+  try {
+    const res = await apiFetch(`${AUTH_BASE}/me`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch (err) {
+    if (err instanceof AuthError) return null;
+    throw err;
+  }
 }
 
 export async function createLead(transcript, language) {

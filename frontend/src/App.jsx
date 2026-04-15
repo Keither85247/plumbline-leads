@@ -13,7 +13,7 @@ import OutboundNoteModal from './components/OutboundNoteModal';
 import InboxLayout from './components/inbox/InboxLayout';
 import EmailPage from './components/EmailPage';
 import LoginPage from './components/LoginPage';
-import { getLeads, saveOutboundNote, getCounts, getMe, logout, API_BASE } from './api';
+import { getLeads, saveOutboundNote, getCounts, getMe, logout, API_BASE, AuthError } from './api';
 import { translations } from './i18n';
 import { useVoiceDevice } from './hooks/useVoiceDevice';
 
@@ -205,16 +205,27 @@ export default function App() {
   useEffect(() => {
     if (!currentUser) return; // don't poll while logged out
     let cancelled = false;
-    const fetch_ = () => getCounts().then(c => {
-      if (cancelled) return;
-      console.log('[Badge] poll returned calls:', c.calls);
-      setCallsBadge(prev => {
-        const next = c.calls || 0;
-        console.log('[Badge] setCallsBadge prev:', prev, '→ next:', next, '(via poll)');
-        return next;
-      });
-      setRemoteCounts({ texts: c.texts || 0, emails: c.emails || 0 });
-    }).catch(() => {});
+    const fetch_ = async () => {
+      try {
+        const c = await getCounts();
+        if (cancelled) return;
+        console.log('[Badge] poll returned calls:', c.calls);
+        setCallsBadge(prev => {
+          const next = c.calls || 0;
+          console.log('[Badge] setCallsBadge prev:', prev, '→ next:', next, '(via poll)');
+          return next;
+        });
+        setRemoteCounts({ texts: c.texts || 0, emails: c.emails || 0 });
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof AuthError) {
+          // Session expired while app was open — clear auth state and show login.
+          setCurrentUser(null);
+          Sentry.setUser(null);
+        }
+        // Network blips, 5xx: ignore silently — badge just doesn't update this tick.
+      }
+    };
     fetch_();
     const t = setInterval(fetch_, 30_000);
     return () => { cancelled = true; clearInterval(t); };
@@ -256,7 +267,13 @@ export default function App() {
       const data = await getLeads();
       setLeads(data);
     } catch (err) {
-      console.error('Failed to load leads:', err);
+      if (err instanceof AuthError) {
+        // Session expired — clear auth state and show login.
+        setCurrentUser(null);
+        Sentry.setUser(null);
+      } else {
+        console.error('Failed to load leads:', err);
+      }
     } finally {
       setLoadingLeads(false);
     }
