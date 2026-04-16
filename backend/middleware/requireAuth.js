@@ -2,17 +2,25 @@
 /**
  * Session-cookie authentication middleware.
  *
- * Reads the `plumbline_session` httpOnly cookie, looks it up in the sessions
- * table, and sets req.userId to the owning user's integer ID.
+ * Primary:  reads the `plumbline_session` httpOnly cookie (Chrome, Firefox).
+ * Fallback: reads `Authorization: Bearer <token>` header (Safari — ITP blocks
+ *           SameSite=None cookies from third-party domains, so we fall back to
+ *           a token stored in localStorage and sent as a header instead).
  *
- * Returns 401 JSON (never HTML) if the cookie is absent or the session is
- * expired/missing so the frontend can redirect to the login page cleanly.
+ * Sets req.userId to the owning user's integer ID.
+ * Returns 401 JSON (never HTML) if no valid session is found.
  */
 
 const db = require('../db');
 
 module.exports = function requireAuth(req, res, next) {
-  const token = req.cookies?.plumbline_session;
+  let token = req.cookies?.plumbline_session;
+
+  // Safari ITP fallback: accept Bearer token from Authorization header
+  if (!token) {
+    const auth = req.headers.authorization;
+    if (auth?.startsWith('Bearer ')) token = auth.slice(7).trim();
+  }
 
   if (!token) {
     return res.status(401).json({ error: 'Not authenticated' });

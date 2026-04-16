@@ -82,7 +82,9 @@ router.post('/login', express.json(), async (req, res) => {
   // Log cookie attributes so you can verify SameSite=None;Secure is set in prod.
   // If you see SameSite=lax here in production, NODE_ENV is not set to 'production'.
   console.log(`[Auth] Login: user ${user.id} (${user.email}) — cookie: SameSite=${opts.sameSite} Secure=${opts.secure}`);
-  return res.json({ id: user.id, email: user.email, display_name: user.display_name });
+  // Include token in response body so Safari (ITP) can store it in localStorage
+  // and send it via Authorization: Bearer header instead of the blocked cookie.
+  return res.json({ id: user.id, email: user.email, display_name: user.display_name, token });
 });
 
 // ── POST /auth/logout ─────────────────────────────────────────────────────────
@@ -103,7 +105,12 @@ router.post('/logout', (req, res) => {
 // Called by the frontend on mount to restore session state without a full login.
 
 router.get('/me', (req, res) => {
-  const token = req.cookies?.plumbline_session;
+  let token = req.cookies?.plumbline_session;
+  // Safari ITP fallback: accept Bearer token from Authorization header
+  if (!token) {
+    const auth = req.headers.authorization;
+    if (auth?.startsWith('Bearer ')) token = auth.slice(7).trim();
+  }
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
 
   const row = db.prepare(`

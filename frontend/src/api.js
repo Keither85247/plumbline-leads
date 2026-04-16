@@ -41,6 +41,19 @@ export class AuthError extends Error {
 async function apiFetch(url, options = {}) {
   const { skipSentryOn = [], ...fetchOptions } = options;
 
+  // Safari ITP: if we have a stored Bearer token, attach it as a header.
+  // This runs in addition to credentials:'include' so both cookie (Chrome) and
+  // header (Safari) are sent — the backend accepts whichever is present.
+  const storedToken = typeof localStorage !== 'undefined'
+    ? localStorage.getItem('plumbline_token')
+    : null;
+  if (storedToken) {
+    fetchOptions.headers = {
+      ...fetchOptions.headers,
+      Authorization: `Bearer ${storedToken}`,
+    };
+  }
+
   // Isolate the network call so its catch block never swallows our own thrown errors.
   let res;
   try {
@@ -86,7 +99,10 @@ export async function login(email, password) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'Login failed');
     }
-    return res.json();
+    const user = await res.json();
+    // Store token for Safari ITP fallback (cookie blocked on cross-origin requests)
+    if (user.token) localStorage.setItem('plumbline_token', user.token);
+    return user;
   } catch (err) {
     // 401 from /auth/login = wrong email or password, not a session expiry event.
     // Translate to a human-readable message rather than letting AuthError surface.
@@ -99,6 +115,7 @@ export async function login(email, password) {
  * Log out — deletes the server-side session and clears the cookie.
  */
 export async function logout() {
+  localStorage.removeItem('plumbline_token');
   await apiFetch(`${AUTH_BASE}/logout`, { method: 'POST' });
 }
 
