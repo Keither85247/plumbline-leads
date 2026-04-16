@@ -1,7 +1,6 @@
 {
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/auth/:path*", "destination": "/api/auth/:path*" },
-    { "source": "/(.*)",        "destination": "/index.html" }
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

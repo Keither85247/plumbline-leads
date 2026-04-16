@@ -2,26 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "Backend (Express/nodemon)",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "cwd": "backend",
-      "port": 3001
-    },
-    {
       "name": "Frontend (Vite/React)",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
-      "cwd": "frontend",
       "port": 5173,
-      "autoPort": false
-    },
-    {
-      "name": "Both (concurrently)",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "cwd": ".",
-      "port": 5173
+      "autoPort": false,
+      "cwd": "frontend"
     }
   ]
 }
