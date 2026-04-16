@@ -1,6 +1,6 @@
 import { EVENT_META } from './normalizeEvent';
 import { parseTimestamp } from '../../utils/phone';
-import { API_BASE } from '../../api';
+import { API_BASE, recordingUrl } from '../../api';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -331,7 +331,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
               <audio
                 controls
                 preload="metadata"
-                src={`${API_BASE}/calls/${event.id}/recording`}
+                src={recordingUrl(`${API_BASE}/calls/${event.id}/recording`)}
                 className="w-full h-9"
                 style={{ colorScheme: 'light' }}
               >

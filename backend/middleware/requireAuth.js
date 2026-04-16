@@ -16,11 +16,17 @@ const db = require('../db');
 module.exports = function requireAuth(req, res, next) {
   let token = req.cookies?.plumbline_session;
 
-  // Safari ITP fallback: accept Bearer token from Authorization header
+  // Safari ITP fallback 1: accept Bearer token from Authorization header
   if (!token) {
     const auth = req.headers.authorization;
     if (auth?.startsWith('Bearer ')) token = auth.slice(7).trim();
   }
+
+  // Safari ITP fallback 2: accept token as a URL query param.
+  // <audio> / <video> elements make raw resource fetches — they cannot send
+  // custom headers, so Bearer-in-header is not available for media proxies.
+  // The frontend appends ?token=<session_token> to recording/voicemail URLs.
+  if (!token && req.query.token) token = String(req.query.token).trim();
 
   if (!token) {
     return res.status(401).json({ error: 'Not authenticated' });

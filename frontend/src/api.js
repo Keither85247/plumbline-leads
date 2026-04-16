@@ -447,6 +447,23 @@ export async function markCallsSeen() {
   return res.json();
 }
 
+/**
+ * Returns a recording/voicemail proxy URL that Safari can load in an <audio>
+ * element.  Safari ITP blocks cross-origin cookies, and <audio> cannot send
+ * custom headers, so we append the session token as a query param — the backend
+ * reads ?token= as a third auth fallback alongside cookie and Bearer header.
+ *
+ * Chrome also stores the token after login so this works universally; the
+ * cookie is still sent alongside it on Chrome for belt-and-suspenders.
+ */
+export function recordingUrl(path) {
+  const token = typeof localStorage !== 'undefined'
+    ? localStorage.getItem('plumbline_token')
+    : null;
+  if (!token) return path;
+  return `${path}?token=${encodeURIComponent(token)}`;
+}
+
 export async function updateLeadCategory(id, category) {
   const res = await apiFetch(`${API_BASE}/leads/${id}/category`, {
     method: 'PATCH',

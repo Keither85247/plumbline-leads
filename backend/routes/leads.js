@@ -240,9 +240,9 @@ router.get('/:id/voicemail', (req, res) => {
       twilioRes.resume();
       return res.status(502).json({ error: `Twilio returned ${status}` });
     }
-    res.setHeader('Content-Type', twilioRes.headers['content-type'] || 'audio/mpeg');
+    res.setHeader('Content-Type',  twilioRes.headers['content-type'] || 'audio/mpeg');
+    res.setHeader('Accept-Ranges', 'bytes'); // required by Safari — declare range support unconditionally
     if (twilioRes.headers['content-length']) res.setHeader('Content-Length', twilioRes.headers['content-length']);
-    if (twilioRes.headers['accept-ranges'])  res.setHeader('Accept-Ranges',  twilioRes.headers['accept-ranges']);
     if (twilioRes.headers['content-range'])  res.setHeader('Content-Range',  twilioRes.headers['content-range']);
     res.status(status);
     twilioRes.pipe(res);

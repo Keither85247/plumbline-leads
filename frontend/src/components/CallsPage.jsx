@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { getCalls, getVoicemailLeads, markCallsSeen, API_BASE } from '../api';
+import { getCalls, getVoicemailLeads, markCallsSeen, API_BASE, recordingUrl } from '../api';
 import { parseTimestamp } from '../utils/phone';
 import PhoneActionSheet from './PhoneActionSheet';
 
@@ -392,7 +392,7 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                             <audio
                               controls
                               preload="metadata"
-                              src={`${API_BASE}/calls/${call.id}/recording`}
+                              src={recordingUrl(`${API_BASE}/calls/${call.id}/recording`)}
                               className="w-full h-9"
                               style={{ colorScheme: 'light' }}
                             >
@@ -459,7 +459,7 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                         <audio
                           controls
                           preload="metadata"
-                          src={`${API_BASE}/leads/${vm.id}/voicemail`}
+                          src={recordingUrl(`${API_BASE}/leads/${vm.id}/voicemail`)}
                           className="w-full h-9"
                           style={{ colorScheme: 'light' }}
                         >
