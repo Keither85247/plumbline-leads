@@ -5,6 +5,8 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/api/:path*",  "destination": "https://plumbline-leads.onrender.com/api/:path*" },
+    { "source": "/auth/:path*", "destination": "https://plumbline-leads.onrender.com/auth/:path*" },
+    { "source": "/(.*)",        "destination": "/index.html" }
   ]
 }

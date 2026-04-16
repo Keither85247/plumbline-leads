@@ -14,18 +14,21 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 /**
  * Returns the Set-Cookie options appropriate for the current environment.
  *
- * Production (Vercel → Render, cross-origin):
- *   SameSite=None; Secure  — required for cross-site cookies
+ * Both production and development now route through a same-origin proxy:
+ *   Production : Vercel rewrites /api/* and /auth/* → Render backend.
+ *                The browser only ever sees plumbline-leads.vercel.app, so the
+ *                cookie is first-party. SameSite=Lax is safe and Safari-friendly.
+ *   Development: Vite dev-server proxy routes to localhost:3001 (same-origin).
  *
- * Development (Vite dev server proxies /auth to localhost:3001, same-origin):
- *   SameSite=Lax           — works fine, no HTTPS needed
+ * SameSite=None is no longer needed and was what caused Safari's ITP to block
+ * the session cookie on iOS.
  */
 function cookieOptions() {
   const isProd = process.env.NODE_ENV === 'production';
   return {
     httpOnly: true,
     secure:   isProd,
-    sameSite: isProd ? 'none' : 'lax',
+    sameSite: 'lax',
     maxAge:   SESSION_TTL_MS,
     path:     '/',
   };
@@ -33,7 +36,7 @@ function cookieOptions() {
 
 function clearOptions() {
   const isProd = process.env.NODE_ENV === 'production';
-  return { path: '/', secure: isProd, sameSite: isProd ? 'none' : 'lax' };
+  return { path: '/', secure: isProd, sameSite: 'lax' };
 }
 
 // ── POST /auth/login ──────────────────────────────────────────────────────────
