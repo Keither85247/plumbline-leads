@@ -14,21 +14,27 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 /**
  * Returns the Set-Cookie options appropriate for the current environment.
  *
- * Both production and development now route through a same-origin proxy:
- *   Production : Vercel rewrites /api/* and /auth/* → Render backend.
- *                The browser only ever sees plumbline-leads.vercel.app, so the
- *                cookie is first-party. SameSite=Lax is safe and Safari-friendly.
- *   Development: Vite dev-server proxy routes to localhost:3001 (same-origin).
+ * Production (cross-origin, Vercel frontend → Render backend):
+ *   SameSite=None; Secure — required so the browser sends the cookie on
+ *   credentialed cross-origin fetch() requests (credentials:'include').
+ *   Without None, SameSite=Lax silently drops the cookie on every API call
+ *   and the backend always sees an unauthenticated request.
  *
- * SameSite=None is no longer needed and was what caused Safari's ITP to block
- * the session cookie on iOS.
+ *   Safari note: ITP can block SameSite=None cookies from third-party domains.
+ *   The fix is to route API calls through a same-origin Vercel proxy (rewrites
+ *   in vercel.json) AND remove VITE_BACKEND_URL from Vercel env vars so the
+ *   frontend uses relative paths. Once that's confirmed working, SameSite can
+ *   be changed to Lax since all requests will be same-origin.
+ *
+ * Development (Vite proxy, same-origin):
+ *   SameSite=Lax — works fine without Secure flag.
  */
 function cookieOptions() {
   const isProd = process.env.NODE_ENV === 'production';
   return {
     httpOnly: true,
     secure:   isProd,
-    sameSite: 'lax',
+    sameSite: isProd ? 'none' : 'lax',
     maxAge:   SESSION_TTL_MS,
     path:     '/',
   };
@@ -36,7 +42,7 @@ function cookieOptions() {
 
 function clearOptions() {
   const isProd = process.env.NODE_ENV === 'production';
-  return { path: '/', secure: isProd, sameSite: 'lax' };
+  return { path: '/', secure: isProd, sameSite: isProd ? 'none' : 'lax' };
 }
 
 // ── POST /auth/login ──────────────────────────────────────────────────────────

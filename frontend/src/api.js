@@ -1,13 +1,13 @@
-// Always use relative paths — the host-level proxy routes them to the backend:
-//   Production : Vercel rewrites /api/* and /auth/* → https://plumbline-leads.onrender.com
-//   Development: Vite dev-server proxy (vite.config.js) → http://localhost:3001
+// BACKEND_URL resolution:
+//   If VITE_BACKEND_URL is set (absolute Render URL) → use it directly (cross-origin).
+//   If not set → use relative paths; Vercel proxy rewrites forward /api/* and /auth/*
+//   to the Render backend server-side, keeping cookies same-origin for Safari.
 //
-// This keeps the session cookie first-party (same origin as the app) so Safari's
-// ITP does not block it. VITE_BACKEND_URL is no longer read here; remove it from
-// your Vercel environment variables to avoid confusion.
-export const BACKEND_URL = '';
-export const API_BASE    = '/api';
-export const AUTH_BASE   = '/auth';
+//   To fix Safari (ITP blocks cross-site cookies): clear VITE_BACKEND_URL from
+//   your Vercel environment variables so the proxy path is used instead.
+export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || '';
+export const API_BASE    = `${BACKEND_URL}/api`;
+export const AUTH_BASE   = `${BACKEND_URL}/auth`;
 
 import * as Sentry from '@sentry/react';
 
