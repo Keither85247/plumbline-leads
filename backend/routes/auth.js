@@ -91,7 +91,12 @@ router.post('/login', express.json(), async (req, res) => {
 // Deletes the session row and clears the cookie.
 
 router.post('/logout', (req, res) => {
-  const token = req.cookies?.plumbline_session;
+  let token = req.cookies?.plumbline_session;
+  // Safari ITP fallback: read token from Authorization header
+  if (!token) {
+    const auth = req.headers.authorization;
+    if (auth?.startsWith('Bearer ')) token = auth.slice(7).trim();
+  }
   if (token) {
     db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
   }

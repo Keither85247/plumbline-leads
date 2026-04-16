@@ -115,8 +115,10 @@ export async function login(email, password) {
  * Log out — deletes the server-side session and clears the cookie.
  */
 export async function logout() {
+  // Send the request first (Bearer header attached by apiFetch) so the backend
+  // deletes the session, THEN clear localStorage so Safari cleans up too.
+  await apiFetch(`${AUTH_BASE}/logout`, { method: 'POST' }).catch(() => {});
   localStorage.removeItem('plumbline_token');
-  await apiFetch(`${AUTH_BASE}/logout`, { method: 'POST' });
 }
 
 /**
