@@ -307,21 +307,11 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
   const primaryPhone = lead.callback_number || lead.phone_number;
   const showCallerIdSecondary = lead.callback_number && lead.phone_number && lead.callback_number !== lead.phone_number;
 
-  const handleCardClick = () => {
-    if (lead.status === 'New') {
-      onLeadUpdated({ ...lead, status: 'Contacted' });
-      updateLeadStatus(lead.id, 'Contacted').catch(err =>
-        console.error('[LeadCard] mark-seen failed:', err)
-      );
-    }
-  };
-
   return (
     <div
       className={`border rounded-lg p-3 transition-colors
         ${urgency === 'overdue' && !isArchived ? 'border-l-[3px] border-l-amber-400' : ''}
-        ${lead.status === 'New' && !isArchived ? 'bg-blue-50 border-blue-200 hover:border-blue-300' : 'border-gray-200 hover:border-gray-300'}`}
-      onClick={handleCardClick}
+        ${lead.status === 'New' && !isArchived ? 'bg-blue-50 border-blue-200' : 'border-gray-200'}`}
     >
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
