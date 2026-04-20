@@ -82,7 +82,7 @@ function formatDuration(seconds) {
 
 export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSeen }) {
   const [dialInput, setDialInput] = useState('');
-  const [activeTab, setActiveTab] = useState('Dialer');
+  const [activeTab, setActiveTab] = useState('Recent');
   const [calls, setCalls] = useState([]);
   const [voicemails, setVoicemails] = useState([]);
   const [loadingCalls, setLoadingCalls] = useState(false);
