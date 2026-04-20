@@ -56,10 +56,31 @@ router.get('/', (req, res) => {
         }
       }
 
+      // Check if an inbound missed call has a matching voicemail lead so the
+      // Recent tab can show "Voicemail" instead of "Missed" and link to it.
+      let voicemailLeadId = null;
+      if (c.from_number && c.classification !== 'Outbound') {
+        const normalized = normalizePhone(c.from_number);
+        if (normalized) {
+          const vmLead = db.prepare(`
+            SELECT id FROM leads
+            WHERE source = 'voicemail'
+              AND (user_id = ? OR user_id IS NULL)
+              AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone_number,'+',''),'-',''),' ',''),'(',''),')','') = ?
+              AND created_at > datetime(?, '-5 minutes')
+              AND created_at < datetime(?, '+240 minutes')
+            ORDER BY created_at ASC
+            LIMIT 1
+          `).get(req.userId, normalized, c.created_at, c.created_at);
+          voicemailLeadId = vmLead?.id ?? null;
+        }
+      }
+
       return {
         ...c,
         contact_name: contactName,
         key_points: c.key_points ? JSON.parse(c.key_points) : [],
+        voicemail_lead_id: voicemailLeadId,
       };
     }));
   } catch (err) {

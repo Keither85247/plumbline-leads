@@ -56,10 +56,22 @@ function getCallMeta(call) {
   }
   // transcript OR duration > 0 means the call was answered
   const answered = !!(call.transcript || call.duration > 0);
+
+  // Missed call that has a linked voicemail lead
+  if (!answered && call.voicemail_lead_id) {
+    return {
+      text: 'Voicemail',
+      labelClass: 'text-amber-600 font-medium',
+      isExpandable: false,
+      isVoicemail: true,
+    };
+  }
+
   return {
     text: answered ? 'Answered' : 'Missed',
     labelClass: answered ? 'text-green-600 font-medium' : 'text-red-400 font-medium',
     isExpandable: answered || hasRecording,
+    isVoicemail: false,
   };
 }
 
@@ -88,6 +100,7 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
   const [loadingCalls, setLoadingCalls] = useState(false);
   const [expandedCallId, setExpandedCallId] = useState(null);
   const [actionSheetPhone, setActionSheetPhone] = useState(null);
+  const [highlightedVmId, setHighlightedVmId] = useState(null);
 
   // Guard: fires markCallsSeen at most once per CallsPage mount.
   // Resets automatically when the component unmounts (user navigates away).
@@ -126,6 +139,16 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
         .finally(() => setLoadingCalls(false));
     }
   }, [activeTab]);
+
+  // After switching to Voicemail tab via a Recent-row click, scroll to the
+  // specific voicemail and briefly highlight it. Fires once voicemails load.
+  useEffect(() => {
+    if (activeTab !== 'Voicemail' || !highlightedVmId || voicemails.length === 0) return;
+    const el = document.getElementById(`vm-${highlightedVmId}`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const t = setTimeout(() => setHighlightedVmId(null), 2500);
+    return () => clearTimeout(t);
+  }, [activeTab, highlightedVmId, voicemails]);
 
   // Mark calls as seen once the Recent list has actually rendered.
   // Fires at most once per CallsPage mount (hasMarkedSeenRef resets on unmount).
@@ -306,8 +329,15 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                   <li key={call.id} className="border-b border-gray-100 last:border-0">
                     {/* Row — 3-column: [name+meta] [label/badge] [chevron] */}
                     <div
-                      className={`flex items-center py-2 gap-2 ${meta.isExpandable ? 'cursor-pointer' : ''}`}
-                      onClick={() => meta.isExpandable && setExpandedCallId(isExpanded ? null : call.id)}
+                      className={`flex items-center py-2 gap-2 ${meta.isExpandable || meta.isVoicemail ? 'cursor-pointer' : ''}`}
+                      onClick={() => {
+                        if (meta.isVoicemail) {
+                          setHighlightedVmId(call.voicemail_lead_id);
+                          setActiveTab('Voicemail');
+                        } else if (meta.isExpandable) {
+                          setExpandedCallId(isExpanded ? null : call.id);
+                        }
+                      }}
                     >
                       {/* Col 1: name / number + time */}
                       <div className="flex-1 min-w-0">
@@ -342,8 +372,13 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                         </span>
                       </div>
 
-                      {/* Col 3: chevron */}
+                      {/* Col 3: chevron or voicemail arrow */}
                       <div className="shrink-0 w-4">
+                        {meta.isVoicemail && (
+                          <svg className="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                          </svg>
+                        )}
                         {meta.isExpandable && (
                           <svg
                             className={`w-4 h-4 text-gray-300 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
@@ -422,7 +457,15 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
               {voicemails.map(vm => {
                 const keyPoints = Array.isArray(vm.key_points) ? vm.key_points : [];
                 return (
-                  <li key={vm.id} className="border border-gray-100 rounded-lg p-4 bg-gray-50">
+                  <li
+                    key={vm.id}
+                    id={`vm-${vm.id}`}
+                    className={`border rounded-lg p-4 transition-colors duration-500 ${
+                      highlightedVmId === vm.id
+                        ? 'border-amber-400 bg-amber-50'
+                        : 'border-gray-100 bg-gray-50'
+                    }`}
+                  >
                     <div className="flex items-center justify-between gap-2 mb-2">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs text-gray-400">
