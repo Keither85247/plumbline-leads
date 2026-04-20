@@ -13,6 +13,7 @@
 export const EVENT_TYPES = {
   INBOUND_ANSWERED:   'call-inbound-answered',
   INBOUND_MISSED:     'call-inbound-missed',
+  INBOUND_VOICEMAIL:  'call-inbound-voicemail',   // missed + caller left voicemail
   OUTBOUND_ANSWERED:  'call-outbound-answered',
   OUTBOUND_VOICEMAIL: 'call-outbound-voicemail',
   OUTBOUND_NO_ANSWER: 'call-outbound-no-answer',
@@ -42,6 +43,14 @@ export const EVENT_META = {
     iconColor: 'text-red-400',
     showDuration: false,
     iconType: 'phone-missed',
+  },
+  [EVENT_TYPES.INBOUND_VOICEMAIL]:  {
+    label: 'Left a Voicemail',
+    labelColor: 'text-amber-600',
+    iconBg: 'bg-amber-50',
+    iconColor: 'text-amber-500',
+    showDuration: false,
+    iconType: 'voicemail',
   },
   [EVENT_TYPES.OUTBOUND_ANSWERED]:  {
     label: 'You Called',
@@ -133,15 +142,25 @@ function resolveCallType(call) {
   // Inbound: transcript OR duration > 0 = answered.
   // Duration is set by the recording webhook; transcript may be missing if
   // the call was short or the AI pipeline failed, but duration is reliable.
-  return (call.transcript || call.duration > 0)
-    ? EVENT_TYPES.INBOUND_ANSWERED
-    : EVENT_TYPES.INBOUND_MISSED;
+  const answered = !!(call.transcript || call.duration > 0);
+  if (!answered && call.voicemail_lead_id) return EVENT_TYPES.INBOUND_VOICEMAIL;
+  return answered ? EVENT_TYPES.INBOUND_ANSWERED : EVENT_TYPES.INBOUND_MISSED;
 }
 
 export function normalizeCall(call) {
   const isOutbound = call.classification === 'Outbound';
   const type = resolveCallType(call);
-  const keyPoints = Array.isArray(call.key_points) ? call.key_points : [];
+  const isInboundVoicemail = type === EVENT_TYPES.INBOUND_VOICEMAIL;
+
+  // For inbound voicemail calls, prefer the voicemail lead's summary/key_points
+  // since the calls row itself has no AI output (the recording was never answered).
+  const keyPoints = isInboundVoicemail
+    ? (Array.isArray(call.voicemail_key_points) ? call.voicemail_key_points : [])
+    : (Array.isArray(call.key_points) ? call.key_points : []);
+
+  const summary = isInboundVoicemail
+    ? (call.voicemail_summary || null)
+    : (call.summary || null);
 
   // Classification badge only makes sense for inbound calls (it's the lead category).
   const classification = isOutbound ? null : (call.classification || null);
@@ -149,24 +168,32 @@ export function normalizeCall(call) {
   // A call with a recording is expandable even when the AI pipeline produced
   // no summary/key points (e.g. short call, pipeline failure, or outbound call
   // with no contractor note but with a Twilio recording).
-  const hasContent = !!(call.summary || call.contractor_note || keyPoints.length > 0 || call.recording_url);
+  const effectiveRecordingUrl = isInboundVoicemail
+    ? null  // voicemail recording is on the lead, handled separately via voicemailLeadId
+    : (call.recording_url || null);
+
+  const hasContent = !!(summary || call.contractor_note || keyPoints.length > 0
+    || effectiveRecordingUrl || (isInboundVoicemail && call.voicemail_recording_url));
 
   return {
-    id:              call.id,
+    id:                   call.id,
     type,
     isOutbound,
-    contactName:     call.contact_name  || null,
-    contactPhone:    call.from_number   || '',
-    contactEmail:    null,
-    subject:         null,
-    summary:         call.summary         || null,
-    note:            call.contractor_note || null,
+    contactName:          call.contact_name  || null,
+    contactPhone:         call.from_number   || '',
+    contactEmail:         null,
+    subject:              null,
+    summary,
+    note:                 call.contractor_note || null,
     keyPoints,
-    timestamp:       call.created_at,
-    durationSeconds: call.duration        || null,
+    timestamp:            call.created_at,
+    durationSeconds:      call.duration        || null,
     classification,
-    isExpandable:    hasContent,
-    recordingUrl:    call.recording_url   || null,
+    isExpandable:         hasContent,
+    recordingUrl:         effectiveRecordingUrl,
+    // Voicemail-specific: lets EventRow load the recording via the leads proxy
+    voicemailLeadId:      call.voicemail_lead_id       || null,
+    voicemailRecordingUrl: call.voicemail_recording_url || null,
   };
 }
 

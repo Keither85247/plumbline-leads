@@ -322,7 +322,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
             </div>
           )}
 
-          {/* Recording player — only for call events that have a recording */}
+          {/* Recording player — answered call with Twilio recording */}
           {!isEmail && !isSms && !isSmsThread && event.recordingUrl && (
             <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">
@@ -332,6 +332,24 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
                 controls
                 preload="metadata"
                 src={recordingUrl(`${API_BASE}/calls/${event.id}/recording`)}
+                className="w-full h-9"
+                style={{ colorScheme: 'light' }}
+              >
+                Your browser does not support audio playback.
+              </audio>
+            </div>
+          )}
+
+          {/* Voicemail recording — inbound missed call where caller left a VM */}
+          {!isEmail && !isSms && !isSmsThread && event.voicemailLeadId && event.voicemailRecordingUrl && (
+            <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5">
+              <p className="text-[10px] font-semibold text-amber-400 uppercase tracking-widest mb-2">
+                Voicemail
+              </p>
+              <audio
+                controls
+                preload="metadata"
+                src={recordingUrl(`${API_BASE}/leads/${event.voicemailLeadId}/voicemail`)}
                 className="w-full h-9"
                 style={{ colorScheme: 'light' }}
               >

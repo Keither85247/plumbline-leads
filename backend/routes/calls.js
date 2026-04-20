@@ -57,13 +57,23 @@ router.get('/', (req, res) => {
       }
 
       // Check if an inbound missed call has a matching voicemail lead so the
-      // Recent tab can show "Voicemail" instead of "Missed" and link to it.
-      let voicemailLeadId = null;
+      // Recent tab can show "Voicemail" instead of "Missed", link to it, and
+      // the timeline can show the voicemail summary/key-points.
+      //
+      // IMPORTANT: use raw digit-stripping (not normalizePhone) here because
+      // normalizePhone strips the leading country-code '1', giving "2037728057",
+      // while the SQL REPLACE only strips symbols, leaving "12037728057".
+      // Raw digits keep the full "12037728057" so both sides match.
+      let voicemailLeadId       = null;
+      let voicemailSummary      = null;
+      let voicemailKeyPoints    = [];
+      let voicemailRecordingUrl = null;
+
       if (c.from_number && c.classification !== 'Outbound') {
-        const normalized = normalizePhone(c.from_number);
-        if (normalized) {
+        const rawDigits = c.from_number.replace(/\D/g, '');
+        if (rawDigits) {
           const vmLead = db.prepare(`
-            SELECT id FROM leads
+            SELECT id, summary, key_points, recording_url FROM leads
             WHERE source = 'voicemail'
               AND (user_id = ? OR user_id IS NULL)
               AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone_number,'+',''),'-',''),' ',''),'(',''),')','') = ?
@@ -71,16 +81,27 @@ router.get('/', (req, res) => {
               AND created_at < datetime(?, '+240 minutes')
             ORDER BY created_at ASC
             LIMIT 1
-          `).get(req.userId, normalized, c.created_at, c.created_at);
-          voicemailLeadId = vmLead?.id ?? null;
+          `).get(req.userId, rawDigits, c.created_at, c.created_at);
+
+          if (vmLead) {
+            voicemailLeadId       = vmLead.id;
+            voicemailSummary      = vmLead.summary      || null;
+            voicemailKeyPoints    = vmLead.key_points
+              ? JSON.parse(vmLead.key_points)
+              : [];
+            voicemailRecordingUrl = vmLead.recording_url || null;
+          }
         }
       }
 
       return {
         ...c,
-        contact_name: contactName,
-        key_points: c.key_points ? JSON.parse(c.key_points) : [],
-        voicemail_lead_id: voicemailLeadId,
+        contact_name:           contactName,
+        key_points:             c.key_points ? JSON.parse(c.key_points) : [],
+        voicemail_lead_id:      voicemailLeadId,
+        voicemail_summary:      voicemailSummary,
+        voicemail_key_points:   voicemailKeyPoints,
+        voicemail_recording_url: voicemailRecordingUrl,
       };
     }));
   } catch (err) {

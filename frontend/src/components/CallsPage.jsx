@@ -472,6 +472,10 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                           {new Date(vm.created_at).toLocaleDateString('en-US', {
                             month: 'short', day: 'numeric', year: 'numeric'
                           })}
+                          {' · '}
+                          {new Date(vm.created_at).toLocaleTimeString('en-US', {
+                            hour: 'numeric', minute: '2-digit'
+                          })}
                         </span>
                         <span className="text-xs font-medium text-gray-500 bg-gray-200 rounded-full px-2 py-0.5">
                           Voicemail
