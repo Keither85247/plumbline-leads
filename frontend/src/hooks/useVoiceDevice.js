@@ -130,14 +130,22 @@ export function useVoiceDevice() {
 
     try {
       // Preload the ringtone so it's ready to play instantly when an incoming
-      // call arrives. We intentionally do NOT call play() here — playing then
-      // immediately pausing was supposed to "prime" the audio context but it
-      // caused the ringtone to play audibly on every login. load() buffers the
-      // file without making any sound.
+      // call arrives.
       const ringtone = new Audio('/ringtone.mp3');
       ringtone.loop = true;
       ringtone.load();
       ringtoneRef.current = ringtone;
+
+      // iOS Safari blocks audio.play() unless it was triggered by a direct user
+      // gesture. The WebSocket message that delivers an incoming call is not a
+      // gesture, so play() would be silently swallowed on iPhone.
+      // Fix: on the very next touch or click after init, call play()+pause() to
+      // "unlock" the audio element. After that, play() works from any context.
+      const unlockRingtone = () => {
+        ringtone.play().then(() => ringtone.pause()).catch(() => {});
+      };
+      document.addEventListener('touchstart', unlockRingtone, { once: true, capture: true, passive: true });
+      document.addEventListener('click',      unlockRingtone, { once: true, capture: true });
 
       const token = await fetchToken();
       const device = new Device(token, {

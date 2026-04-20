@@ -177,11 +177,18 @@ router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
 
   twiml.say({ voice: 'alice' }, 'This call may be recorded for quality purposes.');
 
-  // Ring the in-app Voice SDK client (browser softphone) only.
-  // /missed-call handles voicemail if nothing answers before timeout.
+  // Ring the in-app Voice SDK client AND (if configured) the contractor's real
+  // phone number simultaneously — Twilio connects whoever answers first.
+  // CONTRACTOR_PHONE_NUMBER is the critical env var for "ring when app is closed".
+  // 30s timeout gives the push notification time to arrive and be tapped.
+  const contractorPhone = process.env.CONTRACTOR_PHONE_NUMBER;
+  const twilioNumber    = process.env.TWILIO_PHONE_NUMBER;
+
   const dial = twiml.dial({
-    ...(From && { callerId: From }),
-    timeout: 20,
+    // Use the Twilio number as callerId so PSTN forwarding works reliably.
+    // (Using the caller's From number as callerId can be rejected by carriers.)
+    callerId: twilioNumber || From || undefined,
+    timeout: 30,
     action: `${baseUrl}/api/twilio/missed-call`,
     method: 'POST',
     record: 'record-from-answer',
@@ -190,6 +197,11 @@ router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
   });
 
   dial.client('contractor');
+  // Simultaneous ring to real phone — ensures calls ring when the app is closed.
+  // Set CONTRACTOR_PHONE_NUMBER on Render to your mobile number (E.164 format).
+  if (contractorPhone) {
+    dial.number(contractorPhone);
+  }
 
   res.type('text/xml').send(twiml.toString());
 });
