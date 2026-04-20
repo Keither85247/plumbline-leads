@@ -271,6 +271,16 @@ try {
   console.error('[DB] Contacts migration error:', err.message);
 }
 
+// ── App-wide settings ─────────────────────────────────────────────────────────
+// Simple key/value store for global configuration (e.g. voicemail greeting).
+// Not per-user — one shared value for the whole account.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+  )
+`);
+
 // ── Web Push subscriptions ────────────────────────────────────────────────────
 // One row per browser/device subscription. endpoint is globally unique.
 // Expired or unsubscribed rows are deleted automatically when web-push returns

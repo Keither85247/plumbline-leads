@@ -12,6 +12,7 @@ const VoiceResponse = twilio.twiml.VoiceResponse;
 const db = require('../db');
 const { createLeadFromTranscript, isDuplicate, hasLeadToday } = require('./leads');
 const { sendPush } = require('../services/pushService');
+const { DEFAULT_GREETING } = require('./settings');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -124,7 +125,9 @@ async function downloadToTemp(url, destPath) {
 // VoiceResponse object. Reused by /voice (no contractor) and /missed-call.
 // ---------------------------------------------------------------------------
 function buildVoicemailTwiml(twiml, baseUrl) {
-  twiml.say("Sorry we missed your call. Please leave a message after the tone and we'll get back to you shortly.");
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting'").get();
+  const greeting = row?.value || DEFAULT_GREETING;
+  twiml.say(greeting);
   twiml.record({
     action: `${baseUrl}/api/twilio/voicemail`,
     method: 'POST',

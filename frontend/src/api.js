@@ -491,6 +491,24 @@ export async function deletePushSubscription(endpoint) {
   });
 }
 
+// ── App settings ──────────────────────────────────────────────────────────────
+
+export async function getAppSettings() {
+  const res = await apiFetch(`${API_BASE}/settings`);
+  if (!res.ok) throw new Error('Failed to load settings');
+  return res.json();
+}
+
+export async function saveAppSettings(data) {
+  const res = await apiFetch(`${API_BASE}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error('Failed to save settings');
+  return res.json();
+}
+
 export async function updateLeadCategory(id, category) {
   const res = await apiFetch(`${API_BASE}/leads/${id}/category`, {
     method: 'PATCH',
