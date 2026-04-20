@@ -334,15 +334,22 @@ router.post('/voicemail', express.urlencoded({ extended: true }), async (req, re
       return;
     }
 
+    // Associate the lead with the owner account. Twilio webhooks have no user
+    // session, so we look up the first user in the DB. In this single-contractor
+    // app there is exactly one real account.
+    const ownerRow = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
+    const userId   = ownerRow?.id ?? null;
+
     await createLeadFromTranscript({
       transcript,
       rawText: transcript,
       contactNameFallback: From || 'Unknown',
       phoneNumber: From || null,
       recordingUrl: RecordingUrl || null,
+      userId,
     });
 
-    log.info('Voicemail lead created', { from: From || 'unknown', hasRecording: !!RecordingUrl });
+    log.info('Voicemail lead created', { from: From || 'unknown', hasRecording: !!RecordingUrl, userId });
   } catch (err) {
     try { fs.unlinkSync(tempPath); } catch {}
     log.error('Voicemail lead creation failed', { from: From, err: err.message, stack: err.stack });

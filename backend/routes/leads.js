@@ -48,7 +48,7 @@ async function createLeadFromTranscript({
         content: `You are a CRM assistant that analyzes contractor ${medium}s. Return a JSON object with exactly these fields:
 - "contactName": string — the primary contact's full name extracted from the message, or "Unknown" if not identifiable
 - "companyName": string — the business or organization the contact represents. Only include if explicitly stated or clearly implied. Do not guess. Return an empty string if unclear.
-- "category": string — classify the contact into exactly one of these values: "Lead" (new job inquiry, estimate request, potential sale), "Existing Customer" (service issue, follow-up, complaint, or existing project), "Vendor" (supplier, partner, subcontractor, or business contact), "Spam" (robocall, irrelevant solicitation, obvious junk), "Other" (unclear or does not fit above). Return only the exact string value.
+- "category": string — classify the contact into exactly one of these values: "Lead" (new job inquiry, estimate request, potential sale, OR anyone reporting a problem that could require contracting work — plumbing, HVAC, electrical, sewer, leak, repair, installation, etc. — even if they don't explicitly ask for a quote; when in doubt for voicemails, default to Lead), "Existing Customer" (service issue, follow-up, complaint, or existing project from someone who has worked with the contractor before), "Vendor" (supplier, partner, subcontractor, or business contact), "Spam" (robocall, automated message, irrelevant solicitation, obvious junk, or silent/blank recording), "Other" (clearly does not fit any of the above — use sparingly). Return only the exact string value.
 - "summary": string — a single concise sentence: "[Name] – [what this was about]". If no company, omit the parenthetical. If name is unknown, start with just the action. Keep it short and factual. Examples: ${summaryExamples}
 - "keyPoints": array of strings — up to 3 short, contractor-focused bullet points. Prioritize: (1) job location or address if mentioned, (2) type of work or service requested, (3) urgency, timing, or requested next step. Do NOT include anything about contact info. Do NOT repeat what is already in the summary. Every bullet should be new, specific, actionable information a contractor needs.
 - "callbackNumber": string — if the contact explicitly states a different number to reach them (e.g. "call me back at 203-555-1234"), extract it. Otherwise return an empty string.
@@ -72,10 +72,18 @@ async function createLeadFromTranscript({
     followUpText = '',
   } = parsed;
 
-  const resolvedName     = contactName === 'Unknown' ? contactNameFallback : contactName;
-  const resolvedCompany  = typeof companyName === 'string' ? companyName.trim() : '';
-  const resolvedCategory = VALID_CATEGORIES.includes(category) ? category : 'Other';
+  const resolvedName    = contactName === 'Unknown' ? contactNameFallback : contactName;
+  const resolvedCompany = typeof companyName === 'string' ? companyName.trim() : '';
   const extractedCallback = typeof callbackNumber === 'string' ? callbackNumber.trim() : '';
+
+  const baseCategory = VALID_CATEGORIES.includes(category) ? category : 'Other';
+  // Voicemail leads that GPT classifies as "Other" almost certainly belong in
+  // "Lead" — anyone who left a voicemail is a potential customer, not truly
+  // ambiguous. The only genuine "Other" voicemails are blank/silent recordings,
+  // which should be "Spam" anyway and are caught by the prompt above.
+  const resolvedCategory = (baseCategory === 'Other' && source === 'voicemail')
+    ? 'Lead'
+    : baseCategory;
 
   const result = db.prepare(
     `INSERT INTO leads
