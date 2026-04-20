@@ -342,8 +342,8 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
 
           {/* Voicemail recording — inbound missed call where caller left a VM */}
           {!isEmail && !isSms && !isSmsThread && event.voicemailLeadId && event.voicemailRecordingUrl && (
-            <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5">
-              <p className="text-[10px] font-semibold text-amber-400 uppercase tracking-widest mb-2">
+            <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2.5">
+              <p className="text-[10px] font-semibold text-indigo-400 uppercase tracking-widest mb-2">
                 Voicemail
               </p>
               <audio

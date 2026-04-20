@@ -49,7 +49,7 @@ function getCallMeta(call) {
   if (isOutbound) {
     switch (call.outcome) {
       case 'answered':  return { text: 'Answered',           labelClass: 'text-blue-600 font-medium',  isExpandable: !!(call.contractor_note) || hasRecording };
-      case 'voicemail': return { text: 'You Left a Message', labelClass: 'text-amber-600 font-medium', isExpandable: !!(call.contractor_note) || hasRecording };
+      case 'voicemail': return { text: 'You Left a Message', labelClass: 'text-indigo-500 font-medium', isExpandable: !!(call.contractor_note) || hasRecording };
       case 'no-answer': return { text: 'No Answer',          labelClass: 'text-gray-400',              isExpandable: hasRecording };
       default:          return { text: 'Outbound',           labelClass: 'text-gray-400',              isExpandable: !!(call.contractor_note) || hasRecording };
     }
@@ -61,7 +61,7 @@ function getCallMeta(call) {
   if (!answered && call.voicemail_lead_id) {
     return {
       text: 'Voicemail',
-      labelClass: 'text-amber-600 font-medium',
+      labelClass: 'text-indigo-500 font-medium',
       isExpandable: false,
       isVoicemail: true,
     };
@@ -375,7 +375,7 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                       {/* Col 3: chevron or voicemail arrow */}
                       <div className="shrink-0 w-4">
                         {meta.isVoicemail && (
-                          <svg className="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                          <svg className="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                           </svg>
                         )}
@@ -462,7 +462,7 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                     id={`vm-${vm.id}`}
                     className={`border rounded-lg p-4 transition-colors duration-500 ${
                       highlightedVmId === vm.id
-                        ? 'border-amber-400 bg-amber-50'
+                        ? 'border-indigo-400 bg-indigo-50'
                         : 'border-gray-100 bg-gray-50'
                     }`}
                   >
