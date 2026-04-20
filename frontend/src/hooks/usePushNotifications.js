@@ -44,7 +44,7 @@ export function usePushNotifications() {
   }, [supported]);
 
   const subscribe = useCallback(async () => {
-    if (!supported || subscribing) return;
+    if (!supported || subscribing) return false;
     setSubscribing(true);
     setError(null);
     try {
@@ -56,7 +56,7 @@ export function usePushNotifications() {
       // 2. Request notification permission
       const perm = await Notification.requestPermission();
       setPermission(perm);
-      if (perm !== 'granted') return;
+      if (perm !== 'granted') return false;
 
       // 3. Get VAPID public key from backend
       const publicKey = await getVapidPublicKey();
@@ -70,9 +70,11 @@ export function usePushNotifications() {
       // 5. Save subscription on backend
       await savePushSubscription(sub.toJSON());
       setSubscribed(true);
+      return true; // success — caller can dismiss the banner
     } catch (err) {
       console.error('[Push] Subscribe failed:', err);
       setError(err.message || 'Failed to enable notifications');
+      return false; // failure — caller should keep the banner visible
     } finally {
       setSubscribing(false);
     }

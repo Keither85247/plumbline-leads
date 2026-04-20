@@ -180,12 +180,13 @@ export default function App() {
     localStorage.setItem('pushBannerDismissed', '1');
     setPushBannerDismissed(true);
   };
-  // Show banner only when: logged in, push supported, not yet granted/denied,
-  // and user hasn't dismissed it this session.
+  // Show banner when: logged in, push supported, not yet subscribed,
+  // permission is 'default' (never asked) or 'granted' (OS granted but sub failed),
+  // and user hasn't dismissed it.
   const showPushBanner = !!currentUser
     && push.supported
     && !push.subscribed
-    && push.permission === 'default'
+    && (push.permission === 'default' || push.permission === 'granted')
     && !pushBannerDismissed;
 
   // Register the voice device on mount so inbound calls ring in the app
@@ -375,7 +376,7 @@ export default function App() {
           </span>
           <div className="flex items-center gap-2 shrink-0">
             <button
-              onClick={async () => { await push.subscribe(); if (push.permission !== 'denied') dismissPushBanner(); }}
+              onClick={async () => { const ok = await push.subscribe(); if (ok) dismissPushBanner(); }}
               disabled={push.subscribing}
               className="bg-white text-indigo-700 font-semibold text-xs px-3 py-1.5 rounded-full hover:bg-indigo-50 transition-colors disabled:opacity-60"
             >
@@ -628,6 +629,7 @@ export default function App() {
           onLanguageChange={handleLanguageChange}
           replyTranslation={replyTranslation}
           onReplyTranslationChange={handleReplyTranslationChange}
+          push={push}
         />
       )}
 

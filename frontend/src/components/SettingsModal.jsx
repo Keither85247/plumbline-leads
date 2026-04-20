@@ -6,6 +6,7 @@ export default function SettingsModal({
   businessName, onBusinessNameChange,
   language, onLanguageChange,
   replyTranslation, onReplyTranslationChange,
+  push,
 }) {
   const t = translations[language] || translations.en;
 
@@ -86,6 +87,49 @@ export default function SettingsModal({
               />
             </button>
           </div>
+
+          {/* Push Notifications */}
+          {push?.supported && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                Push Notifications
+              </label>
+              <div className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5 gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm text-gray-700 font-medium">
+                    {push.subscribed
+                      ? 'Enabled'
+                      : push.permission === 'denied'
+                      ? 'Blocked by browser'
+                      : 'Disabled'}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {push.subscribed
+                      ? 'Alerts for calls & voicemails when app is closed'
+                      : push.permission === 'denied'
+                      ? 'Allow notifications in your browser/phone settings'
+                      : 'Tap Enable to get alerts when the app is closed'}
+                  </p>
+                  {push.error && (
+                    <p className="text-xs text-red-500 mt-0.5">{push.error}</p>
+                  )}
+                </div>
+                {push.permission !== 'denied' && (
+                  <button
+                    onClick={push.subscribed ? push.unsubscribe : push.subscribe}
+                    disabled={push.subscribing}
+                    className={`shrink-0 text-xs font-semibold px-3 py-1.5 rounded-full transition-colors disabled:opacity-60 ${
+                      push.subscribed
+                        ? 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                        : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    }`}
+                  >
+                    {push.subscribing ? 'Working…' : push.subscribed ? 'Disable' : 'Enable'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Language */}
           <div>

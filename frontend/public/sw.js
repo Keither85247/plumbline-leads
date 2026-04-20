@@ -16,8 +16,6 @@ self.addEventListener('push', event => {
     self.registration.showNotification(title, {
       body,
       tag:               tag || 'plumbline',
-      icon:              '/icon-192.png',
-      badge:             '/icon-96.png',
       data:              { url },
       requireInteraction: false,
       silent:            false,
