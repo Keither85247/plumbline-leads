@@ -11,6 +11,7 @@ const twilio = require('twilio');
 const VoiceResponse = twilio.twiml.VoiceResponse;
 const db = require('../db');
 const { createLeadFromTranscript, isDuplicate, hasLeadToday } = require('./leads');
+const { sendPush } = require('../services/pushService');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -151,6 +152,20 @@ router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
   const classification = classifyIncomingCall(From);
   logCall(From, CallSid, classification);
   log.info('Incoming call', { from: From || 'unknown', callSid: CallSid, classification });
+
+  // Push notification — fires immediately so the contractor can open the app
+  // and answer before the 20s ring timeout sends the call to voicemail.
+  if (classification !== 'Likely Spam') {
+    const callerLabel = From
+      ? From.replace(/^\+1/, '').replace(/(\d{3})(\d{3})(\d{4})/, '($1) $2-$3')
+      : 'Unknown number';
+    sendPush(null, {
+      title: '📞 Incoming Call',
+      body:  `${callerLabel} is calling — open the app to answer`,
+      tag:   'incoming-call',
+      url:   '/',
+    }).catch(() => {});
+  }
 
   const baseUrl = process.env.TWILIO_BASE_URL;
 
@@ -340,7 +355,7 @@ router.post('/voicemail', express.urlencoded({ extended: true }), async (req, re
     const ownerRow = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
     const userId   = ownerRow?.id ?? null;
 
-    await createLeadFromTranscript({
+    const newLead = await createLeadFromTranscript({
       transcript,
       rawText: transcript,
       contactNameFallback: From || 'Unknown',
@@ -350,6 +365,17 @@ router.post('/voicemail', express.urlencoded({ extended: true }), async (req, re
     });
 
     log.info('Voicemail lead created', { from: From || 'unknown', hasRecording: !!RecordingUrl, userId });
+
+    // Push notification — voicemail is fully processed now (transcript + summary ready)
+    const vmTitle = newLead?.contact_name && newLead.contact_name !== 'Unknown'
+      ? `🎙️ Voicemail from ${newLead.contact_name}`
+      : '🎙️ New Voicemail';
+    sendPush(userId, {
+      title: vmTitle,
+      body:  newLead?.summary || 'Tap to listen',
+      tag:   `voicemail-${newLead?.id || Date.now()}`,
+      url:   '/?tab=calls&subtab=Voicemail',
+    }).catch(() => {});
   } catch (err) {
     try { fs.unlinkSync(tempPath); } catch {}
     log.error('Voicemail lead creation failed', { from: From, err: err.message, stack: err.stack });

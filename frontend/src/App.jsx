@@ -16,6 +16,7 @@ import LoginPage from './components/LoginPage';
 import { getLeads, saveOutboundNote, getCounts, getMe, logout, API_BASE, AuthError } from './api';
 import { translations } from './i18n';
 import { useVoiceDevice } from './hooks/useVoiceDevice';
+import { usePushNotifications } from './hooks/usePushNotifications';
 
 // Nav icons — labels are injected at render time from translations
 const SIDEBAR_NAV_ICONS = [
@@ -168,6 +169,24 @@ export default function App() {
   };
 
   const voiceDevice = useVoiceDevice();
+  const push = usePushNotifications();
+
+  // Dismiss state for the push permission banner — stored in localStorage so
+  // it doesn't reappear after the user taps "Not now".
+  const [pushBannerDismissed, setPushBannerDismissed] = useState(
+    () => localStorage.getItem('pushBannerDismissed') === '1'
+  );
+  const dismissPushBanner = () => {
+    localStorage.setItem('pushBannerDismissed', '1');
+    setPushBannerDismissed(true);
+  };
+  // Show banner only when: logged in, push supported, not yet granted/denied,
+  // and user hasn't dismissed it this session.
+  const showPushBanner = !!currentUser
+    && push.supported
+    && !push.subscribed
+    && push.permission === 'default'
+    && !pushBannerDismissed;
 
   // Register the voice device on mount so inbound calls ring in the app
   useEffect(() => {
@@ -346,6 +365,34 @@ export default function App() {
       </div>
     }>
     <div className="h-dvh bg-gray-50 flex flex-col overflow-hidden">
+
+      {/* Push notification permission banner */}
+      {showPushBanner && (
+        <div className="bg-indigo-600 text-white px-4 py-2.5 flex items-center justify-between gap-3 text-sm z-40">
+          <span className="leading-snug">
+            <span className="font-semibold">Get call &amp; voicemail alerts</span>
+            <span className="opacity-80"> — even when the app is closed</span>
+          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={async () => { await push.subscribe(); if (push.permission !== 'denied') dismissPushBanner(); }}
+              disabled={push.subscribing}
+              className="bg-white text-indigo-700 font-semibold text-xs px-3 py-1.5 rounded-full hover:bg-indigo-50 transition-colors disabled:opacity-60"
+            >
+              {push.subscribing ? 'Enabling…' : 'Enable'}
+            </button>
+            <button
+              onClick={dismissPushBanner}
+              className="opacity-70 hover:opacity-100 transition-opacity p-1"
+              aria-label="Dismiss"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-4 md:px-6 sticky top-0 z-30 h-14 flex items-center">

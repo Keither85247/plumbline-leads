@@ -464,6 +464,33 @@ export function recordingUrl(path) {
   return `${path}?token=${encodeURIComponent(token)}`;
 }
 
+// ── Web Push ──────────────────────────────────────────────────────────────────
+
+export async function getVapidPublicKey() {
+  const res = await apiFetch(`${API_BASE}/push/vapid-public-key`);
+  if (!res.ok) throw new Error('Push not configured');
+  const { publicKey } = await res.json();
+  return publicKey;
+}
+
+export async function savePushSubscription(subscription) {
+  const res = await apiFetch(`${API_BASE}/push/subscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(subscription),
+  });
+  if (!res.ok) throw new Error('Failed to save push subscription');
+  return res.json();
+}
+
+export async function deletePushSubscription(endpoint) {
+  await apiFetch(`${API_BASE}/push/subscribe`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint }),
+  });
+}
+
 export async function updateLeadCategory(id, category) {
   const res = await apiFetch(`${API_BASE}/leads/${id}/category`, {
     method: 'PATCH',

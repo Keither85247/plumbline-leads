@@ -21,6 +21,17 @@ if (import.meta.env.VITE_SENTRY_DSN) {
   // Sentry user context is set dynamically in App.jsx once auth resolves
 }
 
+// ── Service Worker registration ───────────────────────────────────────────────
+// Register early (before React mounts) so the SW is available when the push
+// permission prompt fires. Safari on iOS requires the SW to be registered from
+// the page — we do it unconditionally here so it's always ready.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' })
+      .catch(err => console.warn('[SW] Registration failed:', err));
+  });
+}
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <App />

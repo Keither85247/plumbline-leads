@@ -271,4 +271,19 @@ try {
   console.error('[DB] Contacts migration error:', err.message);
 }
 
+// ── Web Push subscriptions ────────────────────────────────────────────────────
+// One row per browser/device subscription. endpoint is globally unique.
+// Expired or unsubscribed rows are deleted automatically when web-push returns
+// a 404 or 410 status on delivery.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER REFERENCES users(id),
+    endpoint   TEXT    NOT NULL UNIQUE,
+    p256dh     TEXT    NOT NULL,
+    auth       TEXT    NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
 module.exports = db;
