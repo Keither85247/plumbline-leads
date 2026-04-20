@@ -1,8 +1,5 @@
-import { useState, useEffect } from 'react';
 import { translations } from '../i18n';
-import { getAppSettings, saveAppSettings } from '../api';
-
-const DEFAULT_GREETING = "Sorry we missed your call. Please leave a message after the tone and we'll get back to you shortly.";
+import VoicemailGreetingEditor from './VoicemailGreetingEditor';
 
 export default function SettingsModal({
   onClose,
@@ -14,40 +11,17 @@ export default function SettingsModal({
 }) {
   const t = translations[language] || translations.en;
 
-  // ── Voicemail greeting ──────────────────────────────────────────────────────
-  const [greeting, setGreeting]           = useState('');
-  const [greetingLoading, setGreetingLoading] = useState(true);
-  const [greetingSaving,  setGreetingSaving]  = useState(false);
-  const [greetingSaved,   setGreetingSaved]   = useState(false);
-
-  useEffect(() => {
-    getAppSettings()
-      .then(s => setGreeting(s.voicemail_greeting ?? DEFAULT_GREETING))
-      .catch(() => setGreeting(DEFAULT_GREETING))
-      .finally(() => setGreetingLoading(false));
-  }, []);
-
-  const handleGreetingSave = async () => {
-    setGreetingSaving(true);
-    try {
-      await saveAppSettings({ voicemail_greeting: greeting.trim() || DEFAULT_GREETING });
-      setGreetingSaved(true);
-      setTimeout(() => setGreetingSaved(false), 2000);
-    } catch {}
-    finally { setGreetingSaving(false); }
-  };
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4"
+        className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 max-h-[90dvh] flex flex-col"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0">
           <h2 className="text-base font-semibold text-gray-900">{t.settings}</h2>
           <button
             onClick={onClose}
@@ -60,8 +34,8 @@ export default function SettingsModal({
           </button>
         </div>
 
-        {/* Form */}
-        <div className="px-6 py-5 space-y-5">
+        {/* Form — scrollable on small phones */}
+        <div className="px-6 py-5 space-y-5 overflow-y-auto">
 
           {/* Your Name */}
           <div>
@@ -115,36 +89,8 @@ export default function SettingsModal({
             </button>
           </div>
 
-          {/* Voicemail Greeting */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
-              Voicemail Greeting
-            </label>
-            <textarea
-              value={greetingLoading ? '' : greeting}
-              onChange={e => { setGreeting(e.target.value); setGreetingSaved(false); }}
-              onBlur={handleGreetingSave}
-              placeholder={DEFAULT_GREETING}
-              rows={3}
-              disabled={greetingLoading}
-              className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5 text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none disabled:opacity-50"
-            />
-            <div className="flex items-center justify-between mt-1.5">
-              <p className="text-xs text-gray-400">Played as text-to-speech when you miss a call.</p>
-              <div className="flex items-center gap-2 shrink-0">
-                {greetingSaved && (
-                  <span className="text-xs text-green-600 font-medium">Saved</span>
-                )}
-                <button
-                  onClick={handleGreetingSave}
-                  disabled={greetingSaving || greetingLoading}
-                  className="text-xs font-semibold px-3 py-1.5 bg-gray-900 text-white rounded-full hover:bg-gray-700 transition-colors disabled:opacity-50"
-                >
-                  {greetingSaving ? 'Saving…' : 'Save'}
-                </button>
-              </div>
-            </div>
-          </div>
+          {/* Voicemail Greeting — record or upload real audio */}
+          <VoicemailGreetingEditor />
 
           {/* Push Notifications */}
           {push?.supported && (
@@ -221,7 +167,7 @@ export default function SettingsModal({
         </div>
 
         {/* Footer */}
-        <div className="px-6 pb-5">
+        <div className="px-6 pb-5 shrink-0">
           <button
             onClick={onClose}
             className="w-full bg-gray-900 hover:bg-gray-800 text-white text-sm font-semibold rounded-lg py-2.5 transition-colors"

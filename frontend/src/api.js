@@ -509,6 +509,37 @@ export async function saveAppSettings(data) {
   return res.json();
 }
 
+/**
+ * Upload a Blob (WAV recording or uploaded file) as the voicemail audio greeting.
+ * Sends raw binary with Content-Type from the blob — the backend uses express.raw()
+ * to parse it, which doesn't conflict with the global express.json() middleware.
+ */
+export async function uploadVoicemailGreeting(blob) {
+  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('plumbline_token') : null;
+  const headers = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  // Do NOT set Content-Type manually — the browser derives it from blob.type,
+  // which is what express.raw({ type: fn }) on the backend matches against.
+
+  const res = await globalThis.fetch(`${API_BASE}/settings/voicemail-greeting`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: blob,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Upload failed');
+  }
+  return res.json();
+}
+
+export async function deleteVoicemailGreeting() {
+  const res = await apiFetch(`${API_BASE}/settings/voicemail-greeting`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to reset greeting');
+  return res.json();
+}
+
 export async function updateLeadCategory(id, category) {
   const res = await apiFetch(`${API_BASE}/leads/${id}/category`, {
     method: 'PATCH',

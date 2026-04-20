@@ -13,6 +13,7 @@ const db = require('../db');
 const { createLeadFromTranscript, isDuplicate, hasLeadToday } = require('./leads');
 const { sendPush } = require('../services/pushService');
 const { DEFAULT_GREETING } = require('./settings');
+const { getDataDir } = require('../utils/dataDir');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -121,13 +122,74 @@ async function downloadToTemp(url, destPath) {
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/twilio/voicemail-audio
+// Serves the custom voicemail greeting audio file publicly so Twilio's
+// <Play> verb can fetch it during call handling (no auth required).
+// Handles Range requests — Twilio probes files with range headers before
+// full playback, and will abort silently if range requests aren't honoured.
+// ---------------------------------------------------------------------------
+const AUDIO_MIME = { '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg' };
+
+router.get('/voicemail-audio', (req, res) => {
+  const filename = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting_file'").get()?.value;
+  if (!filename) return res.status(404).json({ error: 'No custom greeting on file' });
+
+  const filepath = path.join(getDataDir(), filename);
+  let stat;
+  try {
+    stat = fs.statSync(filepath);
+  } catch (e) {
+    if (e.code === 'ENOENT') return res.status(404).json({ error: 'Greeting file not found on disk' });
+    throw e;
+  }
+
+  const ext         = path.extname(filename).toLowerCase();
+  const contentType = AUDIO_MIME[ext] || 'audio/mpeg';
+  const total       = stat.size;
+
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Cache-Control', 'public, max-age=300');
+
+  const rangeHeader = req.headers['range'];
+  if (rangeHeader) {
+    const parts = rangeHeader.replace(/bytes=/, '').split('-');
+    const start = parseInt(parts[0], 10) || 0;
+    const end   = parts[1] !== '' ? parseInt(parts[1], 10) : total - 1;
+    res.setHeader('Content-Range',  `bytes ${start}-${end}/${total}`);
+    res.setHeader('Content-Length', end - start + 1);
+    res.status(206);
+    fs.createReadStream(filepath, { start, end }).pipe(res);
+  } else {
+    res.setHeader('Content-Length', total);
+    fs.createReadStream(filepath).pipe(res);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Voicemail TwiML helper — appends voicemail verbs onto an existing
 // VoiceResponse object. Reused by /voice (no contractor) and /missed-call.
+// Plays a custom audio greeting if one has been uploaded; falls back to TTS.
 // ---------------------------------------------------------------------------
 function buildVoicemailTwiml(twiml, baseUrl) {
-  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting'").get();
-  const greeting = row?.value || DEFAULT_GREETING;
-  twiml.say(greeting);
+  const type     = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting_type'").get()?.value;
+  const filename = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting_file'").get()?.value;
+
+  let usedAudio = false;
+  if (type === 'audio' && filename) {
+    const filepath = path.join(getDataDir(), filename);
+    try {
+      fs.statSync(filepath); // throws ENOENT if missing
+      twiml.play(`${baseUrl}/api/twilio/voicemail-audio`);
+      usedAudio = true;
+    } catch {}
+  }
+
+  if (!usedAudio) {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting'").get();
+    twiml.say(row?.value || DEFAULT_GREETING);
+  }
+
   twiml.record({
     action: `${baseUrl}/api/twilio/voicemail`,
     method: 'POST',
