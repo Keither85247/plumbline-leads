@@ -84,7 +84,7 @@ router.post('/login', express.json(), async (req, res) => {
   console.log(`[Auth] Login: user ${user.id} (${user.email}) — cookie: SameSite=${opts.sameSite} Secure=${opts.secure}`);
   // Include token in response body so Safari (ITP) can store it in localStorage
   // and send it via Authorization: Bearer header instead of the blocked cookie.
-  return res.json({ id: user.id, email: user.email, display_name: user.display_name, token });
+  return res.json({ id: user.id, email: user.email, display_name: user.display_name, is_owner: user.is_owner, token });
 });
 
 // ── POST /auth/logout ─────────────────────────────────────────────────────────
@@ -119,7 +119,7 @@ router.get('/me', (req, res) => {
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
 
   const row = db.prepare(`
-    SELECT u.id, u.email, u.display_name
+    SELECT u.id, u.email, u.display_name, u.is_owner
     FROM sessions s
     JOIN users u ON u.id = s.user_id
     WHERE s.token = ?

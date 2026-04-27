@@ -540,6 +540,65 @@ export async function deleteVoicemailGreeting() {
   return res.json();
 }
 
+// ── Admin: Phone Numbers ──────────────────────────────────────────────────────
+
+export async function getPhoneNumbers() {
+  const res = await apiFetch(`${API_BASE}/admin/phone-numbers`);
+  if (!res.ok) throw new Error('Failed to fetch phone numbers');
+  return res.json();
+}
+
+export async function searchAvailableNumbers(areaCode) {
+  const url = areaCode
+    ? `${API_BASE}/admin/phone-numbers/search?areaCode=${encodeURIComponent(areaCode)}`
+    : `${API_BASE}/admin/phone-numbers/search`;
+  const res = await apiFetch(url);
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Failed to search numbers'); }
+  return res.json();
+}
+
+export async function purchasePhoneNumber(phoneNumber) {
+  const res = await apiFetch(`${API_BASE}/admin/phone-numbers/purchase`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phoneNumber }),
+  });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Failed to purchase number'); }
+  return res.json();
+}
+
+export async function assignPhoneNumber(id, userId) {
+  const res = await apiFetch(`${API_BASE}/admin/phone-numbers/${id}/assign`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId }),
+  });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Failed to assign number'); }
+  return res.json();
+}
+
+export async function releasePhoneNumber(id) {
+  const res = await apiFetch(`${API_BASE}/admin/phone-numbers/${id}`, { method: 'DELETE' });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Failed to release number'); }
+  return res.json();
+}
+
+export async function triggerGmailSync(days = 60) {
+  const res = await apiFetch(`${API_BASE}/admin/gmail-sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ days }),
+  });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Sync failed'); }
+  return res.json(); // { imported, skipped }
+}
+
+export async function getAdminUsers() {
+  const res = await apiFetch(`${API_BASE}/admin/users`);
+  if (!res.ok) throw new Error('Failed to fetch users');
+  return res.json();
+}
+
 export async function updateLeadCategory(id, category) {
   const res = await apiFetch(`${API_BASE}/leads/${id}/category`, {
     method: 'PATCH',

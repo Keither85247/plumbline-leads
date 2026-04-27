@@ -1,5 +1,8 @@
+import { useState, useCallback } from 'react';
 import { translations } from '../i18n';
 import VoicemailGreetingEditor from './VoicemailGreetingEditor';
+import PhoneNumbersAdmin from './PhoneNumbersAdmin';
+import { triggerGmailSync } from '../api';
 
 export default function SettingsModal({
   onClose,
@@ -8,8 +11,27 @@ export default function SettingsModal({
   language, onLanguageChange,
   replyTranslation, onReplyTranslationChange,
   push,
+  isOwner,
 }) {
   const t = translations[language] || translations.en;
+
+  const [syncing,     setSyncing]     = useState(false);
+  const [syncResult,  setSyncResult]  = useState(null); // { imported, skipped } | null
+  const [syncError,   setSyncError]   = useState(null);
+
+  const handleGmailSync = useCallback(async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    setSyncError(null);
+    try {
+      const result = await triggerGmailSync(60);
+      setSyncResult(result);
+    } catch (e) {
+      setSyncError(e.message);
+    } finally {
+      setSyncing(false);
+    }
+  }, []);
 
   return (
     <div
@@ -91,6 +113,38 @@ export default function SettingsModal({
 
           {/* Voicemail Greeting — record or upload real audio */}
           <VoicemailGreetingEditor />
+
+          {/* Gmail sync — owner-only */}
+          {isOwner && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                Email Sync
+              </label>
+              <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-3 space-y-2">
+                <p className="text-xs text-gray-500">
+                  Re-imports the last 60 days of Gmail. Use this if emails stopped updating after a server restart.
+                </p>
+                <button
+                  onClick={handleGmailSync}
+                  disabled={syncing}
+                  className="w-full py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-60"
+                >
+                  {syncing ? 'Syncing…' : 'Sync emails now'}
+                </button>
+                {syncResult && (
+                  <p className="text-xs text-green-600 font-medium">
+                    ✓ Done — {syncResult.imported} imported, {syncResult.skipped} already up to date
+                  </p>
+                )}
+                {syncError && (
+                  <p className="text-xs text-red-500">{syncError}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Phone Numbers — owner-only */}
+          {isOwner && <PhoneNumbersAdmin />}
 
           {/* Push Notifications */}
           {push?.supported && (

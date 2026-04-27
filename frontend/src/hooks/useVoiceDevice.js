@@ -11,7 +11,16 @@ function toE164(num) {
 }
 
 async function fetchToken() {
-  const res = await fetch(`${API_BASE}/twilio/token`);
+  const storedToken = typeof localStorage !== 'undefined'
+    ? localStorage.getItem('plumbline_token')
+    : null;
+  const headers = {};
+  if (storedToken) headers['Authorization'] = `Bearer ${storedToken}`;
+
+  const res = await globalThis.fetch(`${API_BASE}/twilio/token`, {
+    credentials: 'include',
+    headers,
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to fetch voice token');

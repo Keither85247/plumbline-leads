@@ -281,6 +281,20 @@ db.exec(`
   )
 `);
 
+// ── Per-user Twilio phone numbers ─────────────────────────────────────────────
+// One row per purchased Twilio number. assigned_user_id is nullable (unassigned).
+// Inbound call/SMS routing reads this table to determine which user owns a number.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS phone_numbers (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone_number     TEXT    NOT NULL UNIQUE,
+    twilio_sid       TEXT    NOT NULL UNIQUE,
+    friendly_name    TEXT,
+    assigned_user_id INTEGER REFERENCES users(id),
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
 // ── Web Push subscriptions ────────────────────────────────────────────────────
 // One row per browser/device subscription. endpoint is globally unique.
 // Expired or unsubscribed rows are deleted automatically when web-push returns

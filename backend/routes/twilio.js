@@ -48,12 +48,34 @@ function classifyIncomingCall(fromNumber) {
   return 'Existing Customer';
 }
 
+// ---------------------------------------------------------------------------
+// Routing helpers — map an incoming Twilio number to the user who owns it.
+// Falls back to the owner account if the number isn't in the DB.
+// ---------------------------------------------------------------------------
+function getOwnerUserId() {
+  return (
+    db.prepare('SELECT id FROM users WHERE is_owner = 1 ORDER BY id LIMIT 1').get()?.id ??
+    db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get()?.id ??
+    null
+  );
+}
+
+function getAssignedUserForNumber(toNumber) {
+  if (toNumber) {
+    const row = db.prepare(
+      'SELECT assigned_user_id FROM phone_numbers WHERE phone_number = ?'
+    ).get(toNumber);
+    if (row?.assigned_user_id) return row.assigned_user_id;
+  }
+  return getOwnerUserId();
+}
+
 // Log an inbound call to the calls table
-function logCall(fromNumber, callSid, classification) {
+function logCall(fromNumber, callSid, classification, userId) {
   try {
     db.prepare(
-      'INSERT INTO calls (from_number, call_sid, classification) VALUES (?, ?, ?)'
-    ).run(fromNumber || null, callSid || null, classification);
+      'INSERT INTO calls (from_number, call_sid, classification, user_id) VALUES (?, ?, ?, ?)'
+    ).run(fromNumber || null, callSid || null, classification, userId || null);
   } catch (err) {
     log.error('Failed to log call to DB', { err: err.message });
   }
@@ -171,7 +193,7 @@ router.get('/voicemail-audio', (req, res) => {
 // VoiceResponse object. Reused by /voice (no contractor) and /missed-call.
 // Plays a custom audio greeting if one has been uploaded; falls back to TTS.
 // ---------------------------------------------------------------------------
-function buildVoicemailTwiml(twiml, baseUrl) {
+function buildVoicemailTwiml(twiml, baseUrl, userId) {
   const type     = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting_type'").get()?.value;
   const filename = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting_file'").get()?.value;
 
@@ -190,11 +212,14 @@ function buildVoicemailTwiml(twiml, baseUrl) {
     twiml.say(row?.value || DEFAULT_GREETING);
   }
 
+  const vmAction = userId
+    ? `${baseUrl}/api/twilio/voicemail?user_id=${userId}`
+    : `${baseUrl}/api/twilio/voicemail`;
   twiml.record({
-    action: `${baseUrl}/api/twilio/voicemail`,
-    method: 'POST',
-    maxLength: 120,
-    playBeep: true,
+    action:      vmAction,
+    method:      'POST',
+    maxLength:   120,
+    playBeep:    true,
     finishOnKey: '#',
   });
   twiml.say('We did not receive a recording. Goodbye.');
@@ -211,20 +236,23 @@ function buildVoicemailTwiml(twiml, baseUrl) {
 //   3b. If no contractor phone configured: go straight to voicemail greeting.
 // ---------------------------------------------------------------------------
 router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
-  const { From, CallSid } = req.body;
+  const { From, To, Called, CallSid } = req.body;
   const twiml = new VoiceResponse();
 
-  const classification = classifyIncomingCall(From);
-  logCall(From, CallSid, classification);
-  log.info('Incoming call', { from: From || 'unknown', callSid: CallSid, classification });
+  // Determine which user owns the number that was called
+  const toNumber       = To || Called;
+  const assignedUserId = getAssignedUserForNumber(toNumber);
 
-  // Push notification — fires immediately so the contractor can open the app
-  // and answer before the 20s ring timeout sends the call to voicemail.
+  const classification = classifyIncomingCall(From);
+  logCall(From, CallSid, classification, assignedUserId);
+  log.info('Incoming call', { from: From || 'unknown', to: toNumber, callSid: CallSid, classification, assignedUserId });
+
+  // Push only to the user who owns this number
   if (classification !== 'Likely Spam') {
     const callerLabel = From
       ? From.replace(/^\+1/, '').replace(/(\d{3})(\d{3})(\d{4})/, '($1) $2-$3')
       : 'Unknown number';
-    sendPush(null, {
+    sendPush(assignedUserId, {
       title: '📞 Incoming Call',
       body:  `${callerLabel} is calling — open the app to answer`,
       tag:   'incoming-call',
@@ -242,7 +270,7 @@ router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
 
   twiml.say({ voice: 'alice' }, 'This call may be recorded for quality purposes.');
 
-  // Ring the in-app Voice SDK client (browser softphone) only.
+  // Ring the assigned user's in-app Voice SDK client.
   // /missed-call handles voicemail if nothing answers before timeout.
   const dial = twiml.dial({
     ...(From && { callerId: From }),
@@ -254,7 +282,7 @@ router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
     recordingStatusCallbackMethod: 'POST',
   });
 
-  dial.client('contractor');
+  dial.client(`user_${assignedUserId}`);
 
   res.type('text/xml').send(twiml.toString());
 });
@@ -267,11 +295,10 @@ router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
 // through to voicemail.
 // ---------------------------------------------------------------------------
 router.post('/missed-call', express.urlencoded({ extended: true }), (req, res) => {
-  const { DialCallStatus } = req.body;
+  const { DialCallStatus, To, Called } = req.body;
   const twiml = new VoiceResponse();
 
   if (DialCallStatus === 'completed') {
-    // Contractor answered — call is done, no voicemail needed
     return res.type('text/xml').send(twiml.toString());
   }
 
@@ -282,8 +309,11 @@ router.post('/missed-call', express.urlencoded({ extended: true }), (req, res) =
     return res.type('text/xml').send(twiml.toString());
   }
 
-  log.info('Call unanswered — routing to voicemail', { dialCallStatus: DialCallStatus });
-  buildVoicemailTwiml(twiml, baseUrl);
+  const toNumber       = To || Called;
+  const assignedUserId = getAssignedUserForNumber(toNumber);
+
+  log.info('Call unanswered — routing to voicemail', { dialCallStatus: DialCallStatus, assignedUserId });
+  buildVoicemailTwiml(twiml, baseUrl, assignedUserId);
   res.type('text/xml').send(twiml.toString());
 });
 
@@ -291,8 +321,9 @@ router.post('/missed-call', express.urlencoded({ extended: true }), (req, res) =
 // POST /api/twilio/sms
 // ---------------------------------------------------------------------------
 router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => {
-  const { From, Body } = req.body;
+  const { From, To, Body } = req.body;
   const numMedia = parseInt(req.body.NumMedia || '0', 10);
+  const assignedUserId = getAssignedUserForNumber(To);
 
   // Drop messages that have neither text nor media
   if (!Body?.trim() && numMedia === 0) {
@@ -314,8 +345,8 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
   let messageRowId = null;
   try {
     const msgRow = db.prepare(
-      "INSERT INTO messages (phone, direction, body, status, media_urls) VALUES (?, 'inbound', ?, 'received', ?)"
-    ).run(From || 'unknown', (Body || '').trim(), mediaUrlsJson);
+      "INSERT INTO messages (phone, direction, body, status, media_urls, user_id) VALUES (?, 'inbound', ?, 'received', ?, ?)"
+    ).run(From || 'unknown', (Body || '').trim(), mediaUrlsJson, assignedUserId || null);
     messageRowId = msgRow.lastInsertRowid;
     log.info('Inbound SMS saved to messages', { messageId: messageRowId });
   } catch (err) {
@@ -359,7 +390,8 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
       rawText: Body,
       contactNameFallback: From || 'Unknown',
       phoneNumber: From || null,
-      source: 'sms'
+      source: 'sms',
+      userId: assignedUserId || null,
     });
     // Stamp newly-created lead on the message row
     if (messageRowId && newLead?.id) {
@@ -379,6 +411,8 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
 // ---------------------------------------------------------------------------
 router.post('/voicemail', express.urlencoded({ extended: true }), async (req, res) => {
   const { RecordingUrl, From } = req.body;
+  // user_id injected by buildVoicemailTwiml into the action URL as a query param
+  const userId = req.query.user_id ? parseInt(req.query.user_id, 10) : getOwnerUserId();
 
   res.setHeader('Content-Type', 'text/xml');
   res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
@@ -388,7 +422,7 @@ router.post('/voicemail', express.urlencoded({ extended: true }), async (req, re
     return;
   }
 
-  log.info('Voicemail received', { from: From || 'unknown', recordingUrl: RecordingUrl });
+  log.info('Voicemail received', { from: From || 'unknown', recordingUrl: RecordingUrl, userId });
 
   const tempPath = path.join(os.tmpdir(), `twilio-vm-${Date.now()}.mp3`);
 
@@ -413,12 +447,6 @@ router.post('/voicemail', express.urlencoded({ extended: true }), async (req, re
       log.info('Voicemail duplicate detected, skipping', { from: From });
       return;
     }
-
-    // Associate the lead with the owner account. Twilio webhooks have no user
-    // session, so we look up the first user in the DB. In this single-contractor
-    // app there is exactly one real account.
-    const ownerRow = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
-    const userId   = ownerRow?.id ?? null;
 
     const newLead = await createLeadFromTranscript({
       transcript,
@@ -609,12 +637,25 @@ router.get('/diag', async (req, res) => {
 // Records the answered leg via the existing /recording webhook.
 // ---------------------------------------------------------------------------
 router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) => {
-  const { To, CallSid } = req.body;
-  log.info('/voice-client received', { to: To, callSid: CallSid });
+  const { To, From, CallSid } = req.body;
+  log.info('/voice-client received', { to: To, from: From, callSid: CallSid });
 
   const twiml = new VoiceResponse();
   const baseUrl = process.env.TWILIO_BASE_URL;
-  const callerId = process.env.TWILIO_PHONE_NUMBER;
+
+  // Derive callerId from the calling user's assigned phone number.
+  // From is the Twilio Client identity, e.g. 'client:user_5'.
+  // Fall back to the env TWILIO_PHONE_NUMBER for legacy / single-number setups.
+  let callerId = process.env.TWILIO_PHONE_NUMBER;
+  if (From && From.startsWith('client:user_')) {
+    const uid = parseInt(From.replace('client:user_', ''), 10);
+    if (!isNaN(uid)) {
+      const numRow = db.prepare(
+        'SELECT phone_number FROM phone_numbers WHERE assigned_user_id = ? ORDER BY id LIMIT 1'
+      ).get(uid);
+      if (numRow?.phone_number) callerId = numRow.phone_number;
+    }
+  }
 
   try {
     if (!To) {

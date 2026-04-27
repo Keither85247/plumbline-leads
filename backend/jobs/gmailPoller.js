@@ -2,9 +2,40 @@
 const db    = require('../db');
 const gmail = require('../services/gmailService');
 
-// Last successful poll time (in-memory).
-// On server start we look back 1 hour so we don't miss recent messages.
-let lastPollTime = Date.now() - 60 * 60 * 1000;
+// ── Durable lastPollTime ──────────────────────────────────────────────────────
+// Persisted in app_settings so server restarts don't lose our position.
+// Without this, every restart resets the window to "1 hour ago" and misses
+// any emails that arrived before the last restart.
+
+function loadLastPollTime() {
+  // Try the persisted checkpoint first
+  const saved = db.prepare(
+    "SELECT value FROM app_settings WHERE key = 'gmail_last_poll_time'"
+  ).get();
+  if (saved?.value) {
+    const ms = parseInt(saved.value, 10);
+    if (!isNaN(ms) && ms > 0) return ms;
+  }
+  // Fall back to the newest stored email's timestamp (minus 5 min buffer for
+  // clock skew / delivery delay) so the first post-restart poll picks up
+  // anything that arrived after the last successfully stored message.
+  const row = db.prepare(
+    "SELECT MAX(created_at) AS ts FROM emails WHERE gmail_message_id IS NOT NULL"
+  ).get();
+  if (row?.ts) {
+    return Math.max(0, new Date(row.ts).getTime() - 5 * 60 * 1000);
+  }
+  // No emails at all — look back 1 hour
+  return Date.now() - 60 * 60 * 1000;
+}
+
+function saveLastPollTime(ms) {
+  db.prepare(
+    "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('gmail_last_poll_time', ?)"
+  ).run(String(ms));
+}
+
+let lastPollTime = loadLastPollTime();
 
 /**
  * Fetch new message stubs for a given Gmail query since lastPollTime.
@@ -34,8 +65,6 @@ async function poll() {
     const gmailClient = gmail.getClient();
 
     // ── Collect new IDs from both inbox and sent ───────────────────────────
-    // Polling sent ensures emails composed in Gmail Web / mobile / other clients
-    // still appear in this app after sync.
     const [newInboxIds, newSentIds] = await Promise.all([
       fetchNewIds(gmailClient, 'in:inbox'),
       fetchNewIds(gmailClient, 'in:sent'),
@@ -47,6 +76,7 @@ async function poll() {
     if (allNewIds.length === 0) {
       console.log('[Poller] No new messages.');
       lastPollTime = pollStart;
+      saveLastPollTime(pollStart);
       return;
     }
 
@@ -59,12 +89,10 @@ async function poll() {
         const hdrs     = gmail.parseHeaders(msg.payload?.headers ?? []);
         const labelIds = msg.labelIds ?? [];
 
-        // Direction: outbound if From header matches the connected account, or SENT label present
         const fromAddr  = (hdrs['from'] || '').toLowerCase();
         const hasSent   = labelIds.includes('SENT');
         const direction = (fromAddr.includes(connectedEmail) || hasSent) ? 'outbound' : 'inbound';
 
-        // is_read: 0 only if UNREAD label present (typically only inbound)
         const is_read   = labelIds.includes('UNREAD') ? 0 : 1;
 
         const preview = (msg.snippet || gmail.extractPlainText(msg.payload) || '')
@@ -107,8 +135,10 @@ async function poll() {
     }
 
     lastPollTime = pollStart;
+    saveLastPollTime(pollStart);
   } catch (err) {
     console.error('[Poller] Poll error:', err.message);
+    // Do NOT update lastPollTime on error — next poll will retry the same window
   }
 }
 
@@ -118,7 +148,7 @@ async function poll() {
  * @returns The setInterval handle (call clearInterval to stop)
  */
 function startPolling(intervalMs = 60_000) {
-  console.log(`[Poller] Gmail polling every ${intervalMs / 1000}s`);
+  console.log(`[Poller] Gmail polling every ${intervalMs / 1000}s — resuming from ${new Date(lastPollTime).toISOString()}`);
   poll().catch(err => console.error('[Poller] Initial poll failed:', err.message));
   return setInterval(
     () => poll().catch(err => console.error('[Poller] Poll failed:', err.message)),

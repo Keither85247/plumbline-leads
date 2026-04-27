@@ -630,6 +630,7 @@ export default function App() {
           replyTranslation={replyTranslation}
           onReplyTranslationChange={handleReplyTranslationChange}
           push={push}
+          isOwner={!!currentUser?.is_owner}
         />
       )}
 
