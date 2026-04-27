@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { translations } from '../i18n';
 import VoicemailGreetingEditor from './VoicemailGreetingEditor';
 import PhoneNumbersAdmin from './PhoneNumbersAdmin';
+import TeamAdmin from './TeamAdmin';
 import { triggerGmailSync } from '../api';
 
 export default function SettingsModal({
@@ -142,6 +143,9 @@ export default function SettingsModal({
               </div>
             </div>
           )}
+
+          {/* Tester accounts — owner-only */}
+          {isOwner && <TeamAdmin />}
 
           {/* Phone Numbers — owner-only */}
           {isOwner && <PhoneNumbersAdmin />}

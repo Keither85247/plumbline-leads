@@ -47,7 +47,6 @@ router.post('/reset-demo', requireOwner, (req, res) => {
 });
 
 // ── GET /api/admin/users ──────────────────────────────────────────────────────
-// Returns all user accounts so you can see who exists without touching the DB directly.
 
 router.get('/users', requireOwner, (_req, res) => {
   const users = db.prepare(`
@@ -56,6 +55,58 @@ router.get('/users', requireOwner, (_req, res) => {
     ORDER BY id
   `).all();
   res.json(users);
+});
+
+// ── POST /api/admin/users ─────────────────────────────────────────────────────
+// Creates a new (non-owner) user account.
+// Body: { email, display_name, password }
+
+router.post('/users', requireOwner, express.json(), async (req, res) => {
+  const { email, display_name, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
+
+  const bcrypt     = require('bcrypt');
+  const crypto     = require('crypto');
+  const normalised = email.trim().toLowerCase();
+
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalised);
+  if (existing) return res.status(409).json({ error: 'An account with that email already exists' });
+
+  const hash   = await bcrypt.hash(password, 12);
+  const apiKey = crypto.randomBytes(24).toString('hex');
+
+  const result = db.prepare(
+    'INSERT INTO users (email, display_name, password_hash, api_key, is_owner) VALUES (?, ?, ?, ?, 0)'
+  ).run(normalised, (display_name || '').trim() || normalised, hash, apiKey);
+
+  console.log(`[Admin] User created by owner ${req.userId}: ${normalised} (id ${result.lastInsertRowid})`);
+  res.status(201).json({
+    id:           result.lastInsertRowid,
+    email:        normalised,
+    display_name: (display_name || '').trim() || normalised,
+    is_owner:     0,
+  });
+});
+
+// ── DELETE /api/admin/users/:id ───────────────────────────────────────────────
+// Deletes a non-owner user account (cannot delete yourself or another owner).
+
+router.delete('/users/:id', requireOwner, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (id === req.userId) {
+    return res.status(400).json({ error: 'Cannot delete your own account' });
+  }
+  const user = db.prepare('SELECT id, is_owner FROM users WHERE id = ?').get(id);
+  if (!user)          return res.status(404).json({ error: 'User not found' });
+  if (user.is_owner)  return res.status(400).json({ error: 'Cannot delete an owner account' });
+
+  // Unassign any phone numbers so they're not orphaned
+  db.prepare('UPDATE phone_numbers SET assigned_user_id = NULL WHERE assigned_user_id = ?').run(id);
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+
+  console.log(`[Admin] User ${id} deleted by owner ${req.userId}`);
+  res.json({ ok: true });
 });
 
 // ── POST /api/admin/gmail-sync ────────────────────────────────────────────────
