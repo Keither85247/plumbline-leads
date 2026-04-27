@@ -1,6 +1,7 @@
 'use strict';
 const db    = require('../db');
 const gmail = require('../services/gmailService');
+const { isInvalidGrant, invalidateToken } = gmail;
 
 // ── Durable lastPollTime ──────────────────────────────────────────────────────
 // Persisted in app_settings so server restarts don't lose our position.
@@ -137,7 +138,12 @@ async function poll() {
     lastPollTime = pollStart;
     saveLastPollTime(pollStart);
   } catch (err) {
-    console.error('[Poller] Poll error:', err.message);
+    if (isInvalidGrant(err)) {
+      console.error('[Poller] invalid_grant — Gmail token revoked. Clearing token; user must reconnect.');
+      invalidateToken();
+    } else {
+      console.error('[Poller] Poll error:', err.message);
+    }
     // Do NOT update lastPollTime on error — next poll will retry the same window
   }
 }

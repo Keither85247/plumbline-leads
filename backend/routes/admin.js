@@ -62,7 +62,7 @@ router.get('/users', requireOwner, (_req, res) => {
 // Triggers an immediate Gmail backfill for the past `days` days (default 60).
 // Useful when the poller fell behind due to a server restart losing lastPollTime.
 
-const { syncRecentEmails } = require('../services/gmailService');
+const { syncRecentEmails, isInvalidGrant, invalidateToken } = require('../services/gmailService');
 
 router.post('/gmail-sync', requireOwner, express.json(), async (req, res) => {
   const daysBack = Math.min(parseInt(req.body?.days, 10) || 60, 180);
@@ -71,6 +71,10 @@ router.post('/gmail-sync', requireOwner, express.json(), async (req, res) => {
     console.log(`[Admin] Manual Gmail sync by user ${req.userId}: imported ${result.imported}, skipped ${result.skipped}`);
     res.json(result);
   } catch (err) {
+    if (isInvalidGrant(err)) {
+      invalidateToken();
+      return res.status(401).json({ error: 'Gmail token expired or revoked. Please reconnect Gmail in Settings.' });
+    }
     console.error('[Admin] gmail-sync error:', err.message);
     res.status(500).json({ error: err.message });
   }

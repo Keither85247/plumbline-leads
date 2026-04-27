@@ -46,6 +46,27 @@ function isConnected() {
   return !!db.prepare('SELECT id FROM gmail_tokens LIMIT 1').get();
 }
 
+/**
+ * Returns true if the error is an OAuth invalid_grant — meaning the refresh
+ * token has been revoked or expired and cannot be used again.
+ */
+function isInvalidGrant(err) {
+  const data = err?.response?.data;
+  if (data?.error === 'invalid_grant') return true;
+  if (err?.message?.toLowerCase().includes('invalid_grant')) return true;
+  return false;
+}
+
+/**
+ * Clear all stored Gmail tokens from the DB.
+ * Call this when Google returns invalid_grant so the app knows Gmail is
+ * disconnected and the user sees a reconnect prompt instead of silent errors.
+ */
+function invalidateToken() {
+  db.prepare('DELETE FROM gmail_tokens').run();
+  console.warn('[Gmail] Token invalidated — user must reconnect Gmail');
+}
+
 function getConnectedEmail() {
   const row = db.prepare('SELECT email FROM gmail_tokens LIMIT 1').get();
   return row?.email ?? null;
@@ -413,6 +434,8 @@ module.exports = {
   oauth2Client,
   loadCredentials,
   isConnected,
+  isInvalidGrant,
+  invalidateToken,
   getConnectedEmail,
   getClient,
   sendEmail,
