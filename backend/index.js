@@ -35,18 +35,38 @@ const { startPolling }          = require('./jobs/gmailPoller');
 const { backfillMissingLabels } = require('./services/gmailService');
 
 // ── One-time owner password reset ─────────────────────────────────────────────
-// Set RESET_OWNER_PASSWORD=yournewpassword in Render env vars, deploy once,
-// then remove the env var and deploy again.
+// Set RESET_OWNER_PASSWORD=newpassword (and optionally RESET_OWNER_EMAIL=email)
+// in Render env vars, deploy once, log in, then remove both vars and deploy again.
 if (process.env.RESET_OWNER_PASSWORD) {
   try {
-    const bcrypt = require('bcryptjs');
+    const bcrypt = require('bcrypt');
     const db     = require('./db');
     const hash   = bcrypt.hashSync(process.env.RESET_OWNER_PASSWORD, 10);
-    const result = db.prepare('UPDATE users SET password_hash = ? WHERE is_owner = 1').run(hash);
-    if (result.changes > 0) {
-      console.log('[RESET] Owner password has been reset successfully.');
+    const email  = (process.env.RESET_OWNER_EMAIL || '').toLowerCase().trim();
+
+    let result;
+    if (email) {
+      // Update by email — also promote to owner if not already
+      result = db.prepare(
+        'UPDATE users SET password_hash = ?, is_owner = 1 WHERE LOWER(email) = ?'
+      ).run(hash, email);
+      // If user doesn't exist yet, create them as owner
+      if (result.changes === 0) {
+        db.prepare(
+          'INSERT INTO users (email, display_name, password_hash, is_owner) VALUES (?, ?, ?, 1)'
+        ).run(email, email, hash);
+        console.log('[RESET] Owner account created:', email);
+      } else {
+        console.log('[RESET] Password reset for:', email);
+      }
     } else {
-      console.warn('[RESET] No owner account found — password not changed.');
+      // Fall back to updating any owner account
+      result = db.prepare('UPDATE users SET password_hash = ? WHERE is_owner = 1').run(hash);
+      if (result.changes > 0) {
+        console.log('[RESET] Owner password reset successfully.');
+      } else {
+        console.warn('[RESET] No owner account found and RESET_OWNER_EMAIL not set — nothing changed.');
+      }
     }
   } catch (err) {
     console.error('[RESET] Password reset failed:', err.message);
