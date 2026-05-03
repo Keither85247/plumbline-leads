@@ -34,6 +34,25 @@ const requireAuth      = require('./middleware/requireAuth');
 const { startPolling }          = require('./jobs/gmailPoller');
 const { backfillMissingLabels } = require('./services/gmailService');
 
+// ── One-time owner password reset ─────────────────────────────────────────────
+// Set RESET_OWNER_PASSWORD=yournewpassword in Render env vars, deploy once,
+// then remove the env var and deploy again.
+if (process.env.RESET_OWNER_PASSWORD) {
+  try {
+    const bcrypt = require('bcryptjs');
+    const db     = require('./db');
+    const hash   = bcrypt.hashSync(process.env.RESET_OWNER_PASSWORD, 10);
+    const result = db.prepare('UPDATE users SET password_hash = ? WHERE is_owner = 1').run(hash);
+    if (result.changes > 0) {
+      console.log('[RESET] Owner password has been reset successfully.');
+    } else {
+      console.warn('[RESET] No owner account found — password not changed.');
+    }
+  } catch (err) {
+    console.error('[RESET] Password reset failed:', err.message);
+  }
+}
+
 const app  = express();
 const PORT = process.env.PORT || 3001;
 
