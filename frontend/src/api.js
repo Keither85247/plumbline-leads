@@ -1,30 +1,66 @@
-// BACKEND_URL resolution:
-//   Native Android (Capacitor WebView): relative paths resolve to https://localhost,
-//   which is the WebView's local asset server — NOT the Render backend. Detect
-//   Capacitor and always point directly at the production backend.
+// ── BACKEND_URL resolution ────────────────────────────────────────────────────
 //
-//   Web (Vercel): If VITE_BACKEND_URL is set (absolute Render URL) → use it directly
-//   (cross-origin). If not set → use relative paths; Vercel proxy rewrites /api/*
-//   and /auth/* to the Render backend server-side, keeping cookies same-origin for
-//   Safari.
+// Priority order (first match wins):
+//   1. VITE_BACKEND_URL env var (baked in at build time by Vercel) — preferred.
+//   2. Capacitor native (Android/iOS WebView) — relative paths hit the WebView's
+//      local server, not Render, so we always use the absolute URL.
+//   3. Known Vercel production/preview domains — hardcoded fallback so a missing
+//      env var never silently routes requests to Vercel itself.
+//   4. localhost — use empty string; Vite's dev proxy forwards /api and /auth.
+//   5. Unknown domain — hardcoded fallback + console error so it fails loudly.
 //
-//   To fix Safari (ITP blocks cross-site cookies): clear VITE_BACKEND_URL from
-//   your Vercel environment variables so the proxy path is used instead.
-const _isNative = typeof window !== 'undefined' && !!window.Capacitor?.isNativePlatform?.();
-const _NATIVE_BACKEND = 'https://plumbline-leads.onrender.com';
-export const BACKEND_URL = _isNative ? _NATIVE_BACKEND : (import.meta.env.VITE_BACKEND_URL || '');
+// The CORRECT long-term setup is VITE_BACKEND_URL=https://plumbline-leads.onrender.com
+// in Vercel's environment variables. This fallback makes the app resilient when
+// that variable is missing from a deployment.
+
+const _RENDER_BACKEND = 'https://plumbline-leads.onrender.com';
+
+function _resolveBackendUrl() {
+  // 1. Explicit env var — always wins
+  if (import.meta.env.VITE_BACKEND_URL) {
+    return import.meta.env.VITE_BACKEND_URL.replace(/\/$/, ''); // strip trailing slash
+  }
+
+  // SSR / non-browser context — return empty and let it fail gracefully
+  if (typeof window === 'undefined') return '';
+
+  const host = window.location.hostname;
+
+  // 2. Capacitor native platform (Android / iOS WebView)
+  if (window.Capacitor?.isNativePlatform?.()) return _RENDER_BACKEND;
+
+  // 3. Any Vercel deployment (production or preview) — hardcoded fallback
+  if (host.endsWith('.vercel.app')) return _RENDER_BACKEND;
+
+  // 4. Local development — empty string, Vite proxy handles /api and /auth
+  if (host === 'localhost' || host === '127.0.0.1') return '';
+
+  // 5. Unknown domain (custom domain etc.) — use Render and warn loudly
+  console.error(
+    `[PlumbLine] VITE_BACKEND_URL is not set and hostname "${host}" is not recognised. ` +
+    `Falling back to ${_RENDER_BACKEND}. ` +
+    `Add VITE_BACKEND_URL=${_RENDER_BACKEND} to your Vercel environment variables.`
+  );
+  return _RENDER_BACKEND;
+}
+
+export const BACKEND_URL = _resolveBackendUrl();
 export const API_BASE    = `${BACKEND_URL}/api`;
 export const AUTH_BASE   = `${BACKEND_URL}/auth`;
 
-// ── TEMPORARY DIAGNOSTICS — remove after login issue is resolved ──────────────
+// ── Startup diagnostics (always visible in browser console) ──────────────────
 if (typeof window !== 'undefined') {
-  console.group('%c[PlumbLine API Diagnostics]', 'color: #3b82f6; font-weight: bold');
-  console.log('window.location.href :', window.location.href);
-  console.log('isNative (Capacitor) :', _isNative);
-  console.log('VITE_BACKEND_URL env :', import.meta.env.VITE_BACKEND_URL ?? '(NOT SET — relative paths used)');
-  console.log('BACKEND_URL resolved :', BACKEND_URL || '(empty — posts go to THIS domain, not Render)');
-  console.log('API_BASE             :', API_BASE  || '/api  ← goes to Vercel, NOT Render');
-  console.log('AUTH_BASE            :', AUTH_BASE || '/auth ← goes to Vercel, NOT Render');
+  const _envVar   = import.meta.env.VITE_BACKEND_URL;
+  const _isNative = !!window.Capacitor?.isNativePlatform?.();
+  console.group('%c[PlumbLine API Config]', 'color:#3b82f6;font-weight:bold');
+  console.log('window.location.href  :', window.location.href);
+  console.log('VITE_BACKEND_URL env  :', _envVar ?? '(not set — using built-in fallback)');
+  console.log('isNative (Capacitor)  :', _isNative);
+  console.log('resolved BACKEND_URL  :', BACKEND_URL || '(empty — localhost dev mode)');
+  console.log('API_BASE              :', API_BASE  || '/api  [dev proxy]');
+  console.log('AUTH_BASE             :', AUTH_BASE || '/auth [dev proxy]');
+  console.log('login POST URL        :', `${AUTH_BASE}/login`);
+  console.log('goes to Render?       :', BACKEND_URL.includes('onrender.com') || BACKEND_URL.includes('localhost:3001'));
   console.groupEnd();
 }
 

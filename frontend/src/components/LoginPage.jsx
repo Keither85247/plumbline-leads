@@ -17,15 +17,7 @@ export default function LoginPage({ onSuccess }) {
     setError('');
     setLoading(true);
 
-    // ── TEMPORARY DIAGNOSTICS — remove after login issue is resolved ──────────
-    console.group('%c[PlumbLine Login Attempt]', 'color: #10b981; font-weight: bold');
-    console.log('email entered        :', email.trim());
-    console.log('POST URL             :', `${AUTH_BASE}/login`);
-    console.log('goes to Render?      :', AUTH_BASE.startsWith('http'));
-    console.log('window.location.href :', window.location.href);
-    console.log('stored token?        :', !!localStorage.getItem('plumbline_token'));
-    console.groupEnd();
-    // ── END DIAGNOSTICS ────────────────────────────────────────────────────────
+    console.log(`[PlumbLine] Login POST → ${AUTH_BASE}/login`);
 
     try {
       const user = await login(email.trim(), password);
