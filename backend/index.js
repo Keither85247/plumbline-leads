@@ -35,41 +35,75 @@ const { startPolling }          = require('./jobs/gmailPoller');
 const { backfillMissingLabels } = require('./services/gmailService');
 
 // ── One-time owner password reset ─────────────────────────────────────────────
-// Set RESET_OWNER_PASSWORD=newpassword (and optionally RESET_OWNER_EMAIL=email)
-// in Render env vars, deploy once, log in, then remove both vars and deploy again.
+// Set RESET_OWNER_PASSWORD + RESET_OWNER_EMAIL in Render env vars.
+// Deploy once, wait for "[RESET] ✓ Complete" in Render logs, log in,
+// then DELETE both env vars from Render and save (auto-redeploys).
 if (process.env.RESET_OWNER_PASSWORD) {
-  try {
-    const bcrypt = require('bcrypt');
-    const db     = require('./db');
-    const hash   = bcrypt.hashSync(process.env.RESET_OWNER_PASSWORD, 10);
-    const email  = (process.env.RESET_OWNER_EMAIL || '').toLowerCase().trim();
+  console.log('[RESET] ─────────────────────────────────────────────────');
+  console.log('[RESET] RESET_OWNER_PASSWORD detected — starting owner reset');
 
-    let result;
-    if (email) {
-      // Update by email — also promote to owner if not already
-      result = db.prepare(
-        'UPDATE users SET password_hash = ?, is_owner = 1 WHERE LOWER(email) = ?'
-      ).run(hash, email);
-      // If user doesn't exist yet, create them as owner
-      if (result.changes === 0) {
-        db.prepare(
-          'INSERT INTO users (email, display_name, password_hash, is_owner) VALUES (?, ?, ?, 1)'
-        ).run(email, email, hash);
-        console.log('[RESET] Owner account created:', email);
+  const _resetEmail = (process.env.RESET_OWNER_EMAIL || '').toLowerCase().trim();
+  if (_resetEmail) {
+    console.log(`[RESET] Target email: ${_resetEmail}`);
+  } else {
+    console.log('[RESET] No RESET_OWNER_EMAIL — will update first is_owner=1 account found');
+  }
+
+  try {
+    const _bcrypt = require('bcrypt');
+    const _db     = require('./db');
+
+    // Step 1: hash the password
+    const _hash = _bcrypt.hashSync(process.env.RESET_OWNER_PASSWORD, 10);
+    console.log('[RESET] Password hashed (bcrypt, 10 rounds)');
+
+    // Step 2: upsert the account
+    if (_resetEmail) {
+      const _existing = _db.prepare(
+        'SELECT id, email, is_owner FROM users WHERE LOWER(email) = ?'
+      ).get(_resetEmail);
+
+      if (_existing) {
+        _db.prepare(
+          'UPDATE users SET password_hash = ?, is_owner = 1 WHERE id = ?'
+        ).run(_hash, _existing.id);
+        console.log(`[RESET] Updated password for user id=${_existing.id} (${_existing.email})`);
+        if (!_existing.is_owner) console.log('[RESET] Promoted to owner (is_owner set to 1)');
       } else {
-        console.log('[RESET] Password reset for:', email);
+        const _ins = _db.prepare(
+          'INSERT INTO users (email, display_name, password_hash, is_owner) VALUES (?, ?, ?, 1)'
+        ).run(_resetEmail, _resetEmail, _hash);
+        console.log(`[RESET] Created new owner account id=${_ins.lastInsertRowid} email=${_resetEmail}`);
       }
     } else {
-      // Fall back to updating any owner account
-      result = db.prepare('UPDATE users SET password_hash = ? WHERE is_owner = 1').run(hash);
-      if (result.changes > 0) {
-        console.log('[RESET] Owner password reset successfully.');
+      const _r = _db.prepare('UPDATE users SET password_hash = ? WHERE is_owner = 1').run(_hash);
+      if (_r.changes > 0) {
+        console.log(`[RESET] Updated password for ${_r.changes} owner account(s)`);
       } else {
-        console.warn('[RESET] No owner account found and RESET_OWNER_EMAIL not set — nothing changed.');
+        console.error('[RESET] ✗ No owner account found. Add RESET_OWNER_EMAIL=kesmi85247@gmail.com and redeploy.');
       }
     }
-  } catch (err) {
-    console.error('[RESET] Password reset failed:', err.message);
+
+    // Step 3: verify the account is readable with the right fields
+    const _verified = _resetEmail
+      ? _db.prepare(
+          'SELECT id, email, is_owner, (password_hash IS NOT NULL) AS has_hash FROM users WHERE LOWER(email) = ?'
+        ).get(_resetEmail)
+      : _db.prepare(
+          'SELECT id, email, is_owner, (password_hash IS NOT NULL) AS has_hash FROM users WHERE is_owner = 1 LIMIT 1'
+        ).get();
+
+    if (_verified) {
+      console.log(`[RESET] ✓ Verified — id=${_verified.id} email=${_verified.email} is_owner=${_verified.is_owner} has_password=${!!_verified.has_hash}`);
+      console.log('[RESET] ✓ Complete — DELETE both RESET_OWNER_PASSWORD and RESET_OWNER_EMAIL from Render env vars, then save.');
+    } else {
+      console.error('[RESET] ✗ Could not verify account after upsert — check DB_PATH on Render');
+    }
+
+    console.log('[RESET] ─────────────────────────────────────────────────');
+  } catch (_err) {
+    console.error('[RESET] ✗ Reset threw an error:', _err.message);
+    console.error('[RESET] Stack:', _err.stack);
   }
 }
 
@@ -151,6 +185,28 @@ app.use(express.json({ limit: '2mb' }));
 // ── Public routes (no authentication required) ────────────────────────────────
 // Health check — used by the frontend status indicator
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+// Owner account diagnostic — confirms the account exists and has a password,
+// without exposing any sensitive data. Used to verify reset worked on Render.
+// Safe to leave in production: reveals nothing beyond "account exists / not".
+app.get('/api/health/owner', (_req, res) => {
+  try {
+    const db    = require('./db');
+    const owner = db.prepare(
+      'SELECT id, email, is_owner, (password_hash IS NOT NULL) AS has_password FROM users WHERE is_owner = 1 LIMIT 1'
+    ).get();
+    const total = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+    res.json({
+      owner_exists:  !!owner,
+      owner_email:   owner ? owner.email  : null,
+      owner_id:      owner ? owner.id     : null,
+      has_password:  owner ? !!owner.has_password : false,
+      total_users:   total,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Auth routes: login, logout, me, Gmail OAuth callbacks
 // login / logout / me are always public by definition.

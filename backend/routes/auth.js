@@ -50,40 +50,64 @@ function clearOptions() {
 
 router.post('/login', express.json(), async (req, res) => {
   const { email, password } = req.body || {};
+  const origin = req.headers.origin || '(no origin)';
 
   if (!email || !password) {
+    console.warn(`[Auth] Login rejected — missing email or password (origin: ${origin})`);
     return res.status(400).json({ error: 'email and password are required' });
   }
 
-  const user = db.prepare(
-    'SELECT * FROM users WHERE email = ?'
-  ).get(email.toLowerCase().trim());
+  const normalizedEmail = email.toLowerCase().trim();
+  console.log(`[Auth] Login attempt: "${normalizedEmail}" from ${origin}`);
 
-  // Use a generic error message to avoid leaking whether the email exists
-  if (!user || !user.password_hash) {
+  const user = db.prepare(
+    'SELECT * FROM users WHERE LOWER(email) = ?'
+  ).get(normalizedEmail);
+
+  // Server-side diagnostic log — tells you exactly why login failed in Render logs.
+  // The client still gets the generic message so email existence is not leaked.
+  if (!user) {
+    console.warn(`[Auth] Login failed — no user found with email "${normalizedEmail}"`);
+    return res.status(401).json({ error: 'Invalid email or password' });
+  }
+  if (!user.password_hash) {
+    console.warn(`[Auth] Login failed — user id=${user.id} has no password_hash set`);
     return res.status(401).json({ error: 'Invalid email or password' });
   }
 
-  const match = await bcrypt.compare(password, user.password_hash);
+  let match = false;
+  try {
+    match = await bcrypt.compare(password, user.password_hash);
+  } catch (bcryptErr) {
+    console.error(`[Auth] bcrypt.compare threw for user id=${user.id}:`, bcryptErr.message);
+    return res.status(500).json({ error: 'Server error during authentication' });
+  }
+
   if (!match) {
+    console.warn(`[Auth] Login failed — password mismatch for user id=${user.id} (${user.email})`);
     return res.status(401).json({ error: 'Invalid email or password' });
   }
 
   // Create session
-  const token     = crypto.randomBytes(32).toString('hex');
-  const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
-  db.prepare(
-    'INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)'
-  ).run(token, user.id, expiresAt);
+  let token;
+  try {
+    token           = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+    db.prepare(
+      'INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)'
+    ).run(token, user.id, expiresAt);
+  } catch (sessionErr) {
+    console.error(`[Auth] Session save failed for user id=${user.id}:`, sessionErr.message);
+    return res.status(500).json({ error: 'Server error creating session' });
+  }
 
   const opts = cookieOptions();
   res.cookie('plumbline_session', token, opts);
 
-  // Log cookie attributes so you can verify SameSite=None;Secure is set in prod.
-  // If you see SameSite=lax here in production, NODE_ENV is not set to 'production'.
-  console.log(`[Auth] Login: user ${user.id} (${user.email}) — cookie: SameSite=${opts.sameSite} Secure=${opts.secure}`);
-  // Include token in response body so Safari (ITP) can store it in localStorage
-  // and send it via Authorization: Bearer header instead of the blocked cookie.
+  // Log cookie attributes — if SameSite=lax in production, NODE_ENV is not set correctly.
+  console.log(`[Auth] ✓ Login success: user id=${user.id} (${user.email}) is_owner=${user.is_owner} — cookie SameSite=${opts.sameSite} Secure=${opts.secure} origin=${origin}`);
+
+  // Include token in response body for Safari ITP (blocked cross-origin cookies).
   return res.json({ id: user.id, email: user.email, display_name: user.display_name, is_owner: user.is_owner, token });
 });
 
