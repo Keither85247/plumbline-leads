@@ -16,6 +16,18 @@ export const BACKEND_URL = _isNative ? _NATIVE_BACKEND : (import.meta.env.VITE_B
 export const API_BASE    = `${BACKEND_URL}/api`;
 export const AUTH_BASE   = `${BACKEND_URL}/auth`;
 
+// ── TEMPORARY DIAGNOSTICS — remove after login issue is resolved ──────────────
+if (typeof window !== 'undefined') {
+  console.group('%c[PlumbLine API Diagnostics]', 'color: #3b82f6; font-weight: bold');
+  console.log('window.location.href :', window.location.href);
+  console.log('isNative (Capacitor) :', _isNative);
+  console.log('VITE_BACKEND_URL env :', import.meta.env.VITE_BACKEND_URL ?? '(NOT SET — relative paths used)');
+  console.log('BACKEND_URL resolved :', BACKEND_URL || '(empty — posts go to THIS domain, not Render)');
+  console.log('API_BASE             :', API_BASE  || '/api  ← goes to Vercel, NOT Render');
+  console.log('AUTH_BASE            :', AUTH_BASE || '/auth ← goes to Vercel, NOT Render');
+  console.groupEnd();
+}
+
 import * as Sentry from '@sentry/react';
 
 /**
