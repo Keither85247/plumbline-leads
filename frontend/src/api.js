@@ -1,11 +1,18 @@
 // BACKEND_URL resolution:
-//   If VITE_BACKEND_URL is set (absolute Render URL) → use it directly (cross-origin).
-//   If not set → use relative paths; Vercel proxy rewrites forward /api/* and /auth/*
-//   to the Render backend server-side, keeping cookies same-origin for Safari.
+//   Native Android (Capacitor WebView): relative paths resolve to https://localhost,
+//   which is the WebView's local asset server — NOT the Render backend. Detect
+//   Capacitor and always point directly at the production backend.
+//
+//   Web (Vercel): If VITE_BACKEND_URL is set (absolute Render URL) → use it directly
+//   (cross-origin). If not set → use relative paths; Vercel proxy rewrites /api/*
+//   and /auth/* to the Render backend server-side, keeping cookies same-origin for
+//   Safari.
 //
 //   To fix Safari (ITP blocks cross-site cookies): clear VITE_BACKEND_URL from
 //   your Vercel environment variables so the proxy path is used instead.
-export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || '';
+const _isNative = typeof window !== 'undefined' && !!window.Capacitor?.isNativePlatform?.();
+const _NATIVE_BACKEND = 'https://plumbline-leads.onrender.com';
+export const BACKEND_URL = _isNative ? _NATIVE_BACKEND : (import.meta.env.VITE_BACKEND_URL || '');
 export const API_BASE    = `${BACKEND_URL}/api`;
 export const AUTH_BASE   = `${BACKEND_URL}/auth`;
 

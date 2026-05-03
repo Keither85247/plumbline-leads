@@ -55,6 +55,11 @@ const ALLOWED_ORIGINS = (process.env.FRONTEND_URL || '')
   .map(s => s.trim())
   .filter(Boolean);
 
+// Capacitor Android WebView always sends one of these two origins regardless of
+// the FRONTEND_URL env var. Allow them unconditionally so the Android app works
+// in every environment without touching Render config.
+const CAPACITOR_ORIGINS = new Set(['https://localhost', 'capacitor://localhost']);
+
 if (process.env.NODE_ENV === 'production' && ALLOWED_ORIGINS.length === 0) {
   console.error('[CORS] FATAL: FRONTEND_URL is not set. All credentialed requests will fail with TypeError: Failed to fetch.');
 } else {
@@ -75,7 +80,7 @@ const corsOptions = {
       return callback(null, true);
     }
 
-    if (ALLOWED_ORIGINS.includes(requestOrigin)) {
+    if (ALLOWED_ORIGINS.includes(requestOrigin) || CAPACITOR_ORIGINS.has(requestOrigin)) {
       return callback(null, true);
     }
 
