@@ -17,6 +17,7 @@ import { getLeads, saveOutboundNote, getCounts, getMe, logout, API_BASE, AuthErr
 import { translations } from './i18n';
 import { useVoiceDevice } from './hooks/useVoiceDevice';
 import { usePushNotifications } from './hooks/usePushNotifications';
+import { useCapacitorPush } from './hooks/useCapacitorPush';
 
 // Nav icons — labels are injected at render time from translations
 const SIDEBAR_NAV_ICONS = [
@@ -170,6 +171,8 @@ export default function App() {
 
   const voiceDevice = useVoiceDevice();
   const push = usePushNotifications();
+  // Native FCM push for Android (Capacitor). No-op on web.
+  useCapacitorPush();
 
   // Dismiss state for the push permission banner — stored in localStorage so
   // it doesn't reappear after the user taps "Not now".

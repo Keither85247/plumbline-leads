@@ -1,44 +1,78 @@
 'use strict';
 /**
- * Web Push delivery service.
+ * Push notification delivery service — handles both Web Push (browser) and
+ * FCM (Android Capacitor app).
  *
- * Sends push notifications to all subscribed devices for a user.
- * Requires VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_EMAIL env vars.
- * Silently no-ops when those vars are absent (no push configured yet).
+ * Web Push:  Requires VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_EMAIL.
+ * FCM:       Requires FIREBASE_SERVICE_ACCOUNT_JSON (see ANDROID_RELEASE.md).
  *
- * Dead subscriptions (410 / 404 from the push service) are pruned automatically.
+ * Both channels are tried simultaneously when sending. Either can be absent.
  */
 
 const webpush = require('web-push');
 const db      = require('../db');
 const log     = require('../logger').for('Push');
 
-const configured = !!(
+// ── Web Push (VAPID) ─────────────────────────────────────────────────────────
+
+const vapidConfigured = !!(
   process.env.VAPID_PUBLIC_KEY &&
   process.env.VAPID_PRIVATE_KEY
 );
 
-if (configured) {
+if (vapidConfigured) {
   webpush.setVapidDetails(
     `mailto:${process.env.VAPID_EMAIL || 'admin@plumblineleads.com'}`,
     process.env.VAPID_PUBLIC_KEY,
     process.env.VAPID_PRIVATE_KEY,
   );
-  log.info('VAPID configured — push notifications enabled');
+  log.info('VAPID configured — Web Push enabled');
 } else {
-  log.warn('VAPID keys not set — push notifications disabled');
+  log.warn('VAPID keys not set — Web Push disabled');
 }
+
+// ── FCM (Firebase Admin SDK) ─────────────────────────────────────────────────
+
+let firebaseAdmin = null;
+let fcmConfigured = false;
+
+if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+  try {
+    const admin = require('firebase-admin');
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    if (!admin.apps.length) {
+      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    }
+    firebaseAdmin = admin;
+    fcmConfigured = true;
+    log.info('Firebase Admin configured — FCM push enabled');
+  } catch (err) {
+    log.error('Firebase Admin init failed:', err.message);
+  }
+} else {
+  log.warn('FIREBASE_SERVICE_ACCOUNT_JSON not set — FCM (Android) push disabled');
+}
+
+// ── sendPush ─────────────────────────────────────────────────────────────────
 
 /**
  * Send a push notification to all subscriptions for the given userId.
- * Pass userId = null to broadcast to all subscriptions (used by webhook paths
- * where the user id isn't known at call time).
+ * Pass userId = null to broadcast to all subscriptions.
+ *
+ * Sends to Web Push subscriptions AND FCM tokens simultaneously.
  *
  * @param {number|null} userId
  * @param {{ title: string, body: string, tag?: string, url?: string }} payload
  */
 async function sendPush(userId, payload) {
-  if (!configured) return;
+  await Promise.all([
+    sendWebPush(userId, payload),
+    sendFcm(userId, payload),
+  ]);
+}
+
+async function sendWebPush(userId, payload) {
+  if (!vapidConfigured) return;
 
   const subs = userId == null
     ? db.prepare('SELECT * FROM push_subscriptions').all()
@@ -53,7 +87,7 @@ async function sendPush(userId, payload) {
       webpush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
         JSON.stringify(payload),
-        { TTL: 60 * 60 } // 1 hour TTL — discard if device unreachable
+        { TTL: 60 * 60 }
       )
     )
   );
@@ -62,15 +96,67 @@ async function sendPush(userId, payload) {
     if (result.status === 'rejected') {
       const code = result.reason?.statusCode;
       if (code === 404 || code === 410) {
-        // Subscription is gone — clean up
         db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?')
           .run(subs[i].endpoint);
-        log.info('Pruned expired push subscription', { endpoint: subs[i].endpoint.slice(0, 40) });
+        log.info('Pruned expired Web Push subscription');
       } else {
-        log.warn('Push delivery failed', { code, err: result.reason?.message });
+        log.warn('Web Push delivery failed', { code, err: result.reason?.message });
       }
     }
   });
 }
 
-module.exports = { sendPush, configured };
+async function sendFcm(userId, payload) {
+  if (!fcmConfigured) return;
+
+  const tokens = userId == null
+    ? db.prepare('SELECT fcm_token FROM fcm_subscriptions').all().map(r => r.fcm_token)
+    : db.prepare(
+        'SELECT fcm_token FROM fcm_subscriptions WHERE user_id = ? OR user_id IS NULL'
+      ).all(userId).map(r => r.fcm_token);
+
+  if (tokens.length === 0) return;
+
+  const message = {
+    notification: {
+      title: payload.title,
+      body:  payload.body,
+    },
+    data: {
+      url: payload.url || '/',
+      tag: payload.tag || 'plumbline',
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        sound:       'default',
+        channelId:   'calls',
+        clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+      },
+    },
+    tokens,
+  };
+
+  try {
+    const response = await firebaseAdmin.messaging().sendEachForMulticast(message);
+    response.responses.forEach((res, i) => {
+      if (!res.success) {
+        const errCode = res.error?.code;
+        if (
+          errCode === 'messaging/registration-token-not-registered' ||
+          errCode === 'messaging/invalid-registration-token'
+        ) {
+          db.prepare('DELETE FROM fcm_subscriptions WHERE fcm_token = ?').run(tokens[i]);
+          log.info('Pruned expired FCM token');
+        } else {
+          log.warn('FCM delivery failed', { errCode });
+        }
+      }
+    });
+    log.info(`FCM sent to ${response.successCount}/${tokens.length} devices`);
+  } catch (err) {
+    log.error('FCM send error', { err: err.message });
+  }
+}
+
+module.exports = { sendPush, configured: vapidConfigured || fcmConfigured };

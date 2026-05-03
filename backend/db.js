@@ -295,6 +295,18 @@ db.exec(`
   )
 `);
 
+// ── FCM subscriptions (Android Capacitor app) ─────────────────────────────────
+// One row per device. token is the FCM registration token.
+// Stale tokens are pruned when Firebase returns a registration error.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS fcm_subscriptions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER REFERENCES users(id),
+    fcm_token  TEXT    NOT NULL UNIQUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
 // ── Web Push subscriptions ────────────────────────────────────────────────────
 // One row per browser/device subscription. endpoint is globally unique.
 // Expired or unsubscribed rows are deleted automatically when web-push returns
