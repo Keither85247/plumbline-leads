@@ -398,9 +398,12 @@ export default function App() {
         </div>
       )}
 
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-4 md:px-6 sticky top-0 z-30 h-14 flex items-center">
-        <div className="flex items-center justify-between w-full gap-4">
+      {/* Header — paddingTop pushes content below iOS status bar / Android status bar
+           in PWA standalone mode and Capacitor. env(safe-area-inset-top) is 0 on
+           desktop so nothing changes there. */}
+      <header className="bg-white border-b border-gray-200 px-4 md:px-6 sticky top-0 z-30"
+              style={{ paddingTop: 'env(safe-area-inset-top)' }}>
+        <div className="h-14 flex items-center justify-between w-full gap-4">
           <div className="leading-tight">
             <span className="text-gray-900 font-bold text-lg tracking-tight">PlumbLine</span>
             <span className="text-gray-400 font-semibold text-lg tracking-tight"> Leads</span>
@@ -470,7 +473,7 @@ export default function App() {
         <main className={`flex-1 flex flex-col ${
           activeNav === 'text' || activeNav === 'email'
             ? 'overflow-hidden'
-            : 'overflow-auto px-4 md:px-6 pt-6 pb-[calc(56px+env(safe-area-inset-bottom))] md:pb-6'
+            : 'overflow-auto px-4 md:px-6 pt-6 pb-[calc(80px+env(safe-area-inset-bottom))] md:pb-6'
         }`}>
           {isLeadsView && (
             <div className="flex-1 flex flex-col max-w-4xl w-full">
@@ -510,13 +513,14 @@ export default function App() {
         </main>
       </div>
 
-      {/* Gradient fade mask — mobile only */}
+      {/* Gradient fade mask — mobile only. Height grows with safe-area so it
+           always covers the full nav pill + home indicator zone. */}
       <div
         className="md:hidden fixed bottom-0 left-0 right-0"
         style={{
-          height: '96px',
+          height: 'calc(96px + env(safe-area-inset-bottom))',
           zIndex: 39,
-          pointerEvents: 'auto',
+          pointerEvents: 'none',
           background: 'linear-gradient(to bottom, rgba(249,250,251,0) 0%, rgba(249,250,251,0.6) 50%, rgba(249,250,251,0.92) 100%)',
         }}
       />
@@ -637,9 +641,12 @@ export default function App() {
         />
       )}
 
-      {/* Bottom navigation — mobile only, floating pill style */}
+      {/* Bottom navigation — mobile only, floating pill style.
+           paddingBottom = safe-area-inset-bottom so the pill sits flush just
+           above the iOS home indicator / Android gesture bar with no extra gap.
+           4px is a minimal breathing room so the pill never touches the indicator. */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex justify-center"
-           style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 12px)', paddingLeft: '16px', paddingRight: '16px', paddingTop: '8px' }}>
+           style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 4px)', paddingLeft: '16px', paddingRight: '16px', paddingTop: '6px' }}>
         <nav className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-gray-100 flex items-stretch px-2 py-1">
           {BOTTOM_NAV_ICONS.map(item => {
             const isActive = item.id === 'leads'
