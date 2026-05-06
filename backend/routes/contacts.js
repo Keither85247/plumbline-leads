@@ -9,7 +9,7 @@ const router = express.Router();
 router.get('/', (req, res) => {
   try {
     const rows = db.prepare(
-      'SELECT * FROM contacts WHERE (user_id = ? OR user_id IS NULL) ORDER BY updated_at DESC'
+      'SELECT * FROM contacts WHERE user_id = ? ORDER BY updated_at DESC'
     ).all(req.userId);
     res.json(rows);
   } catch (err) {
@@ -42,7 +42,7 @@ router.get('/search', (req, res) => {
                   COALESCE(l.callback_number, l.phone_number, ''),
                   '+',''),'-',''),' ',''),'(',''),')','') = c.phone
                 AND l.contact_name != 'Unknown'
-                AND (l.user_id = ? OR l.user_id IS NULL)
+                AND l.user_id = ?
               ORDER BY l.created_at DESC
               LIMIT 1
             ),
@@ -50,7 +50,7 @@ router.get('/search', (req, res) => {
           ) AS name
         FROM contacts c
         WHERE c.email IS NOT NULL AND trim(c.email) != ''
-          AND (c.user_id = ? OR c.user_id IS NULL)
+          AND c.user_id = ?
       ) t
       WHERE
         instr(lower(t.email), ?) > 0
@@ -72,7 +72,7 @@ router.get('/search', (req, res) => {
 router.get('/:phone', (req, res) => {
   const { phone } = req.params;
   const row = db.prepare(
-    'SELECT * FROM contacts WHERE phone = ? AND (user_id = ? OR user_id IS NULL)'
+    'SELECT * FROM contacts WHERE phone = ? AND user_id = ?'
   ).get(phone, req.userId);
   if (!row) return res.json(null);
   res.json(row);
@@ -81,7 +81,6 @@ router.get('/:phone', (req, res) => {
 // ---------------------------------------------------------------------------
 // PUT /api/contacts/:phone
 // Upsert: if a row for this (user, phone) pair exists, update it; else insert.
-// Also claims ownership of any legacy NULL user_id row for this phone.
 // ---------------------------------------------------------------------------
 router.put('/:phone', (req, res) => {
   const { phone }  = req.params;
@@ -105,7 +104,7 @@ router.put('/:phone', (req, res) => {
   try {
     // Find an existing row this user owns or a legacy (NULL) row to claim
     const existing = db.prepare(
-      'SELECT id FROM contacts WHERE phone = ? AND (user_id = ? OR user_id IS NULL) LIMIT 1'
+      'SELECT id FROM contacts WHERE phone = ? AND user_id = ? LIMIT 1'
     ).get(phone, userId);
 
     if (existing) {

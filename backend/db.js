@@ -213,15 +213,37 @@ db.exec(`
 `);
 
 // ── user_id scaffolding on data tables ────────────────────────────────────────
-// All nullable so existing rows stay intact (NULL = legacy / pre-auth row).
-// Row-level scoping is enforced in route handlers via (user_id = ? OR user_id IS NULL).
-// Once all legacy data is claimed (create-user.js --assign), remove the NULL clause.
+// All nullable so existing rows stay intact on first migration.
+// Legacy rows (user_id IS NULL) are stamped to the owner account below so that
+// route handlers can filter strictly by user_id without the OR IS NULL escape hatch.
 
 try { db.exec('ALTER TABLE leads    ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
 try { db.exec('ALTER TABLE calls    ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
 try { db.exec('ALTER TABLE emails   ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
 try { db.exec('ALTER TABLE gmail_tokens ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
+
+// ── Stamp legacy NULL rows to the owner account ───────────────────────────────
+// Runs on every boot but is a no-op once rows are stamped.
+// Without this, every user sees the owner's historical data because pre-multi-user
+// rows have user_id = NULL and queries used (user_id = ? OR user_id IS NULL).
+try {
+  const owner = db.prepare('SELECT id FROM users WHERE is_owner = 1 ORDER BY id LIMIT 1').get();
+  if (owner) {
+    const stamp = db.transaction(() => {
+      const r1 = db.prepare('UPDATE leads    SET user_id = ? WHERE user_id IS NULL').run(owner.id);
+      const r2 = db.prepare('UPDATE calls    SET user_id = ? WHERE user_id IS NULL').run(owner.id);
+      const r3 = db.prepare('UPDATE emails   SET user_id = ? WHERE user_id IS NULL').run(owner.id);
+      const r4 = db.prepare('UPDATE messages SET user_id = ? WHERE user_id IS NULL').run(owner.id);
+      const r5 = db.prepare('UPDATE contacts SET user_id = ? WHERE user_id IS NULL').run(owner.id);
+      return r1.changes + r2.changes + r3.changes + r4.changes + r5.changes;
+    });
+    const total = stamp();
+    if (total > 0) console.log(`[DB] Stamped ${total} legacy rows → owner user_id=${owner.id}`);
+  }
+} catch (err) {
+  console.error('[DB] Legacy row stamp failed:', err.message);
+}
 
 // ── Contacts table migration ───────────────────────────────────────────────────
 // Old schema: phone TEXT PRIMARY KEY — globally unique, blocks multi-user.

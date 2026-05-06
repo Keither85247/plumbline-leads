@@ -3,9 +3,7 @@ const router = express.Router();
 const db = require('../db');
 
 // GET /api/counts
-// Returns badge counts scoped to the authenticated user.
-// TRANSITIONAL: each query includes NULL user_id rows so legacy data counts
-// until all rows are assigned (create-user.js --assign step).
+// Returns badge counts strictly scoped to the authenticated user.
 
 router.get('/', (req, res) => {
   try {
@@ -14,7 +12,7 @@ router.get('/', (req, res) => {
     // Missed inbound calls: no duration, no transcript, not Outbound, within 48h, not yet seen
     const { calls } = db.prepare(`
       SELECT COUNT(*) AS calls FROM calls
-      WHERE (user_id = ? OR user_id IS NULL)
+      WHERE user_id = ?
         AND classification != 'Outbound'
         AND (duration IS NULL OR duration = 0)
         AND transcript IS NULL
@@ -28,7 +26,7 @@ router.get('/', (req, res) => {
       FROM messages m
       WHERE m.direction = 'inbound'
         AND (m.is_read IS NULL OR m.is_read = 0)
-        AND (m.user_id = ? OR m.user_id IS NULL)
+        AND m.user_id = ?
         AND m.id = (
           SELECT id FROM messages m2
           WHERE m2.phone = m.phone
@@ -45,7 +43,7 @@ router.get('/', (req, res) => {
         AND is_read = 0
         AND (is_deleted  IS NULL OR is_deleted  = 0)
         AND (is_archived IS NULL OR is_archived = 0)
-        AND (user_id = ? OR user_id IS NULL)
+        AND user_id = ?
     `).get(userId);
 
     res.json({ calls: calls || 0, texts: texts || 0, emails: emails || 0 });

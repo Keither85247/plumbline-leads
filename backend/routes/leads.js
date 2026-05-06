@@ -165,9 +165,6 @@ router.post('/', async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // GET /api/leads
-// TRANSITIONAL: includes NULL user_id rows so legacy + Twilio-created leads
-// remain visible until all rows are claimed (see scripts/create-user.js).
-// Remove the "OR l.user_id IS NULL" clause once Phase 2 Twilio scoping is done.
 // ---------------------------------------------------------------------------
 router.get('/', (req, res) => {
   try {
@@ -182,7 +179,7 @@ router.get('/', (req, res) => {
          WHERE m.phone = l.phone_number OR m.phone = l.callback_number) AS last_message_at
       FROM leads l
       WHERE l.archived = ?
-        AND (l.user_id = ? OR l.user_id IS NULL)`;
+        AND l.user_id = ?`;
     const params = [showArchived ? 1 : 0, req.userId];
 
     if (source) {
@@ -216,7 +213,7 @@ router.get('/', (req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/:id/voicemail', (req, res) => {
   const lead = db.prepare(
-    'SELECT recording_url FROM leads WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+    'SELECT recording_url FROM leads WHERE id = ? AND user_id = ?'
   ).get(req.params.id, req.userId);
 
   if (!lead) {
@@ -272,7 +269,7 @@ router.patch('/:id/status', (req, res) => {
 
   try {
     const result = db.prepare(
-      'UPDATE leads SET status = ? WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+      'UPDATE leads SET status = ? WHERE id = ? AND user_id = ?'
     ).run(status, id, req.userId);
 
     if (result.changes === 0) return res.status(404).json({ error: 'Lead not found' });
@@ -299,7 +296,7 @@ router.patch('/:id/category', (req, res) => {
 
   try {
     const result = db.prepare(
-      'UPDATE leads SET category = ? WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+      'UPDATE leads SET category = ? WHERE id = ? AND user_id = ?'
     ).run(category, id, req.userId);
 
     if (result.changes === 0) return res.status(404).json({ error: 'Lead not found' });
@@ -322,7 +319,7 @@ router.patch('/:id/archive', (req, res) => {
 
   try {
     const result = db.prepare(
-      'UPDATE leads SET archived = ? WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+      'UPDATE leads SET archived = ? WHERE id = ? AND user_id = ?'
     ).run(archived ? 1 : 0, id, req.userId);
 
     if (result.changes === 0) return res.status(404).json({ error: 'Lead not found' });
@@ -344,7 +341,7 @@ router.delete('/:id', (req, res) => {
 
   try {
     const result = db.prepare(
-      'DELETE FROM leads WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+      'DELETE FROM leads WHERE id = ? AND user_id = ?'
     ).run(id, req.userId);
 
     if (result.changes === 0) return res.status(404).json({ error: 'Lead not found' });

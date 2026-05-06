@@ -82,8 +82,7 @@ router.get('/media-proxy', (req, res) => {
 // ---------------------------------------------------------------------------
 // GET /api/messages
 // Returns conversation list — one entry per phone, latest message + unread count.
-// Filters by req.userId; OR user_id IS NULL retains visibility for pre-multi-user
-// rows that were created before user assignment was in place.
+// Filters strictly by req.userId — legacy rows were stamped to the owner at startup.
 // ---------------------------------------------------------------------------
 router.get('/', (req, res) => {
   try {
@@ -99,7 +98,7 @@ router.get('/', (req, res) => {
           WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone_number,'+',''),'-',''),' ',''),'(',''),')','')
               = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(m.phone,'+',''),'-',''),' ',''),'(',''),')','')
             AND contact_name IS NOT NULL AND contact_name != 'Unknown'
-            AND (user_id = ? OR user_id IS NULL)
+            AND user_id = ?
           ORDER BY created_at DESC LIMIT 1) AS contact_name
       FROM messages m
       LEFT JOIN messages m2
@@ -110,7 +109,7 @@ router.get('/', (req, res) => {
           AND (m3.user_id = ? OR m3.user_id IS NULL)
         ORDER BY created_at DESC LIMIT 1
       )
-      AND (m.user_id = ? OR m.user_id IS NULL)
+      AND m.user_id = ?
       GROUP BY m.phone
       ORDER BY m.created_at DESC
     `).all(req.userId, req.userId, req.userId);
@@ -123,7 +122,7 @@ router.get('/', (req, res) => {
         ? db.prepare(
             `SELECT name FROM contacts
              WHERE phone = ?
-               AND (user_id = ? OR user_id IS NULL)
+               AND user_id = ?
                AND name IS NOT NULL AND trim(name) != ''`
           ).get(normalized10, req.userId)
         : null;
@@ -160,7 +159,7 @@ router.get('/:phone', (req, res) => {
       SELECT * FROM messages
       WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''),'(',''),')','')
           = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(?,'+',''),'-',''),' ',''),'(',''),')','')
-        AND (user_id = ? OR user_id IS NULL)
+        AND user_id = ?
       ORDER BY created_at ASC
     `).all(phone, req.userId);
 
@@ -183,7 +182,7 @@ router.patch('/:phone/read', (req, res) => {
       UPDATE messages
       SET is_read = 1
       WHERE direction = 'inbound'
-        AND (user_id = ? OR user_id IS NULL)
+        AND user_id = ?
         AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''),'(',''),')','')
           = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(?,'+',''),'-',''),' ',''),'(',''),')','')
     `).run(req.userId, phone);

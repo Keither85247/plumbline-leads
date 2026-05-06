@@ -28,8 +28,6 @@ function normalizePhone(num) {
 }
 
 // ── GET /api/emails ───────────────────────────────────────────────────────────
-// TRANSITIONAL: includes NULL user_id rows (Gmail poller creates rows without a
-// user_id until Phase 3 adds per-user Gmail isolation).
 
 const VALID_MAILBOX_FILTERS = new Set(['sent', 'inbox', 'trash', 'spam']);
 
@@ -56,7 +54,7 @@ router.get('/', (req, res) => {
                   COALESCE(l.callback_number, l.phone_number, ''),
                   '+',''),'-',''),' ',''),'(',''),')','') = c.phone
                 AND l.contact_name != 'Unknown'
-                AND (l.user_id = ? OR l.user_id IS NULL)
+                AND l.user_id = ?
               ORDER BY l.created_at DESC
               LIMIT 1
             ),
@@ -66,7 +64,7 @@ router.get('/', (req, res) => {
           WHERE
             c.email IS NOT NULL
             AND trim(c.email) != ''
-            AND (c.user_id = ? OR c.user_id IS NULL)
+            AND c.user_id = ?
             AND instr(
                   lower(CASE WHEN e.direction = 'outbound'
                               THEN COALESCE(e.to_address,   '')
@@ -79,7 +77,7 @@ router.get('/', (req, res) => {
       FROM emails e
       WHERE (e.is_deleted IS NULL OR e.is_deleted = 0)
         AND (e.is_archived IS NULL OR e.is_archived = 0)
-        AND (e.user_id = ? OR e.user_id IS NULL)
+        AND e.user_id = ?
         ${filterClause}
       ORDER BY e.created_at DESC
       LIMIT 200
@@ -99,7 +97,7 @@ router.get('/by-phone/:phone', (req, res) => {
     if (!normalized) return res.json([]);
 
     const contactRow = db.prepare(
-      'SELECT email FROM contacts WHERE phone = ? AND (user_id = ? OR user_id IS NULL)'
+      'SELECT email FROM contacts WHERE phone = ? AND user_id = ?'
     ).get(normalized, req.userId);
     const contactEmail = (contactRow?.email || '').trim().toLowerCase();
 
@@ -108,7 +106,7 @@ router.get('/by-phone/:phone', (req, res) => {
       emails = db.prepare(`
         SELECT * FROM emails
         WHERE (is_deleted IS NULL OR is_deleted = 0)
-          AND (user_id = ? OR user_id IS NULL)
+          AND user_id = ?
           AND (
             REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''),'(',''),')','') = ?
             OR instr(lower(from_address), ?) > 0
@@ -121,7 +119,7 @@ router.get('/by-phone/:phone', (req, res) => {
         SELECT * FROM emails
         WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''),'(',''),')','') = ?
           AND (is_deleted IS NULL OR is_deleted = 0)
-          AND (user_id = ? OR user_id IS NULL)
+          AND user_id = ?
         ORDER BY created_at DESC
       `).all(normalized, req.userId);
     }
@@ -214,7 +212,7 @@ router.post('/', upload.array('attachments', 5), async (req, res) => {
 router.get('/:id', (req, res) => {
   try {
     const row = db.prepare(
-      'SELECT * FROM emails WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+      'SELECT * FROM emails WHERE id = ? AND user_id = ?'
     ).get(req.params.id, req.userId);
     if (!row) return res.status(404).json({ error: 'Email not found' });
     res.json(row);
@@ -242,7 +240,7 @@ router.patch('/:id', (req, res) => {
 
   try {
     db.prepare(
-      `UPDATE emails SET ${setClause} WHERE id = ? AND (user_id = ? OR user_id IS NULL)`
+      `UPDATE emails SET ${setClause} WHERE id = ? AND user_id = ?`
     ).run(...values, req.params.id, req.userId);
 
     const row = db.prepare('SELECT * FROM emails WHERE id = ?').get(req.params.id);
@@ -258,7 +256,7 @@ router.patch('/:id', (req, res) => {
 router.delete('/:id', (req, res) => {
   try {
     const info = db.prepare(
-      'UPDATE emails SET is_deleted = 1 WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+      'UPDATE emails SET is_deleted = 1 WHERE id = ? AND user_id = ?'
     ).run(req.params.id, req.userId);
     if (info.changes === 0) return res.status(404).json({ error: 'Email not found' });
     res.json({ ok: true });

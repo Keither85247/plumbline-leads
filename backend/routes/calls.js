@@ -10,13 +10,11 @@ function normalizePhone(num) {
 
 // ---------------------------------------------------------------------------
 // GET /api/calls
-// TRANSITIONAL: includes NULL user_id rows (Twilio webhook-created calls) until
-// Phase 2 assigns those rows to the correct user via Twilio number routing.
 // ---------------------------------------------------------------------------
 router.get('/', (req, res) => {
   try {
     const calls = db.prepare(
-      'SELECT * FROM calls WHERE (user_id = ? OR user_id IS NULL) ORDER BY created_at DESC LIMIT 50'
+      'SELECT * FROM calls WHERE user_id = ? ORDER BY created_at DESC LIMIT 50'
     ).all(req.userId);
 
     return res.json(calls.map(c => {
@@ -29,7 +27,7 @@ router.get('/', (req, res) => {
           const contact = db.prepare(
             `SELECT name FROM contacts
              WHERE phone = ?
-               AND (user_id = ? OR user_id IS NULL)
+               AND user_id = ?
                AND name IS NOT NULL AND trim(name) != ''`
           ).get(normalized, req.userId);
 
@@ -44,7 +42,7 @@ router.get('/', (req, res) => {
                 OR
                 REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(callback_number, '+',''),'-',''),' ',''),'(',''),')','') = ?
               )
-              AND (user_id = ? OR user_id IS NULL)
+              AND user_id = ?
               AND contact_name IS NOT NULL
               AND contact_name != 'Unknown'
               ORDER BY created_at DESC
@@ -75,7 +73,7 @@ router.get('/', (req, res) => {
           const vmLead = db.prepare(`
             SELECT id, summary, key_points, recording_url FROM leads
             WHERE source = 'voicemail'
-              AND (user_id = ? OR user_id IS NULL)
+              AND user_id = ?
               AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone_number,'+',''),'-',''),' ',''),'(',''),')','') = ?
               AND created_at > datetime(?, '-5 minutes')
               AND created_at < datetime(?, '+240 minutes')
@@ -119,7 +117,7 @@ router.get('/by-phone/:number', (req, res) => {
     if (!normalized) return res.json([]);
 
     const calls = db.prepare(
-      'SELECT * FROM calls WHERE (user_id = ? OR user_id IS NULL) ORDER BY created_at DESC'
+      'SELECT * FROM calls WHERE user_id = ? ORDER BY created_at DESC'
     ).all(req.userId);
 
     const matched = calls.filter(c => normalizePhone(c.from_number) === normalized);
@@ -143,7 +141,7 @@ router.get('/by-phone/:number', (req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/:id/recording', (req, res) => {
   const call = db.prepare(
-    'SELECT recording_url FROM calls WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+    'SELECT recording_url FROM calls WHERE id = ? AND user_id = ?'
   ).get(req.params.id, req.userId);
 
   if (!call) return res.status(404).json({ error: 'Call not found' });
@@ -198,7 +196,7 @@ router.post('/outbound-note', express.json(), (req, res) => {
       WHERE id = (
         SELECT id FROM calls
         WHERE classification = 'Outbound'
-          AND (user_id = ? OR user_id IS NULL)
+          AND user_id = ?
           AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(from_number,'+',''),'-',''),' ',''),'(',''),')','') = ?
         ORDER BY created_at DESC
         LIMIT 1
@@ -228,7 +226,7 @@ router.post('/mark-seen', (req, res) => {
     db.prepare(`
       UPDATE calls
       SET is_seen = 1
-      WHERE (user_id = ? OR user_id IS NULL)
+      WHERE user_id = ?
         AND classification != 'Outbound'
         AND (duration IS NULL OR duration = 0)
         AND transcript IS NULL
