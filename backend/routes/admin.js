@@ -50,11 +50,36 @@ router.post('/reset-demo', requireOwner, (req, res) => {
 
 router.get('/users', requireOwner, (_req, res) => {
   const users = db.prepare(`
-    SELECT id, email, display_name, is_owner, created_at
-    FROM users
-    ORDER BY id
+    SELECT u.id, u.email, u.display_name, u.is_owner, u.is_suspended, u.created_at,
+           pn.phone_number AS assigned_number, pn.is_suspended AS number_suspended
+    FROM users u
+    LEFT JOIN phone_numbers pn ON pn.assigned_user_id = u.id
+    ORDER BY u.id
   `).all();
   res.json(users);
+});
+
+// ── PATCH /api/admin/users/:id/suspend ────────────────────────────────────────
+// Suspend or reinstate a tester account. Cannot suspend an owner.
+// Body: { suspended: true | false }
+
+router.patch('/users/:id/suspend', requireOwner, express.json(), (req, res) => {
+  const id        = parseInt(req.params.id, 10);
+  const suspended = req.body?.suspended ? 1 : 0;
+
+  const target = db.prepare('SELECT id, email, is_owner FROM users WHERE id = ?').get(id);
+  if (!target)         return res.status(404).json({ error: 'User not found' });
+  if (target.is_owner) return res.status(400).json({ error: 'Cannot suspend an owner account' });
+
+  db.prepare('UPDATE users SET is_suspended = ? WHERE id = ?').run(suspended, id);
+
+  // Kill all active sessions if suspending so effect is immediate
+  if (suspended) {
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+  }
+
+  console.log(`[Admin] User ${id} (${target.email}) ${suspended ? 'suspended' : 'reinstated'} by owner ${req.userId}`);
+  res.json({ ok: true, id, email: target.email, is_suspended: suspended });
 });
 
 // ── POST /api/admin/users ─────────────────────────────────────────────────────
@@ -245,6 +270,24 @@ router.patch('/phone-numbers/:id/assign', requireOwner, express.json(), (req, re
     WHERE pn.id = ?
   `).get(id);
   res.json(row);
+});
+
+// ── PATCH /api/admin/phone-numbers/:id/suspend ───────────────────────────────
+// Suspend or reinstate a specific Twilio number.
+// Suspended numbers cannot send outbound SMS; inbound SMS is dropped with a log.
+// Body: { suspended: true | false }
+
+router.patch('/phone-numbers/:id/suspend', requireOwner, express.json(), (req, res) => {
+  const id        = parseInt(req.params.id, 10);
+  const suspended = req.body?.suspended ? 1 : 0;
+
+  const row = db.prepare('SELECT id, phone_number, assigned_user_id FROM phone_numbers WHERE id = ?').get(id);
+  if (!row) return res.status(404).json({ error: 'Phone number not found' });
+
+  db.prepare('UPDATE phone_numbers SET is_suspended = ? WHERE id = ?').run(suspended, id);
+
+  console.log(`[Admin] Number ${row.phone_number} (id ${id}, user ${row.assigned_user_id}) ${suspended ? 'suspended' : 'reinstated'} by owner ${req.userId}`);
+  res.json({ ok: true, id, phone_number: row.phone_number, is_suspended: suspended });
 });
 
 // ── DELETE /api/admin/phone-numbers/:id ──────────────────────────────────────

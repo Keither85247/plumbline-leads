@@ -196,6 +196,8 @@ db.exec(`
 // Safe migrations: add columns to existing users table
 try { db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch {}
 try { db.exec('ALTER TABLE users ADD COLUMN is_owner INTEGER NOT NULL DEFAULT 0'); } catch {}
+// Tester account suspension — owner can flip this to 1 to block all activity
+try { db.exec('ALTER TABLE users ADD COLUMN is_suspended INTEGER NOT NULL DEFAULT 0'); } catch {}
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 // One row per active login. Token is a 32-byte random hex string stored in an
@@ -294,6 +296,9 @@ db.exec(`
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
+// Number-level suspension — disables inbound + outbound for this specific number
+// without touching the user account itself.
+try { db.exec('ALTER TABLE phone_numbers ADD COLUMN is_suspended INTEGER NOT NULL DEFAULT 0'); } catch {}
 
 // ── FCM subscriptions (Android Capacitor app) ─────────────────────────────────
 // One row per device. token is the FCM registration token.

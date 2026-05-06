@@ -8,7 +8,8 @@ const crypto  = require('crypto');
 const https   = require('https');
 const http    = require('http');
 const multer  = require('multer');
-const db      = require('../db');
+const db        = require('../db');
+const smsGuards = require('../middleware/smsGuards');
 
 function getTwilioClient() {
   const { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN } = process.env;
@@ -81,8 +82,8 @@ router.get('/media-proxy', (req, res) => {
 // ---------------------------------------------------------------------------
 // GET /api/messages
 // Returns conversation list — one entry per phone, latest message + unread count.
-// TRANSITIONAL: includes NULL user_id rows (Twilio-created inbound messages) until
-// Phase 2 sets user_id in the Twilio SMS webhook handler.
+// Filters by req.userId; OR user_id IS NULL retains visibility for pre-multi-user
+// rows that were created before user assignment was in place.
 // ---------------------------------------------------------------------------
 router.get('/', (req, res) => {
   try {
@@ -197,7 +198,7 @@ router.patch('/:phone/read', (req, res) => {
 // ---------------------------------------------------------------------------
 // POST /api/messages/send — outbound SMS or MMS via Twilio
 // ---------------------------------------------------------------------------
-router.post('/send', upload.array('media', 5), async (req, res) => {
+router.post('/send', upload.array('media', 5), smsGuards, async (req, res) => {
   const { to, body } = req.body;
   const files = req.files || [];
 
@@ -206,11 +207,19 @@ router.post('/send', upload.array('media', 5), async (req, res) => {
     return res.status(400).json({ error: 'body or at least one media file is required' });
   }
 
-  const toE164     = normalizePhone(to);
-  const fromNumber = process.env.TWILIO_PHONE_NUMBER;
-  const baseUrl    = process.env.TWILIO_BASE_URL;
+  const toE164 = normalizePhone(to);
+  const baseUrl = process.env.TWILIO_BASE_URL;
 
-  if (!fromNumber) return res.status(500).json({ error: 'TWILIO_PHONE_NUMBER is not configured' });
+  // Use the number assigned to this user; fall back to the shared env number
+  const assignedRow = db.prepare(
+    'SELECT phone_number FROM phone_numbers WHERE assigned_user_id = ? LIMIT 1'
+  ).get(req.userId);
+  const fromNumber   = assignedRow?.phone_number || process.env.TWILIO_PHONE_NUMBER;
+  const fromSource   = assignedRow?.phone_number ? 'assigned' : 'env-fallback';
+
+  log.info('Outbound SMS from number resolved', { userId: req.userId, from: fromNumber, source: fromSource, to: toE164 });
+
+  if (!fromNumber) return res.status(500).json({ error: 'No phone number configured for this user' });
   if (files.length > 0 && !baseUrl) return res.status(500).json({ error: 'TWILIO_BASE_URL must be set to send MMS' });
 
   const client = getTwilioClient();

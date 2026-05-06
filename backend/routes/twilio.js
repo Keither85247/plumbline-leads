@@ -330,6 +330,17 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
     return res.status(200).send('OK');
   }
 
+  // Drop inbound SMS if the receiving number is suspended
+  if (To) {
+    const numRow = db.prepare(
+      'SELECT is_suspended FROM phone_numbers WHERE phone_number = ?'
+    ).get(To);
+    if (numRow?.is_suspended) {
+      log.warn('Inbound SMS dropped — number suspended', { to: To, from: From, assignedUserId });
+      return res.status(200).send('OK');
+    }
+  }
+
   // Collect inbound MMS media URLs (Twilio sends MediaUrl0, MediaUrl1, …)
   const inboundMediaUrls = [];
   for (let i = 0; i < numMedia; i++) {
@@ -338,7 +349,7 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
   }
   const mediaUrlsJson = inboundMediaUrls.length > 0 ? JSON.stringify(inboundMediaUrls) : null;
 
-  log.info('Inbound SMS', { from: From, chars: (Body || '').length, mediaCount: numMedia });
+  log.info('Inbound SMS', { from: From, to: To, assignedUserId, chars: (Body || '').length, mediaCount: numMedia });
 
   // Always persist the inbound message FIRST so it appears in the inbox
   // regardless of lead creation logic below.

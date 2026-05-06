@@ -29,6 +29,7 @@ const authRouter       = require('./routes/auth');
 const adminRouter      = require('./routes/admin');
 const pushRouter       = require('./routes/push');
 const settingsRouter   = require('./routes/settings');
+const numbersRouter    = require('./routes/numbers');
 const requireAuth      = require('./middleware/requireAuth');
 
 const { startPolling }          = require('./jobs/gmailPoller');
@@ -241,6 +242,7 @@ app.use('/api/counts',   countsRouter);
 app.use('/api/admin',    adminRouter);
 app.use('/api/push',     pushRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/numbers',  numbersRouter);
 
 // ── TEMPORARY MIGRATION ENDPOINT — REMOVE AFTER USE ──────────────────────────
 app.post('/api/migrate', (req, res) => {

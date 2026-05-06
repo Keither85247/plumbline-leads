@@ -13,7 +13,8 @@ import OutboundNoteModal from './components/OutboundNoteModal';
 import InboxLayout from './components/inbox/InboxLayout';
 import EmailPage from './components/EmailPage';
 import LoginPage from './components/LoginPage';
-import { getLeads, saveOutboundNote, getCounts, getMe, logout, API_BASE, AuthError } from './api';
+import NumberPickerModal from './components/NumberPickerModal';
+import { getLeads, saveOutboundNote, getCounts, getMe, getMyNumber, logout, API_BASE, AuthError } from './api';
 import { translations } from './i18n';
 import { useVoiceDevice } from './hooks/useVoiceDevice';
 import { usePushNotifications } from './hooks/usePushNotifications';
@@ -133,6 +134,20 @@ export default function App() {
   // If authenticated: render the full app and update Sentry user context.
   const [currentUser, setCurrentUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
+  // null = not checked yet; false = needs to pick a number; object = has a number
+  const [assignedNumber, setAssignedNumber] = useState(null);
+
+  const checkAssignedNumber = async (user) => {
+    // Owners always have access — they manage numbers, not claim them
+    if (user?.is_owner) { setAssignedNumber(true); return; }
+    try {
+      const row = await getMyNumber();
+      setAssignedNumber(row || false);
+    } catch {
+      // If the check fails, don't block the user — let them in
+      setAssignedNumber(true);
+    }
+  };
 
   useEffect(() => {
     async function checkAuth() {
@@ -152,15 +167,19 @@ export default function App() {
         }
       }
       setCurrentUser(user);
-      if (user) Sentry.setUser({ id: String(user.id), email: user.email });
+      if (user) {
+        Sentry.setUser({ id: String(user.id), email: user.email });
+        await checkAssignedNumber(user);
+      }
       setAuthChecked(true);
     }
     checkAuth();
   }, []);
 
-  const handleLoginSuccess = (user) => {
+  const handleLoginSuccess = async (user) => {
     setCurrentUser(user);
     Sentry.setUser({ id: String(user.id), email: user.email });
+    await checkAssignedNumber(user);
   };
 
   const handleLogout = async () => {
@@ -341,7 +360,9 @@ export default function App() {
 
   // ── Auth gate ─────────────────────────────────────────────────────────────
   // Waiting for the initial /auth/me call → blank screen (no flash)
-  if (!authChecked) {
+  // Show spinner while: (a) initial auth check in progress, or
+  // (b) logged in but still checking whether this user has a number assigned.
+  if (!authChecked || (currentUser && assignedNumber === null)) {
     return (
       <div className="h-dvh flex items-center justify-center bg-gray-50">
         <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
@@ -355,6 +376,15 @@ export default function App() {
       <Sentry.ErrorBoundary fallback={<div className="h-dvh flex items-center justify-center"><p className="text-sm text-gray-500">Something went wrong.</p></div>}>
         <LoginPage onSuccess={handleLoginSuccess} />
       </Sentry.ErrorBoundary>
+    );
+  }
+
+  // Non-owner has no assigned number → show blocking number picker
+  if (assignedNumber === false) {
+    return (
+      <NumberPickerModal
+        onClaimed={(row) => setAssignedNumber(row)}
+      />
     );
   }
 

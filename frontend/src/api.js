@@ -654,6 +654,43 @@ export async function getAdminUsers() {
   return res.json();
 }
 
+// ── Phone number onboarding ───────────────────────────────────────────────────
+
+/** Returns the phone number assigned to the current user, or null. */
+export async function getMyNumber() {
+  const res = await apiFetch(`${API_BASE}/numbers/mine`);
+  if (!res.ok) throw new Error('Failed to fetch your phone number');
+  return res.json(); // { id, phone_number, friendly_name, twilio_sid } | null
+}
+
+/**
+ * Searches Twilio for available US local numbers.
+ * @param {string} [areaCode]
+ */
+export async function searchAvailableNumbersForClaim(areaCode) {
+  const url = areaCode
+    ? `${API_BASE}/numbers/search?areaCode=${encodeURIComponent(areaCode)}`
+    : `${API_BASE}/numbers/search`;
+  const res = await apiFetch(url);
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Search failed'); }
+  return res.json();
+}
+
+/**
+ * Purchases the given Twilio number and assigns it to the current user.
+ * If the user already has a number, returns the existing one.
+ * @param {string} phoneNumber  E.164, e.g. '+15551234567'
+ */
+export async function claimPhoneNumber(phoneNumber) {
+  const res = await apiFetch(`${API_BASE}/numbers/claim`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ phoneNumber }),
+  });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Failed to claim number'); }
+  return res.json();
+}
+
 export async function updateLeadCategory(id, category) {
   const res = await apiFetch(`${API_BASE}/leads/${id}/category`, {
     method: 'PATCH',
