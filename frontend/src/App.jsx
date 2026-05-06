@@ -7,7 +7,7 @@ import CallsPage from './components/CallsPage';
 import TimelinePage from './components/TimelinePage';
 import ContactsPage from './components/ContactsPage';
 import SettingsModal from './components/SettingsModal';
-import OnboardingModal from './components/OnboardingModal';
+import FirstRunOnboarding from './components/onboarding/FirstRunOnboarding';
 import ContactHistoryModal from './components/ContactHistoryModal';
 import OutboundNoteModal from './components/OutboundNoteModal';
 import InboxLayout from './components/inbox/InboxLayout';
@@ -227,8 +227,8 @@ export default function App() {
   const [replyTranslation, setReplyTranslation] = useState(
     () => localStorage.getItem('replyTranslation') === 'true'
   );
-  const [showOnboarding, setShowOnboarding] = useState(
-    () => !localStorage.getItem('onboardingComplete')
+  const [onboardingSeen, setOnboardingSeen] = useState(
+    () => localStorage.getItem('plOnboardingSeen') === '1'
   );
   const [contractorName, setContractorName] = useState(
     () => localStorage.getItem('contractorName') || ''
@@ -359,6 +359,13 @@ export default function App() {
 
 
   // ── Auth gate ─────────────────────────────────────────────────────────────
+  // First-run onboarding — shown before everything else, even auth
+  if (!onboardingSeen) {
+    return (
+      <FirstRunOnboarding onComplete={() => setOnboardingSeen(true)} />
+    );
+  }
+
   // Waiting for the initial /auth/me call → blank screen (no flash)
   // Show spinner while: (a) initial auth check in progress, or
   // (b) logged in but still checking whether this user has a number assigned.
@@ -640,17 +647,6 @@ export default function App() {
           phone={callsPagePhone}
           leads={leads}
           onClose={() => setCallsPagePhone(null)}
-        />
-      )}
-
-      {/* Onboarding modal — shown once on first load */}
-      {showOnboarding && (
-        <OnboardingModal
-          language={language}
-          onDismiss={() => {
-            localStorage.setItem('onboardingComplete', 'true');
-            setShowOnboarding(false);
-          }}
         />
       )}
 
