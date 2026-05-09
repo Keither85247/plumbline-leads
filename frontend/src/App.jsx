@@ -14,7 +14,7 @@ import InboxLayout from './components/inbox/InboxLayout';
 import EmailPage from './components/EmailPage';
 import LoginPage from './components/LoginPage';
 import NumberPickerModal from './components/NumberPickerModal';
-import { getLeads, saveOutboundNote, getCounts, getMe, getMyNumber, logout, API_BASE, AuthError } from './api';
+import { getLeads, saveOutboundNote, getCounts, getMe, logout, API_BASE, AuthError } from './api';
 import { translations } from './i18n';
 import { useVoiceDevice } from './hooks/useVoiceDevice';
 import { usePushNotifications } from './hooks/usePushNotifications';
@@ -137,29 +137,16 @@ export default function App() {
   // null = not checked yet; false = needs to pick a number; object = has a number
   const [assignedNumber, setAssignedNumber] = useState(null);
 
-  const checkAssignedNumber = async (user) => {
-    // Owners always have access — they manage numbers, not claim them
+  const checkAssignedNumber = (user) => {
+    // Owners always have access — they manage numbers, not claim them.
+    // For non-owners, the login and /auth/me responses now include assignedNumber
+    // directly — no separate network call needed, no cold-start race condition.
     if (user?.is_owner) {
-      console.log('[NumberCheck] owner account — skipping number check');
       setAssignedNumber(true);
       return;
     }
-    console.log('[NumberCheck] non-owner — checking assigned number...');
-    try {
-      const row = await getMyNumber();
-      setAssignedNumber(row || false);
-    } catch {
-      // First attempt failed (likely Render cold-start). Wait 4s and retry once
-      // before giving up — a silent bypass would let the user skip number setup.
-      await new Promise(r => setTimeout(r, 4000));
-      try {
-        const row = await getMyNumber();
-        setAssignedNumber(row || false);
-      } catch {
-        // Second failure — network issue; let them in so the app isn't bricked
-        setAssignedNumber(true);
-      }
-    }
+    // user.assignedNumber is the phone_numbers row (truthy) or null (needs picker)
+    setAssignedNumber(user?.assignedNumber || false);
   };
 
   useEffect(() => {

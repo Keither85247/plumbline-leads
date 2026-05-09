@@ -107,8 +107,13 @@ router.post('/login', express.json(), async (req, res) => {
   // Log cookie attributes — if SameSite=lax in production, NODE_ENV is not set correctly.
   console.log(`[Auth] ✓ Login success: user id=${user.id} (${user.email}) is_owner=${user.is_owner} — cookie SameSite=${opts.sameSite} Secure=${opts.secure} origin=${origin}`);
 
+  // Include assigned phone number so the frontend doesn't need a separate /api/numbers/mine call.
+  const phoneRow = user.is_owner ? null : db.prepare(
+    'SELECT id, phone_number, friendly_name, twilio_sid FROM phone_numbers WHERE assigned_user_id = ? LIMIT 1'
+  ).get(user.id);
+
   // Include token in response body for Safari ITP (blocked cross-origin cookies).
-  return res.json({ id: user.id, email: user.email, display_name: user.display_name, is_owner: user.is_owner, token });
+  return res.json({ id: user.id, email: user.email, display_name: user.display_name, is_owner: user.is_owner, token, assignedNumber: phoneRow || null });
 });
 
 // ── POST /auth/logout ─────────────────────────────────────────────────────────
@@ -155,7 +160,12 @@ router.get('/me', (req, res) => {
     return res.status(401).json({ error: 'Session expired' });
   }
 
-  return res.json(row);
+  // Include assigned phone number so the frontend doesn't need a separate /api/numbers/mine call.
+  const phoneRow = row.is_owner ? null : db.prepare(
+    'SELECT id, phone_number, friendly_name, twilio_sid FROM phone_numbers WHERE assigned_user_id = ? LIMIT 1'
+  ).get(row.id);
+
+  return res.json({ ...row, assignedNumber: phoneRow || null });
 });
 
 // ── Gmail OAuth ───────────────────────────────────────────────────────────────
