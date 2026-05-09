@@ -144,8 +144,16 @@ export default function App() {
       const row = await getMyNumber();
       setAssignedNumber(row || false);
     } catch {
-      // If the check fails, don't block the user — let them in
-      setAssignedNumber(true);
+      // First attempt failed (likely Render cold-start). Wait 4s and retry once
+      // before giving up — a silent bypass would let the user skip number setup.
+      await new Promise(r => setTimeout(r, 4000));
+      try {
+        const row = await getMyNumber();
+        setAssignedNumber(row || false);
+      } catch {
+        // Second failure — network issue; let them in so the app isn't bricked
+        setAssignedNumber(true);
+      }
     }
   };
 
