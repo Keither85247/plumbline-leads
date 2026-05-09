@@ -16,6 +16,7 @@ router.get('/mine', (req, res) => {
     LIMIT 1
   `).get(req.userId);
 
+  log.info('Number check', { userId: req.userId, hasNumber: !!row, number: row?.phone_number || null });
   return res.json(row || null);
 });
 

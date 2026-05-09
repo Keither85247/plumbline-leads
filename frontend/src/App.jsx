@@ -139,7 +139,12 @@ export default function App() {
 
   const checkAssignedNumber = async (user) => {
     // Owners always have access — they manage numbers, not claim them
-    if (user?.is_owner) { setAssignedNumber(true); return; }
+    if (user?.is_owner) {
+      console.log('[NumberCheck] owner account — skipping number check');
+      setAssignedNumber(true);
+      return;
+    }
+    console.log('[NumberCheck] non-owner — checking assigned number...');
     try {
       const row = await getMyNumber();
       setAssignedNumber(row || false);
