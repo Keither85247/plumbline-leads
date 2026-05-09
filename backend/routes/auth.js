@@ -112,6 +112,8 @@ router.post('/login', express.json(), async (req, res) => {
     'SELECT id, phone_number, friendly_name, twilio_sid FROM phone_numbers WHERE assigned_user_id = ? LIMIT 1'
   ).get(user.id);
 
+  console.log(`[Auth] assignedNumber for user ${user.id}: ${phoneRow ? phoneRow.phone_number : 'none'}`);
+
   // Include token in response body for Safari ITP (blocked cross-origin cookies).
   return res.json({ id: user.id, email: user.email, display_name: user.display_name, is_owner: user.is_owner, token, assignedNumber: phoneRow || null });
 });
