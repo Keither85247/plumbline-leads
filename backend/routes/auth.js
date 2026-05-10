@@ -187,6 +187,19 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 let pendingState = null;
 
 router.get('/google', (_req, res) => {
+  // Feature flag: Gmail OAuth is disabled until Google verification is complete.
+  // Set GMAIL_OAUTH_ENABLED=true in Render env vars to enable.
+  if (process.env.GMAIL_OAUTH_ENABLED !== 'true') {
+    console.log('[Auth] Gmail OAuth blocked — GMAIL_OAUTH_ENABLED is not set to "true"');
+    return res.redirect(`${FRONTEND_URL}?gmail_error=oauth_disabled`);
+  }
+
+  // Verify required Google credentials are configured before attempting OAuth.
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REDIRECT_URI) {
+    console.error('[Auth] Gmail OAuth blocked — missing GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, or GOOGLE_REDIRECT_URI');
+    return res.redirect(`${FRONTEND_URL}?gmail_error=not_configured`);
+  }
+
   pendingState = Math.random().toString(36).slice(2);
 
   const url = oauth2Client.generateAuthUrl({
@@ -196,6 +209,7 @@ router.get('/google', (_req, res) => {
     state:       pendingState,
   });
 
+  console.log('[Auth] Gmail OAuth redirect initiated');
   res.redirect(url);
 });
 
@@ -203,8 +217,9 @@ router.get('/google/callback', async (req, res) => {
   const { code, state, error } = req.query;
 
   if (error) {
-    console.error('[Auth] OAuth error:', error);
-    return res.redirect(`${FRONTEND_URL}?gmail_error=${encodeURIComponent(error)}`);
+    // Log full detail server-side; never expose raw OAuth errors to the browser URL.
+    console.error('[Auth] Gmail OAuth callback error:', error, '| state match:', state === pendingState);
+    return res.redirect(`${FRONTEND_URL}?gmail_error=oauth_denied`);
   }
 
   if (!code || state !== pendingState) {
@@ -261,10 +276,13 @@ router.get('/google/callback', async (req, res) => {
 });
 
 router.get('/gmail-status', (_req, res) => {
+  // `enabled` tells the frontend whether the Connect button should be active.
+  // False until Google OAuth verification is complete and GMAIL_OAUTH_ENABLED=true is set.
+  const enabled = process.env.GMAIL_OAUTH_ENABLED === 'true';
   const row = db.prepare('SELECT email FROM gmail_tokens LIMIT 1').get();
   res.json(row
-    ? { connected: true,  email: row.email }
-    : { connected: false, email: null }
+    ? { connected: true,  email: row.email, enabled }
+    : { connected: false, email: null,      enabled }
   );
 });
 

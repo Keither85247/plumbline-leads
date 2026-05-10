@@ -500,7 +500,7 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
                 {disconnecting ? 'Disconnecting…' : 'Disconnect'}
               </button>
             </div>
-          ) : (
+          ) : gmailStatus.enabled ? (
             <div className="py-1">
               <p className="text-sm text-gray-500 mb-3">No Gmail account connected.</p>
               <a
@@ -510,6 +510,23 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
                 <GoogleLogo size={16} />
                 Connect Gmail Account
               </a>
+            </div>
+          ) : (
+            <div className="py-2 space-y-2">
+              <div className="flex items-center gap-2.5 w-full border border-gray-100 bg-gray-50 rounded-xl py-3 px-4">
+                <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center shrink-0">
+                  <GoogleLogo size={16} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-gray-500">Gmail connection coming soon</p>
+                  <p className="text-xs text-gray-400 mt-0.5 leading-snug">
+                    We're finishing Google verification before enabling this for testers.
+                  </p>
+                </div>
+              </div>
+              <p className="text-[11px] text-gray-400 leading-relaxed">
+                Calls, texts, leads, and timeline are ready to test now.
+              </p>
             </div>
           )}
         </div>
@@ -985,7 +1002,13 @@ export default function EmailPage() {
 
     if (params.get('gmail_error')) {
       window.history.replaceState({}, '', window.location.pathname);
-      showToast('Gmail connection failed. Please try again.', 'error');
+      const errCode = params.get('gmail_error');
+      const friendlyMsg =
+        errCode === 'oauth_disabled'    ? 'Gmail connection is not available yet. We\'re finishing Google verification.' :
+        errCode === 'not_configured'    ? 'Gmail is not configured on this server yet.' :
+        errCode === 'oauth_denied'      ? 'Gmail connection was cancelled or denied by Google.' :
+                                          'Gmail connection failed. Please try again later.';
+      showToast(friendlyMsg, 'error');
     }
   }, [fetchEmails]);
 
@@ -1096,7 +1119,7 @@ export default function EmailPage() {
         </div>
 
         {/* Gmail status strip */}
-        {!gmailStatus.connected && (
+        {!gmailStatus.connected && gmailStatus.enabled && (
           <div className="mx-4 mb-3 flex items-center justify-between gap-2 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 shrink-0">
             <div className="flex items-center gap-2 min-w-0">
               <div className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
@@ -1109,6 +1132,17 @@ export default function EmailPage() {
               <GoogleLogo size={12} />
               Connect
             </a>
+          </div>
+        )}
+        {!gmailStatus.connected && !gmailStatus.enabled && (
+          <div className="mx-4 mb-3 bg-gray-50 border border-gray-100 rounded-xl px-3 py-3 shrink-0">
+            <div className="flex items-center gap-2 mb-1">
+              <div className="w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0" />
+              <p className="text-xs font-semibold text-gray-500">Gmail connection coming soon</p>
+            </div>
+            <p className="text-[11px] text-gray-400 leading-relaxed">
+              We're finishing Google verification before enabling Gmail sync for testers. Calls, texts, leads, and timeline are ready to test now.
+            </p>
           </div>
         )}
         {gmailStatus.connected && (
