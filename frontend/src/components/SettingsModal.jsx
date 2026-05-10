@@ -85,6 +85,11 @@ export default function SettingsModal({
   // Props only change after a successful save (which immediately closes the
   // modal), so syncing here would overwrite the user's in-progress edits.
 
+  // ── Save state — declared first so handleCloseAttempt can reference it ───────
+  const [saving,      setSaving]      = useState(false);
+  const [toastStatus, setToastStatus] = useState(null); // null | 'success' | 'error'
+  const closeTimer = useRef(null);
+
   // ── Dirty check ─────────────────────────────────────────────────────────────
   const hasChanges =
     draftName.trim()     !== originalName.current.trim()     ||
@@ -101,12 +106,7 @@ export default function SettingsModal({
     } else {
       onClose();
     }
-  }, [saving, hasChanges, onClose]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Save state ──────────────────────────────────────────────────────────────
-  const [saving,      setSaving]      = useState(false);
-  const [toastStatus, setToastStatus] = useState(null); // null | 'success' | 'error'
-  const closeTimer = useRef(null);
+  }, [saving, hasChanges, onClose]);
 
   useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
