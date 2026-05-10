@@ -81,7 +81,7 @@ function fmt(secs) {
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
-export default function VoicemailGreetingEditor() {
+export default function VoicemailGreetingEditor({ t = {} }) {
   // 'idle' | 'recording' | 'preview' | 'uploading' | 'saved'
   const [phase,         setPhase]         = useState('idle');
   const [greetingType,  setGreetingType]  = useState('tts');  // 'tts' | 'audio'
@@ -130,7 +130,7 @@ export default function VoicemailGreetingEditor() {
       recorderRef.current = rec;
       setPhase('recording');
     } catch (e) {
-      setError('Microphone access denied. Check your browser or phone settings.');
+      setError(t.vmErrMicDenied || 'Microphone access denied. Check your browser or phone settings.');
     }
   }, []);
 
@@ -138,7 +138,7 @@ export default function VoicemailGreetingEditor() {
     const blob = recorderRef.current?.stop();
     recorderRef.current = null;
     if (!blob || blob.size === 0) {
-      setError('No audio captured. Please try again.');
+      setError(t.vmErrNoAudio || 'No audio captured. Please try again.');
       setPhase('idle');
       return;
     }
@@ -153,11 +153,11 @@ export default function VoicemailGreetingEditor() {
     e.target.value = ''; // reset so same file can be re-selected
     if (!file) return;
     if (!ACCEPTED_TYPES.includes(file.type)) {
-      setError('Unsupported format. Upload mp3, wav, m4a, or ogg.');
+      setError(t.vmErrBadFormat || 'Unsupported format. Upload mp3, wav, m4a, or ogg.');
       return;
     }
     if (file.size > MAX_BYTES) {
-      setError('File too large — maximum 10 MB.');
+      setError(t.vmErrTooLarge || 'File too large — maximum 10 MB.');
       return;
     }
     setError(null);
@@ -181,7 +181,7 @@ export default function VoicemailGreetingEditor() {
       setPhase('saved');
       setTimeout(() => setPhase('idle'), 2500);
     } catch (e) {
-      setError(e.message || 'Upload failed. Please try again.');
+      setError(e.message || t.vmErrUpload || 'Upload failed. Please try again.');
       setPhase('preview');
     }
   }, [previewBlob, previewUrl]);
@@ -201,7 +201,7 @@ export default function VoicemailGreetingEditor() {
       setGreetingType('tts');
       setPhase('idle');
     } catch (e) {
-      setError('Failed to reset greeting.');
+      setError(t.vmErrReset || 'Failed to reset greeting.');
     }
   }, []);
 
@@ -211,7 +211,7 @@ export default function VoicemailGreetingEditor() {
   return (
     <div>
       <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-        Voicemail Greeting
+        {t.vmGreeting || 'Voicemail Greeting'}
       </label>
 
       <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-3">
@@ -220,14 +220,14 @@ export default function VoicemailGreetingEditor() {
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full shrink-0 ${greetingType === 'audio' ? 'bg-green-400' : 'bg-gray-300'}`} />
           <span className="text-sm text-gray-700 font-medium flex-1">
-            {greetingType === 'audio' ? 'Using recorded audio' : 'Using text-to-speech'}
+            {greetingType === 'audio' ? (t.vmUsingAudio || 'Using recorded audio') : (t.vmUsingTTS || 'Using text-to-speech')}
           </span>
           {greetingType === 'audio' && phase === 'idle' && (
             <button
               onClick={handleReset}
               className="text-xs text-red-500 hover:text-red-700 font-medium transition-colors"
             >
-              Reset to TTS
+              {t.vmResetToTTS || 'Reset to TTS'}
             </button>
           )}
         </div>
@@ -253,7 +253,7 @@ export default function VoicemailGreetingEditor() {
               onClick={stopRecording}
               className="flex-1 py-2 text-sm font-semibold bg-gray-800 text-white rounded-lg hover:bg-gray-700 transition-colors"
             >
-              Stop &amp; Preview
+              {t.vmStopPreview || 'Stop & Preview'}
             </button>
           </div>
         )}
@@ -267,13 +267,13 @@ export default function VoicemailGreetingEditor() {
                 onClick={handleSave}
                 className="flex-1 py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
               >
-                Use this
+                {t.vmUseThis || 'Use this'}
               </button>
               <button
                 onClick={handleRetry}
                 className="flex-1 py-2 text-sm font-semibold bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
               >
-                Try again
+                {t.vmTryAgain || 'Try again'}
               </button>
             </div>
           </div>
@@ -283,13 +283,13 @@ export default function VoicemailGreetingEditor() {
         {phase === 'uploading' && (
           <div className="flex items-center gap-2 text-sm text-gray-500">
             <span className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-            Saving…
+            {t.vmSaving || 'Saving…'}
           </div>
         )}
 
         {/* ── SAVED confirmation ── */}
         {phase === 'saved' && (
-          <p className="text-sm text-green-600 font-medium">✓ Greeting saved</p>
+          <p className="text-sm text-green-600 font-medium">{t.vmSaved || '✓ Greeting saved'}</p>
         )}
 
         {/* ── IDLE actions: Record + Upload ── */}
@@ -303,7 +303,7 @@ export default function VoicemailGreetingEditor() {
                 <path d="M12 15c1.657 0 3-1.343 3-3V6a3 3 0 00-6 0v6c0 1.657 1.343 3 3 3z" />
                 <path d="M19 11v1a7 7 0 01-14 0v-1H3v1a9 9 0 008 8.944V22H9v2h6v-2h-2v-2.056A9 9 0 0021 12v-1h-2z" />
               </svg>
-              Record
+              {t.vmRecord || 'Record'}
             </button>
             <button
               onClick={() => fileInputRef.current?.click()}
@@ -312,7 +312,7 @@ export default function VoicemailGreetingEditor() {
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
               </svg>
-              Upload
+              {t.vmUpload || 'Upload'}
             </button>
             <input
               ref={fileInputRef}
@@ -330,8 +330,7 @@ export default function VoicemailGreetingEditor() {
         )}
 
         <p className="text-xs text-gray-400">
-          Shared greeting — heard by all callers when a call is missed.
-          Supports mp3, wav, m4a, ogg up to 10 MB.
+          {t.vmFooter || 'Shared greeting — heard by all callers when a call is missed. Supports mp3, wav, m4a, ogg up to 10 MB.'}
         </p>
       </div>
     </div>

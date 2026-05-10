@@ -227,7 +227,7 @@ export default function SettingsModal({
           </div>
 
           {/* Voicemail Greeting */}
-          <VoicemailGreetingEditor />
+          <VoicemailGreetingEditor t={t} />
 
           {/* Gmail sync — owner-only */}
           {isOwner && (
