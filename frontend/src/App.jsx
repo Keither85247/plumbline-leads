@@ -14,7 +14,7 @@ import InboxLayout from './components/inbox/InboxLayout';
 import EmailPage from './components/EmailPage';
 import LoginPage from './components/LoginPage';
 import NumberPickerModal from './components/NumberPickerModal';
-import { getLeads, saveOutboundNote, getCounts, getMe, logout, API_BASE, AuthError } from './api';
+import { getLeads, saveOutboundNote, getCounts, getMe, logout, updateProfile, API_BASE, AuthError } from './api';
 import { translations } from './i18n';
 import { useVoiceDevice } from './hooks/useVoiceDevice';
 import { usePushNotifications } from './hooks/usePushNotifications';
@@ -332,17 +332,16 @@ export default function App() {
 
   useEffect(() => { if (currentUser) fetchLeads(); }, [fetchLeads, currentUser]);
 
-  const handleContractorNameChange = (e) => {
-    const val = e.target.value;
-    setContractorName(val);
-    localStorage.setItem('contractorName', val);
-  };
-
-  const handleBusinessNameChange = (e) => {
-    const val = e.target.value;
-    setBusinessName(val);
-    localStorage.setItem('businessName', val);
-  };
+  const handleProfileSave = useCallback(async ({ displayName, businessName: bizName }) => {
+    const saved = await updateProfile({ displayName, businessName: bizName });
+    // Persist to localStorage as local cache
+    setContractorName(saved.display_name ?? displayName);
+    setBusinessName(saved.business_name ?? bizName);
+    localStorage.setItem('contractorName', saved.display_name ?? displayName);
+    localStorage.setItem('businessName',   saved.business_name ?? bizName);
+    // Refresh display name in header
+    setCurrentUser(prev => prev ? { ...prev, display_name: saved.display_name } : prev);
+  }, []);
 
   const handleLeadCreated = (newLead) => setLeads(prev => sortLeads([newLead, ...prev]));
   const handleLeadUpdated = (updatedLead) =>
@@ -655,9 +654,8 @@ export default function App() {
         <SettingsModal
           onClose={() => setSettingsOpen(false)}
           contractorName={contractorName}
-          onContractorNameChange={handleContractorNameChange}
           businessName={businessName}
-          onBusinessNameChange={handleBusinessNameChange}
+          onSave={handleProfileSave}
           language={language}
           onLanguageChange={handleLanguageChange}
           replyTranslation={replyTranslation}

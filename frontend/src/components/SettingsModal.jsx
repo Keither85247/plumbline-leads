@@ -1,14 +1,46 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { translations } from '../i18n';
 import VoicemailGreetingEditor from './VoicemailGreetingEditor';
 import PhoneNumbersAdmin from './PhoneNumbersAdmin';
 import TeamAdmin from './TeamAdmin';
 import { triggerGmailSync } from '../api';
 
+// ── Minimal inline toast ──────────────────────────────────────────────────────
+// Appears above the modal footer, auto-dismisses. Reused only within Settings.
+function SaveToast({ status }) {
+  if (!status) return null;
+  const isSuccess = status === 'success';
+  return (
+    <div
+      className={`mx-6 mb-3 flex items-center gap-2.5 rounded-lg px-3.5 py-2.5 text-sm font-medium transition-all ${
+        isSuccess
+          ? 'bg-green-50 border border-green-200 text-green-700'
+          : 'bg-red-50 border border-red-200 text-red-600'
+      }`}
+    >
+      {isSuccess ? (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+      ) : (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+        </svg>
+      )}
+      <span>
+        {isSuccess
+          ? 'Changes saved'
+          : "Couldn't save changes. Please try again."}
+      </span>
+    </div>
+  );
+}
+
 export default function SettingsModal({
   onClose,
-  contractorName, onContractorNameChange,
-  businessName, onBusinessNameChange,
+  contractorName,
+  businessName,
+  onSave,          // async ({ displayName, businessName }) => void — called on Done
   language, onLanguageChange,
   replyTranslation, onReplyTranslationChange,
   push,
@@ -16,9 +48,40 @@ export default function SettingsModal({
 }) {
   const t = translations[language] || translations.en;
 
-  const [syncing,     setSyncing]     = useState(false);
-  const [syncResult,  setSyncResult]  = useState(null); // { imported, skipped } | null
-  const [syncError,   setSyncError]   = useState(null);
+  // ── Draft state — local copies that only propagate on Save ──────────────────
+  const [draftName,     setDraftName]     = useState(contractorName || '');
+  const [draftBusiness, setDraftBusiness] = useState(businessName   || '');
+
+  // Keep draft in sync if parent resets values (e.g. after login refresh)
+  useEffect(() => { setDraftName(contractorName || ''); },  [contractorName]);
+  useEffect(() => { setDraftBusiness(businessName || ''); }, [businessName]);
+
+  // ── Save state ──────────────────────────────────────────────────────────────
+  const [saving,      setSaving]      = useState(false);
+  const [toastStatus, setToastStatus] = useState(null); // null | 'success' | 'error'
+  const closeTimer = useRef(null);
+
+  // Cleanup timer on unmount
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
+
+  const handleSave = useCallback(async () => {
+    if (saving) return; // prevent double-tap
+    setSaving(true);
+    setToastStatus(null);
+    try {
+      await onSave({ displayName: draftName.trim(), businessName: draftBusiness.trim() });
+      setToastStatus('success');
+      closeTimer.current = setTimeout(onClose, 650);
+    } catch {
+      setToastStatus('error');
+      setSaving(false);
+    }
+  }, [saving, draftName, draftBusiness, onSave, onClose]);
+
+  // ── Gmail sync ──────────────────────────────────────────────────────────────
+  const [syncing,    setSyncing]    = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+  const [syncError,  setSyncError]  = useState(null);
 
   const handleGmailSync = useCallback(async () => {
     setSyncing(true);
@@ -67,8 +130,8 @@ export default function SettingsModal({
             </label>
             <input
               type="text"
-              value={contractorName}
-              onChange={onContractorNameChange}
+              value={draftName}
+              onChange={e => setDraftName(e.target.value)}
               placeholder={t.yourNamePlaceholder}
               className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5 text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
@@ -82,8 +145,8 @@ export default function SettingsModal({
             </label>
             <input
               type="text"
-              value={businessName}
-              onChange={onBusinessNameChange}
+              value={draftBusiness}
+              onChange={e => setDraftBusiness(e.target.value)}
               placeholder={t.businessNamePlaceholder}
               className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5 text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
@@ -112,7 +175,7 @@ export default function SettingsModal({
             </button>
           </div>
 
-          {/* Voicemail Greeting — record or upload real audio */}
+          {/* Voicemail Greeting */}
           <VoicemailGreetingEditor />
 
           {/* Gmail sync — owner-only */}
@@ -224,13 +287,27 @@ export default function SettingsModal({
 
         </div>
 
+        {/* Toast — sits just above the footer button */}
+        <SaveToast status={toastStatus} />
+
         {/* Footer */}
         <div className="px-6 pb-5 shrink-0">
           <button
-            onClick={onClose}
-            className="w-full bg-gray-900 hover:bg-gray-800 text-white text-sm font-semibold rounded-lg py-2.5 transition-colors"
+            onClick={handleSave}
+            disabled={saving}
+            className="w-full bg-gray-900 hover:bg-gray-800 text-white text-sm font-semibold rounded-lg py-2.5 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
           >
-            {t.done}
+            {saving ? (
+              <>
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                </svg>
+                Saving…
+              </>
+            ) : (
+              t.done
+            )}
           </button>
         </div>
       </div>

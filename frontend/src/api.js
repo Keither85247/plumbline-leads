@@ -554,6 +554,20 @@ export async function getAppSettings() {
   return res.json();
 }
 
+/** Update the current user's display name and/or business name. */
+export async function updateProfile({ displayName, businessName }) {
+  const res = await apiFetch(`${API_BASE}/settings/profile`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ display_name: displayName, business_name: businessName }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to save profile');
+  }
+  return res.json(); // { id, email, display_name, business_name }
+}
+
 export async function saveAppSettings(data) {
   const res = await apiFetch(`${API_BASE}/settings`, {
     method: 'PUT',

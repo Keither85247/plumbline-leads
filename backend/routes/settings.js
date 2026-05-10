@@ -33,6 +33,27 @@ function getSetting(key) {
   return db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key)?.value ?? null;
 }
 
+// ── PATCH /api/settings/profile ──────────────────────────────────────────────
+// Updates the current user's display_name and/or business_name.
+router.patch('/profile', express.json(), (req, res) => {
+  const { display_name, business_name } = req.body || {};
+
+  if (display_name !== undefined) {
+    db.prepare('UPDATE users SET display_name = ? WHERE id = ?')
+      .run(String(display_name).trim().slice(0, 100), req.userId);
+  }
+  if (business_name !== undefined) {
+    db.prepare('UPDATE users SET business_name = ? WHERE id = ?')
+      .run(String(business_name).trim().slice(0, 200), req.userId);
+  }
+
+  const updated = db.prepare(
+    'SELECT id, email, display_name, business_name FROM users WHERE id = ?'
+  ).get(req.userId);
+
+  return res.json(updated);
+});
+
 // ── GET /api/settings ─────────────────────────────────────────────────────────
 router.get('/', (req, res) => {
   res.json({
