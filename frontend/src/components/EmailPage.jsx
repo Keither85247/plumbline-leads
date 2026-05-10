@@ -940,13 +940,70 @@ function ComposeModal({ onClose, onSent }) {
   );
 }
 
+// ── Gmail error banner ────────────────────────────────────────────────────────
+// Shown when the OAuth callback returns a gmail_error param.
+// Persists until dismissed — more visible than a toast for beta users.
+
+const GMAIL_ERROR_COPY = {
+  access_restricted: {
+    title: 'Gmail access is currently limited during beta testing.',
+    body:  'Contact your administrator to enable Gmail access for your Google account.',
+  },
+  oauth_disabled: {
+    title: 'Gmail connection is not available yet.',
+    body:  'We\'re finishing Google verification before enabling Gmail sync for testers.',
+  },
+  not_configured: {
+    title: 'Gmail is not configured on this server.',
+    body:  'Contact your administrator to set up Gmail integration.',
+  },
+  oauth_cancelled: {
+    title: 'Gmail connection was cancelled.',
+    body:  'You can try connecting again from Email Settings.',
+  },
+  oauth_error: {
+    title: 'Gmail connection could not be completed.',
+    body:  'Contact your administrator if this keeps happening.',
+  },
+};
+
+function GmailErrorBanner({ code, onDismiss }) {
+  const copy = GMAIL_ERROR_COPY[code] || GMAIL_ERROR_COPY.oauth_error;
+  return (
+    <div className="mx-4 mb-3 bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 shrink-0">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2.5 min-w-0">
+          {/* Warning icon */}
+          <svg className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-amber-800 leading-snug">{copy.title}</p>
+            <p className="text-[11px] text-amber-700 mt-0.5 leading-relaxed">{copy.body}</p>
+          </div>
+        </div>
+        <button
+          onClick={onDismiss}
+          className="shrink-0 text-amber-400 hover:text-amber-600 transition-colors mt-0.5"
+          aria-label="Dismiss"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function EmailPage() {
   const [emails,        setEmails]        = useState([]);
   const [loading,       setLoading]       = useState(true);
   const [activeMailbox, setActiveMailbox] = useState('all'); // 'all' | 'inbox' | 'sent' | 'trash'
-  const [gmailStatus,   setGmailStatus]   = useState({ connected: false, email: null });
+  const [gmailStatus,   setGmailStatus]   = useState({ connected: false, email: null, enabled: false });
+  const [gmailError,    setGmailError]    = useState(null); // error code string | null
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [composeOpen,   setComposeOpen]   = useState(false);
   const [settingsOpen,  setSettingsOpen]  = useState(false);
@@ -988,6 +1045,7 @@ export default function EmailPage() {
 
     if (params.get('gmail_connected') === '1') {
       window.history.replaceState({}, '', window.location.pathname);
+      setGmailError(null); // clear any previous error
       showToast('Gmail connected! Importing recent emails…', 'info');
       // Refresh status and open settings automatically
       getGmailStatus().then(s => { setGmailStatus(s); setSettingsOpen(true); }).catch(() => {});
@@ -1001,14 +1059,11 @@ export default function EmailPage() {
     }
 
     if (params.get('gmail_error')) {
-      window.history.replaceState({}, '', window.location.pathname);
       const errCode = params.get('gmail_error');
-      const friendlyMsg =
-        errCode === 'oauth_disabled'    ? 'Gmail connection is not available yet. We\'re finishing Google verification.' :
-        errCode === 'not_configured'    ? 'Gmail is not configured on this server yet.' :
-        errCode === 'oauth_denied'      ? 'Gmail connection was cancelled or denied by Google.' :
-                                          'Gmail connection failed. Please try again later.';
-      showToast(friendlyMsg, 'error');
+      window.history.replaceState({}, '', window.location.pathname);
+      // Show as a persistent in-page banner (not a disappearing toast) so beta
+      // users understand this is intentional and know what to do next.
+      setGmailError(errCode);
     }
   }, [fetchEmails]);
 
@@ -1117,6 +1172,11 @@ export default function EmailPage() {
             )}
           </div>
         </div>
+
+        {/* Gmail error banner — shown after a failed OAuth redirect */}
+        {gmailError && (
+          <GmailErrorBanner code={gmailError} onDismiss={() => setGmailError(null)} />
+        )}
 
         {/* Gmail status strip */}
         {!gmailStatus.connected && gmailStatus.enabled && (

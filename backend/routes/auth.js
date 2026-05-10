@@ -217,9 +217,15 @@ router.get('/google/callback', async (req, res) => {
   const { code, state, error } = req.query;
 
   if (error) {
-    // Log full detail server-side; never expose raw OAuth errors to the browser URL.
-    console.error('[Auth] Gmail OAuth callback error:', error, '| state match:', state === pendingState);
-    return res.redirect(`${FRONTEND_URL}?gmail_error=oauth_denied`);
+    const desc = req.query.error_description || '(no description)';
+    // Log full detail server-side — never put raw Google error strings in the redirect URL.
+    console.error(`[Auth] Gmail OAuth callback error: ${error} — ${desc} | state_match=${state === pendingState}`);
+
+    // Map Google error codes to safe frontend codes:
+    //   access_denied → user not in test-user list, or app verification required, or user clicked Deny
+    //   Other codes   → configuration or network problem
+    const frontendCode = (error === 'access_denied') ? 'access_restricted' : 'oauth_error';
+    return res.redirect(`${FRONTEND_URL}?gmail_error=${frontendCode}`);
   }
 
   if (!code || state !== pendingState) {
