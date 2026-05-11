@@ -3,30 +3,45 @@
 // first in a group shows the timestamp; the last shows the "tail" shape.
 import { parseTimestamp } from '../../utils/phone';
 import { API_BASE } from '../../api';
+import { translations } from '../../i18n';
+
+function getLocale() {
+  const lang = localStorage.getItem('language') || 'en';
+  return lang === 'es' ? 'es-MX' : 'en-US';
+}
+
+function getT() {
+  const lang = localStorage.getItem('language') || 'en';
+  return translations[lang] || translations.en;
+}
 
 function formatTime(iso) {
+  const t = getT();
+  const locale = getLocale();
   const date = parseTimestamp(iso);
   const now = new Date();
   const isToday = date.toDateString() === now.toDateString();
   const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
 
-  const time = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  const time = date.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
   if (isToday)                             return time;
-  if (date.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ` ${time}`;
+  if (date.toDateString() === yesterday.toDateString()) return `${t.msgYesterday} ${time}`;
+  return date.toLocaleDateString(locale, { month: 'short', day: 'numeric' }) + ` ${time}`;
 }
 
 // A day separator between messages on different calendar days
 export function DaySeparator({ ts }) {
+  const t = getT();
+  const locale = getLocale();
   const date = parseTimestamp(ts);
   const now  = new Date();
   const isToday = date.toDateString() === now.toDateString();
   const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
 
   let label;
-  if (isToday)                              label = 'Today';
-  else if (date.toDateString() === yesterday.toDateString()) label = 'Yesterday';
-  else label = date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+  if (isToday)                              label = t.msgToday;
+  else if (date.toDateString() === yesterday.toDateString()) label = t.msgYesterday;
+  else label = date.toLocaleDateString(locale, { weekday: 'long', month: 'short', day: 'numeric' });
 
   return (
     <div className="flex items-center gap-3 my-4 px-1">

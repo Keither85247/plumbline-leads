@@ -2,24 +2,25 @@ import { useState, useEffect } from 'react';
 import LeadCard from './LeadCard';
 import ContactHistoryModal from './ContactHistoryModal';
 import { getArchivedLeads, unarchiveLead } from '../api';
+import { translations } from '../i18n';
 
-function getDateLabel(dateStr) {
+function getDateLabel(dateStr, t) {
   const date = new Date(dateStr);
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const yesterdayStart = new Date(todayStart);
   yesterdayStart.setDate(todayStart.getDate() - 1);
 
-  if (date >= todayStart) return 'Today';
-  if (date >= yesterdayStart) return 'Yesterday';
+  if (date >= todayStart) return t.timeToday;
+  if (date >= yesterdayStart) return t.timeYesterday;
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-function groupLeadsByDate(leads) {
+function groupLeadsByDate(leads, t) {
   const groups = [];
   const seen = new Map();
   for (const lead of leads) {
-    const label = getDateLabel(lead.created_at);
+    const label = getDateLabel(lead.created_at, t);
     if (!seen.has(label)) {
       seen.set(label, groups.length);
       groups.push({ label, leads: [] });
@@ -29,16 +30,18 @@ function groupLeadsByDate(leads) {
   return groups;
 }
 
-const TABS = [
-  { label: 'Leads',               category: 'Lead' },
-  { label: 'Existing Customers',  category: 'Existing Customer' },
-  { label: 'Vendors / Suppliers', category: 'Vendor' },
-  { label: 'Spam',                category: 'Spam' },
-  { label: 'Other',               category: 'Other' },
-  { label: 'Archived',            category: '__archived__' },
-];
-
 export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved, contractorName, language, replyTranslation }) {
+  const t = translations[language] || translations.en;
+
+  const TABS = [
+    { label: t.leadTabLeads,     category: 'Lead' },
+    { label: t.leadTabCustomers, category: 'Existing Customer' },
+    { label: t.leadTabVendors,   category: 'Vendor' },
+    { label: t.leadTabSpam,      category: 'Spam' },
+    { label: t.leadTabOther,     category: 'Other' },
+    { label: t.leadTabArchived,  category: '__archived__' },
+  ];
+
   const [activeTab, setActiveTab] = useState('Lead');
   const [selectedPhone, setSelectedPhone] = useState(null);
   const [archivedLeads, setArchivedLeads] = useState([]);
@@ -80,8 +83,8 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
   if (loading) {
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <h2 className="text-lg font-semibold text-gray-800 mb-4">Leads</h2>
-        <p className="text-sm text-gray-400 animate-pulse">Loading leads...</p>
+        <h2 className="text-lg font-semibold text-gray-800 mb-4">{t.leadListTitle}</h2>
+        <p className="text-sm text-gray-400 animate-pulse">{t.leadListLoading}</p>
       </div>
     );
   }
@@ -122,19 +125,19 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
               {TABS.find(t => t.category === activeTab)?.label}
             </h2>
             <span className="text-sm text-gray-500 bg-gray-100 rounded-full px-2.5 py-0.5">
-              {filtered.length} total
+              {filtered.length} {t.leadListTotal}
             </span>
           </div>
 
           {loadingArchived ? (
-            <p className="text-sm text-gray-400 animate-pulse text-center py-12">Loading archived leads...</p>
+            <p className="text-sm text-gray-400 animate-pulse text-center py-12">{t.leadListLoadingArchived}</p>
           ) : filtered.length === 0 ? (
             <p className="text-sm text-gray-400 text-center py-12">
-              {isArchivedTab ? 'No archived leads.' : `No ${TABS.find(t => t.category === activeTab)?.label.toLowerCase()} yet.`}
+              {isArchivedTab ? t.leadListNoArchived : t.leadListNoneYet}
             </p>
           ) : (
             <div className="flex-1 overflow-y-auto pr-1">
-              {groupLeadsByDate(filtered).map(group => (
+              {groupLeadsByDate(filtered, t).map(group => (
                 <div key={group.label}>
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mt-7 mb-2 first:mt-0">
                     {group.label}

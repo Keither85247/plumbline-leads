@@ -1,14 +1,5 @@
 import { useState, useEffect } from 'react';
-
-const FEATURES = [
-  'Unlimited leads from calls & texts',
-  'AI-generated call summaries',
-  'Full customer timeline',
-  'SMS inbox & outbound texting',
-  'Email thread sync',
-  'Voicemail transcription',
-  'Contact history & notes',
-];
+import { translations } from '../../../i18n';
 
 function Check() {
   return (
@@ -19,6 +10,19 @@ function Check() {
 }
 
 export default function PricingSlide({ onGetStarted, onTesterBypass }) {
+  const lang = localStorage.getItem('language') || 'en';
+  const t = translations[lang] || translations.en;
+
+  const FEATURES = [
+    t.pricingFeat1,
+    t.pricingFeat2,
+    t.pricingFeat3,
+    t.pricingFeat4,
+    t.pricingFeat5,
+    t.pricingFeat6,
+    t.pricingFeat7,
+  ];
+
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -40,7 +44,7 @@ export default function PricingSlide({ onGetStarted, onTesterBypass }) {
       >
         {/* Label */}
         <p className="text-xs font-semibold tracking-widest uppercase mb-4" style={{ color: '#94A3B8' }}>
-          Simple pricing
+          {t.onboardSimplePricing}
         </p>
 
         {/* Price */}
@@ -56,7 +60,7 @@ export default function PricingSlide({ onGetStarted, onTesterBypass }) {
         </div>
 
         <p className="text-[13px] mb-8" style={{ color: '#94A3B8' }}>
-          Everything included. No add-ons.
+          {t.onboardEverythingIncl}
         </p>
 
         {/* Divider */}
@@ -85,10 +89,10 @@ export default function PricingSlide({ onGetStarted, onTesterBypass }) {
           className="text-[22px] font-bold leading-snug tracking-tight mb-1"
           style={{ color: '#0F172A' }}
         >
-          Built for serious<br />contractors.
+          {t.onboardBuiltFor}
         </p>
         <p className="text-[13px] mb-5 leading-relaxed" style={{ color: '#94A3B8' }}>
-          Replace missed calls, scattered texts, and forgotten follow-ups.
+          {t.onboardBuiltForSub}
         </p>
 
         {/* Primary CTA */}
@@ -97,7 +101,7 @@ export default function PricingSlide({ onGetStarted, onTesterBypass }) {
           className="w-full rounded-2xl py-4 text-[15px] font-semibold text-white transition-all active:scale-[0.98] mb-3"
           style={{ background: '#2563EB' }}
         >
-          Get Started
+          {t.onboardGetStarted}
         </button>
 
         {/* Tester bypass */}
@@ -106,7 +110,7 @@ export default function PricingSlide({ onGetStarted, onTesterBypass }) {
           className="w-full py-2.5 text-[14px] transition-colors active:opacity-60"
           style={{ color: '#94A3B8' }}
         >
-          Continue as Tester
+          {t.onboardAsTester}
         </button>
 
         {/* Founding member note */}
@@ -114,7 +118,7 @@ export default function PricingSlide({ onGetStarted, onTesterBypass }) {
           className="text-center text-[11px] mt-3 leading-relaxed px-4"
           style={{ color: '#CBD5E1' }}
         >
-          Early testers and beta users will receive discounted founding-member pricing later.
+          {t.onboardFounderNote}
         </p>
       </div>
 

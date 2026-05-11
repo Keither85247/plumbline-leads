@@ -397,10 +397,10 @@ export default function App() {
   return (
     <Sentry.ErrorBoundary fallback={
       <div className="h-dvh flex flex-col items-center justify-center gap-3 p-8 text-center bg-gray-50">
-        <p className="text-sm font-semibold text-gray-700">Something went wrong.</p>
-        <p className="text-xs text-gray-400">The error has been reported. Try reloading the page.</p>
+        <p className="text-sm font-semibold text-gray-700">{t.appSomethingWrong}</p>
+        <p className="text-xs text-gray-400">{t.appErrorReported}</p>
         <button onClick={() => window.location.reload()} className="text-sm px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-          Reload
+          {t.appReload}
         </button>
       </div>
     }>
@@ -410,8 +410,8 @@ export default function App() {
       {showPushBanner && (
         <div className="bg-indigo-600 text-white px-4 py-2.5 flex items-center justify-between gap-3 text-sm z-40">
           <span className="leading-snug">
-            <span className="font-semibold">Get call &amp; voicemail alerts</span>
-            <span className="opacity-80"> — even when the app is closed</span>
+            <span className="font-semibold">{t.appGetAlerts}</span>
+            <span className="opacity-80"> {t.appEvenWhenClosed}</span>
           </span>
           <div className="flex items-center gap-2 shrink-0">
             <button
@@ -419,7 +419,7 @@ export default function App() {
               disabled={push.subscribing}
               className="bg-white text-indigo-700 font-semibold text-xs px-3 py-1.5 rounded-full hover:bg-indigo-50 transition-colors disabled:opacity-60"
             >
-              {push.subscribing ? 'Enabling…' : 'Enable'}
+              {push.subscribing ? t.appEnablingPush : t.appEnablePush}
             </button>
             <button
               onClick={dismissPushBanner}
@@ -455,7 +455,7 @@ export default function App() {
             <span className={`text-[11px] font-medium hidden sm:inline ${
               backendStatus === 'up' ? 'text-green-600' : 'text-gray-400'
             }`}>
-              {backendStatus === 'up' ? 'Online' : 'Updating…'}
+              {backendStatus === 'up' ? t.appOnline : t.appUpdating}
             </span>
           </div>
 
@@ -569,7 +569,7 @@ export default function App() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
             </svg>
             <p className="flex-1 text-sm text-red-700 font-medium">
-              Call failed — {voiceDevice.error}
+              {t.appCallFailed}{voiceDevice.error}
             </p>
           </div>
         </div>
@@ -588,10 +588,10 @@ export default function App() {
             {/* Info */}
             <div className="flex-1 min-w-0">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                {voiceDevice.status === 'incoming' ? 'Incoming call' : 'Connected'}
+                {voiceDevice.status === 'incoming' ? t.appIncomingCall : t.appConnected}
               </p>
               <p className="text-sm font-semibold text-gray-900 truncate">
-                {voiceDevice.remoteIdentity || 'Unknown'}
+                {voiceDevice.remoteIdentity || t.inboxUnknown}
               </p>
             </div>
             {/* Action buttons */}

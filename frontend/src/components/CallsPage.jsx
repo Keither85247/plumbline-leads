@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { getCalls, getVoicemailLeads, markCallsSeen, API_BASE, recordingUrl } from '../api';
 import { parseTimestamp } from '../utils/phone';
 import PhoneActionSheet from './PhoneActionSheet';
+import { translations } from '../i18n';
 
 const KEYPAD = [
   { digit: '1', sub: '' },
@@ -18,7 +19,8 @@ const KEYPAD = [
   { digit: '#', sub: '' },
 ];
 
-const TABS = ['Dialer', 'Recent', 'Voicemail'];
+// Tab keys — labels come from translations
+const TAB_KEYS = ['Dialer', 'Recent', 'Voicemail'];
 
 const CLASSIFICATION_STYLES = {
   'Likely Lead':        'bg-blue-50 text-blue-700',
@@ -43,15 +45,15 @@ function formatPhone(num) {
 // Mirrors the same logic in TimelinePage — outcome-aware label for any call row.
 // `hasRecording` makes any call with a recording_url expandable even when there
 // is no transcript or contractor note (e.g. a short answered call with no AI output).
-function getCallMeta(call) {
+function getCallMeta(call, t) {
   const isOutbound   = call.classification === 'Outbound';
   const hasRecording = !!call.recording_url;
   if (isOutbound) {
     switch (call.outcome) {
-      case 'answered':  return { text: 'Answered',           labelClass: 'text-blue-600 font-medium',  isExpandable: !!(call.contractor_note) || hasRecording };
-      case 'voicemail': return { text: 'You Left a Message', labelClass: 'text-indigo-500 font-medium', isExpandable: !!(call.contractor_note) || hasRecording };
-      case 'no-answer': return { text: 'No Answer',          labelClass: 'text-gray-400',              isExpandable: hasRecording };
-      default:          return { text: 'Outbound',           labelClass: 'text-gray-400',              isExpandable: !!(call.contractor_note) || hasRecording };
+      case 'answered':  return { text: t.callsAnswered,       labelClass: 'text-blue-600 font-medium',  isExpandable: !!(call.contractor_note) || hasRecording };
+      case 'voicemail': return { text: t.callsYouLeftMessage, labelClass: 'text-indigo-500 font-medium', isExpandable: !!(call.contractor_note) || hasRecording };
+      case 'no-answer': return { text: t.callsNoAnswer,       labelClass: 'text-gray-400',              isExpandable: hasRecording };
+      default:          return { text: t.callsOutbound,       labelClass: 'text-gray-400',              isExpandable: !!(call.contractor_note) || hasRecording };
     }
   }
   // transcript OR duration > 0 means the call was answered
@@ -60,7 +62,7 @@ function getCallMeta(call) {
   // Missed call that has a linked voicemail lead
   if (!answered && call.voicemail_lead_id) {
     return {
-      text: 'Voicemail',
+      text: t.callsVoicemail,
       labelClass: 'text-indigo-500 font-medium',
       isExpandable: false,
       isVoicemail: true,
@@ -68,21 +70,21 @@ function getCallMeta(call) {
   }
 
   return {
-    text: answered ? 'Answered' : 'Missed',
+    text: answered ? t.callsAnswered : t.callsMissed,
     labelClass: answered ? 'text-green-600 font-medium' : 'text-red-400 font-medium',
     isExpandable: answered || hasRecording,
     isVoicemail: false,
   };
 }
 
-function timeAgo(dateStr) {
+function timeAgo(dateStr, t) {
   const diff = Date.now() - parseTimestamp(dateStr).getTime();
   const m = Math.floor(diff / 60000);
-  if (m < 1) return 'Just now';
-  if (m < 60) return `${m}m ago`;
+  if (m < 1) return t.timeJustNow;
+  if (m < 60) return `${m}${t.timeAgoM}`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+  if (h < 24) return `${h}${t.timeAgoH}`;
+  return `${Math.floor(h / 24)}${t.timeAgoD}`;
 }
 
 function formatDuration(seconds) {
@@ -92,7 +94,14 @@ function formatDuration(seconds) {
   return m === 0 ? `${s}s` : `${m}m ${s}s`;
 }
 
-export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSeen }) {
+export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSeen, language = 'en' }) {
+  const t = translations[language] || translations.en;
+  const TABS = [
+    { key: 'Dialer',    label: t.callsTabDialer   },
+    { key: 'Recent',    label: t.callsTabRecent   },
+    { key: 'Voicemail', label: t.callsTabVoicemail },
+  ];
+
   const [dialInput, setDialInput] = useState('');
   const [activeTab, setActiveTab] = useState('Recent');
   const [calls, setCalls] = useState([]);
@@ -189,21 +198,21 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
     <div className="w-full max-w-xs mx-auto pt-2">
 
       {/* Page title */}
-      <h1 className="text-xl font-bold text-gray-900 mb-4">Calls</h1>
+      <h1 className="text-xl font-bold text-gray-900 mb-4">{t.callsPageTitle}</h1>
 
       {/* Top tabs */}
       <div className="flex border-b border-gray-200 mb-6">
         {TABS.map(tab => (
           <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
             className={`flex-1 pb-2.5 text-sm font-medium transition-colors
-              ${activeTab === tab
+              ${activeTab === tab.key
                 ? 'text-blue-600 border-b-2 border-blue-600'
                 : 'text-gray-400 hover:text-gray-600 border-b-2 border-transparent'
               }`}
           >
-            {tab}
+            {tab.label}
           </button>
         ))}
       </div>
@@ -215,22 +224,22 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
           <div className="relative w-full flex flex-col items-center justify-center mb-6 min-h-[52px]">
             {isConnected ? (
               <div className="flex flex-col items-center gap-1">
-                <span className="text-base font-semibold text-green-600">Connected</span>
+                <span className="text-base font-semibold text-green-600">{t.callsConnected}</span>
                 <span className="text-sm text-gray-500">{remoteIdentity || dialInput}</span>
               </div>
             ) : isRinging ? (
               <div className="flex flex-col items-center gap-1">
-                <span className="text-base font-medium text-blue-500 animate-pulse">Ringing…</span>
+                <span className="text-base font-medium text-blue-500 animate-pulse">{t.callsRinging}</span>
                 <span className="text-sm text-gray-400">{remoteIdentity || dialInput}</span>
               </div>
             ) : isDialing ? (
-              <span className="text-base font-medium text-blue-500 animate-pulse">Calling…</span>
+              <span className="text-base font-medium text-blue-500 animate-pulse">{t.callsCalling}</span>
             ) : isEnded ? (
-              <span className="text-base font-medium text-gray-400">Call ended</span>
+              <span className="text-base font-medium text-gray-400">{t.callsCallEnded}</span>
             ) : isFailed ? (
-              <span className="text-sm font-medium text-red-500 text-center px-4">{deviceError || 'Call failed'}</span>
+              <span className="text-sm font-medium text-red-500 text-center px-4">{deviceError || t.callsCallFailed}</span>
             ) : deviceStatus === 'registering' ? (
-              <span className="text-sm text-gray-400 animate-pulse">Connecting to voice…</span>
+              <span className="text-sm text-gray-400 animate-pulse">{t.callsConnectingVoice}</span>
             ) : (
               <span className={`text-4xl font-light tracking-widest text-gray-900 ${!dialInput ? 'opacity-30' : ''}`}>
                 {dialInput || '—'}
@@ -311,14 +320,14 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
       {activeTab === 'Recent' && (
         <div>
           {loadingCalls ? (
-            <p className="text-sm text-gray-400 text-center py-12 animate-pulse">Loading…</p>
+            <p className="text-sm text-gray-400 text-center py-12 animate-pulse">{t.callsLoading}</p>
           ) : calls.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-12">No recent calls yet.</p>
+            <p className="text-sm text-gray-400 text-center py-12">{t.callsNoRecent}</p>
           ) : (
             <ul>
               {calls.map(call => {
                 const isOutbound = call.classification === 'Outbound';
-                const meta = getCallMeta(call);
+                const meta = getCallMeta(call, t);
                 const isExpanded = expandedCallId === call.id;
                 const duration = formatDuration(call.duration);
                 const keyPoints = Array.isArray(call.key_points) ? call.key_points : [];
@@ -360,7 +369,7 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                             <span className="text-xs text-gray-400 truncate">{formatPhone(call.from_number)}</span>
                           )}
                           {showPhone && <span className="text-xs text-gray-300">·</span>}
-                          <span className="text-xs text-gray-400 shrink-0">{timeAgo(call.created_at)}</span>
+                          <span className="text-xs text-gray-400 shrink-0">{timeAgo(call.created_at, t)}</span>
                           {duration && <span className="text-xs text-gray-300 shrink-0">· {duration}</span>}
                         </div>
                       </div>
@@ -396,13 +405,13 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                         {/* Inbound: AI summary + key points */}
                         {!isOutbound && call.summary && (
                           <div className="bg-blue-50 rounded-lg p-3">
-                            <p className="text-sm font-bold text-gray-800 mb-1.5">Call Summary</p>
+                            <p className="text-sm font-bold text-gray-800 mb-1.5">{t.callsSummary}</p>
                             <p className="text-sm text-gray-700 leading-relaxed">{call.summary}</p>
                           </div>
                         )}
                         {!isOutbound && keyPoints.length > 0 && (
                           <div className="bg-blue-50 rounded-lg p-3">
-                            <p className="text-xs font-semibold text-blue-500 uppercase tracking-wide mb-1.5">Call Notes</p>
+                            <p className="text-xs font-semibold text-blue-500 uppercase tracking-wide mb-1.5">{t.callsNotes}</p>
                             <ul className="space-y-1">
                               {keyPoints.map((pt, i) => (
                                 <li key={i} className="text-xs text-gray-600 flex gap-1.5">
@@ -416,14 +425,14 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                         {/* Outbound: contractor note */}
                         {isOutbound && call.contractor_note && (
                           <div className="bg-amber-50 rounded-lg p-3">
-                            <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-1.5">Your Note</p>
+                            <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-1.5">{t.callsYourNote}</p>
                             <p className="text-sm text-gray-700 leading-relaxed">{call.contractor_note}</p>
                           </div>
                         )}
                         {/* Recording player — shown whenever a recording exists */}
                         {call.recording_url && (
                           <div className="bg-gray-50 rounded-lg p-3">
-                            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Recording</p>
+                            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">{t.callsRecording}</p>
                             <audio
                               controls
                               preload="metadata"
@@ -431,7 +440,7 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                               className="w-full h-9"
                               style={{ colorScheme: 'light' }}
                             >
-                              Your browser does not support audio playback.
+                              {t.callsAudioNotSupported}
                             </audio>
                           </div>
                         )}
@@ -449,9 +458,9 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
       {activeTab === 'Voicemail' && (
         <div>
           {loadingCalls ? (
-            <p className="text-sm text-gray-400 text-center py-12 animate-pulse">Loading…</p>
+            <p className="text-sm text-gray-400 text-center py-12 animate-pulse">{t.callsLoading}</p>
           ) : voicemails.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-12">No voicemails yet.</p>
+            <p className="text-sm text-gray-400 text-center py-12">{t.callsNoVoicemails}</p>
           ) : (
             <ul className="space-y-3">
               {voicemails.map(vm => {
@@ -478,7 +487,7 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                           })}
                         </span>
                         <span className="text-xs font-medium text-gray-500 bg-gray-200 rounded-full px-2 py-0.5">
-                          Voicemail
+                          {t.callsVoicemail}
                         </span>
                       </div>
                       <span className="text-xs text-gray-500 font-medium truncate shrink-0">
@@ -510,7 +519,7 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                           className="w-full h-9"
                           style={{ colorScheme: 'light' }}
                         >
-                          Your browser does not support audio playback.
+                          {t.callsAudioNotSupported}
                         </audio>
                       </div>
                     )}

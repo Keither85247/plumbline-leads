@@ -6,7 +6,7 @@ import TeamAdmin from './TeamAdmin';
 import { triggerGmailSync } from '../api';
 
 // ── Inline save-result toast ──────────────────────────────────────────────────
-function SaveToast({ status }) {
+function SaveToast({ status, t }) {
   if (!status) return null;
   const ok = status === 'success';
   return (
@@ -24,34 +24,34 @@ function SaveToast({ status }) {
           <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
         </svg>
       )}
-      <span>{ok ? 'Changes saved' : "Couldn't save changes. Please try again."}</span>
+      <span>{ok ? t.settingsSaved : t.settingsSaveFailed}</span>
     </div>
   );
 }
 
 // ── Discard-changes confirmation overlay ──────────────────────────────────────
-function DiscardDialog({ onKeep, onDiscard }) {
+function DiscardDialog({ onKeep, onDiscard, t }) {
   return (
     <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-white/95 backdrop-blur-[2px]">
       <div className="px-7 py-6 text-center space-y-4 max-w-[260px]">
         <p className="text-sm font-semibold text-gray-800 leading-snug">
-          Discard unsaved changes?
+          {t.settingsDiscardTitle}
         </p>
         <p className="text-xs text-gray-500">
-          Your edits will be lost if you close without saving.
+          {t.settingsDiscardBody}
         </p>
         <div className="flex flex-col gap-2.5 pt-1">
           <button
             onClick={onDiscard}
             className="w-full py-2.5 text-sm font-semibold bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
           >
-            Discard
+            {t.settingsDiscard}
           </button>
           <button
             onClick={onKeep}
             className="w-full py-2.5 text-sm font-medium text-gray-600 hover:text-gray-800 transition-colors"
           >
-            Keep editing
+            {t.settingsKeepEditing}
           </button>
         </div>
       </div>
@@ -158,6 +158,7 @@ export default function SettingsModal({
           <DiscardDialog
             onKeep={() => setShowDiscard(false)}
             onDiscard={onClose}
+            t={t}
           />
         )}
 
@@ -233,22 +234,22 @@ export default function SettingsModal({
           {isOwner && (
             <div>
               <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-                Email Sync
+                {t.settingsEmailSync}
               </label>
               <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-3 space-y-2">
                 <p className="text-xs text-gray-500">
-                  Re-imports the last 60 days of Gmail. Use this if emails stopped updating after a server restart.
+                  {t.settingsEmailSyncDesc}
                 </p>
                 <button
                   onClick={handleGmailSync}
                   disabled={syncing}
                   className="w-full py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-60"
                 >
-                  {syncing ? 'Syncing…' : 'Sync emails now'}
+                  {syncing ? t.settingsSyncing : t.settingsSyncNow}
                 </button>
                 {syncResult && (
                   <p className="text-xs text-green-600 font-medium">
-                    ✓ Done — {syncResult.imported} imported, {syncResult.skipped} already up to date
+                    {t.settingsSyncDone} {syncResult.imported} {t.settingsSyncImported}, {syncResult.skipped} {t.settingsSyncSkipped}
                   </p>
                 )}
                 {syncError && <p className="text-xs text-red-500">{syncError}</p>}
@@ -266,19 +267,19 @@ export default function SettingsModal({
           {push?.supported && (
             <div>
               <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-                Push Notifications
+                {t.settingsPushTitle}
               </label>
               <div className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5 gap-3">
                 <div className="min-w-0">
                   <p className="text-sm text-gray-700 font-medium">
-                    {push.subscribed ? 'Enabled' : push.permission === 'denied' ? 'Blocked by browser' : 'Disabled'}
+                    {push.subscribed ? t.settingsPushEnabled : push.permission === 'denied' ? t.settingsPushBlocked : t.settingsPushDisabled}
                   </p>
                   <p className="text-xs text-gray-400 mt-0.5">
                     {push.subscribed
-                      ? 'Alerts for calls & voicemails when app is closed'
+                      ? t.settingsPushDescOn
                       : push.permission === 'denied'
-                      ? 'Allow notifications in your browser/phone settings'
-                      : 'Tap Enable to get alerts when the app is closed'}
+                      ? t.settingsPushDescBlocked
+                      : t.settingsPushDescOff}
                   </p>
                   {push.error && <p className="text-xs text-red-500 mt-0.5">{push.error}</p>}
                 </div>
@@ -292,7 +293,7 @@ export default function SettingsModal({
                         : 'bg-indigo-600 text-white hover:bg-indigo-700'
                     }`}
                   >
-                    {push.subscribing ? 'Working…' : push.subscribed ? 'Disable' : 'Enable'}
+                    {push.subscribing ? t.settingsPushWorking : push.subscribed ? t.settingsPushDisable : t.settingsPushEnable}
                   </button>
                 )}
               </div>
@@ -327,7 +328,7 @@ export default function SettingsModal({
         </div>
 
         {/* Save result toast */}
-        <SaveToast status={toastStatus} />
+        <SaveToast status={toastStatus} t={t} />
 
         {/* Footer */}
         <div className="px-6 pb-5 shrink-0">
@@ -342,7 +343,7 @@ export default function SettingsModal({
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
                 </svg>
-                Saving…
+                {t.settingsSaving}
               </>
             ) : (
               t.done

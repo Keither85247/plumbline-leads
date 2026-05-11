@@ -1,23 +1,26 @@
 // Single row in the conversation list sidebar.
 import { parseTimestamp } from '../../utils/phone';
+import { translations } from '../../i18n';
 
 function formatTimestamp(iso) {
   if (!iso) return '';
+  const lang = localStorage.getItem('language') || 'en';
+  const t = translations[lang] || translations.en;
   const date = parseTimestamp(iso);
   const now = new Date();
   const diffMs = now - date;
   const diffMins = Math.floor(diffMs / 60000);
-  if (diffMins < 1)  return 'now';
+  if (diffMins < 1)  return t.timeJustNow;
   if (diffMins < 60) return `${diffMins}m`;
   const diffHours = Math.floor(diffMins / 60);
   if (diffHours < 24) return `${diffHours}h`;
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const yestStart  = new Date(todayStart); yestStart.setDate(todayStart.getDate() - 1);
-  if (date >= yestStart) return 'Yesterday';
+  if (date >= yestStart) return t.timeYesterday;
   if (diffHours < 24 * 7) {
-    return date.toLocaleDateString('en-US', { weekday: 'short' });
+    return date.toLocaleDateString(lang === 'es' ? 'es-MX' : 'en-US', { weekday: 'short' });
   }
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return date.toLocaleDateString(lang === 'es' ? 'es-MX' : 'en-US', { month: 'short', day: 'numeric' });
 }
 
 export default function ConversationItem({ conversation, selected, onClick }) {

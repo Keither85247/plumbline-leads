@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { createLead } from '../api';
+import { translations } from '../i18n';
 
 export default function TranscriptForm({ onLeadCreated, language }) {
+  const t = translations[language] || translations.en;
   const [transcript, setTranscript] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -30,15 +32,15 @@ export default function TranscriptForm({ onLeadCreated, language }) {
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-      <h2 className="text-lg font-semibold text-gray-800 mb-1">New Transcript</h2>
+      <h2 className="text-lg font-semibold text-gray-800 mb-1">{t.transcriptTitle}</h2>
       <p className="text-sm text-gray-500 mb-4">
-        Paste a call transcript below. OpenAI will extract the contact name, generate a summary, and identify key points.
+        {t.transcriptSubtitle}
       </p>
       <form onSubmit={handleSubmit} className="space-y-4">
         <textarea
           value={transcript}
           onChange={e => setTranscript(e.target.value)}
-          placeholder="Paste the call transcript here...&#10;&#10;Example:&#10;Sarah: Hi, this is Sarah from Acme Corp. I'm calling about your enterprise plan.&#10;Rep: Great to hear from you Sarah! Let me walk you through our options..."
+          placeholder={t.transcriptPH}
           rows={14}
           disabled={loading}
           className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm
@@ -53,7 +55,7 @@ export default function TranscriptForm({ onLeadCreated, language }) {
         )}
         {success && (
           <div className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-4 py-3">
-            Lead saved successfully! Check the list on the right.
+            {t.transcriptSuccess}
           </div>
         )}
         <button
@@ -70,10 +72,10 @@ export default function TranscriptForm({ onLeadCreated, language }) {
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
               </svg>
-              Analyzing with OpenAI...
+              {t.transcriptAnalyzing}
             </>
           ) : (
-            'Generate Summary & Save Lead'
+            t.transcriptSubmit
           )}
         </button>
       </form>

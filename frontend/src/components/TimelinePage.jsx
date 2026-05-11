@@ -3,26 +3,27 @@ import { getCalls, getEmails, getConversations, getMessageThread } from '../api'
 import { normalizeCall, normalizeEmail, normalizeSmsThread } from './timeline/normalizeEvent';
 import EventRow from './timeline/EventRow';
 import { parseTimestamp } from '../utils/phone';
+import { translations } from '../i18n';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function getDateLabel(dateStr) {
-  if (!dateStr) return 'Unknown';
+function getDateLabel(dateStr, t, locale) {
+  if (!dateStr) return t.inboxUnknown || 'Unknown';
   const date = parseTimestamp(dateStr);
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const yestStart  = new Date(todayStart);
   yestStart.setDate(todayStart.getDate() - 1);
-  if (date >= todayStart) return 'Today';
-  if (date >= yestStart)  return 'Yesterday';
-  return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+  if (date >= todayStart) return t.timeToday;
+  if (date >= yestStart)  return t.timeYesterday;
+  return date.toLocaleDateString(locale, { weekday: 'long', month: 'short', day: 'numeric' });
 }
 
-function groupByDate(events) {
+function groupByDate(events, t, locale) {
   const groups = [];
   const seen = new Map();
   for (const event of events) {
-    const label = getDateLabel(event.timestamp);
+    const label = getDateLabel(event.timestamp, t, locale);
     if (!seen.has(label)) {
       seen.set(label, groups.length);
       groups.push({ label, events: [] });
@@ -77,7 +78,7 @@ function LoadingSkeleton() {
 
 // ── Empty state ───────────────────────────────────────────────────────────────
 
-function EmptyState() {
+function EmptyState({ t }) {
   return (
     <div className="flex flex-col items-center justify-center text-center py-20">
       <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mb-3">
@@ -85,8 +86,8 @@ function EmptyState() {
           <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
       </div>
-      <p className="text-sm font-medium text-gray-500">No activity yet</p>
-      <p className="text-xs text-gray-400 mt-1">Calls and messages will appear here</p>
+      <p className="text-sm font-medium text-gray-500">{t.timelineEmpty}</p>
+      <p className="text-xs text-gray-400 mt-1">{t.timelineEmptySub}</p>
     </div>
   );
 }
@@ -94,6 +95,9 @@ function EmptyState() {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function TimelinePage({ onContactClick }) {
+  const lang = localStorage.getItem('language') || 'en';
+  const t = translations[lang] || translations.en;
+
   const [events,     setEvents]     = useState([]);
   const [loading,    setLoading]    = useState(true);
   const [expandedId, setExpandedId] = useState(null);
@@ -128,21 +132,22 @@ export default function TimelinePage({ onContactClick }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const groups = groupByDate(events);
+  const locale = lang === 'es' ? 'es-MX' : 'en-US';
+  const groups = groupByDate(events, t, locale);
 
   return (
     <div className="max-w-lg w-full">
 
       {/* Page header */}
       <div className="mb-6">
-        <h1 className="text-xl font-bold text-gray-900">Timeline</h1>
-        <p className="text-sm text-gray-400 mt-0.5">All activity in one place</p>
+        <h1 className="text-xl font-bold text-gray-900">{t.timelineTitle}</h1>
+        <p className="text-sm text-gray-400 mt-0.5">{t.timelineSubtitle}</p>
       </div>
 
       {loading ? (
         <LoadingSkeleton />
       ) : events.length === 0 ? (
-        <EmptyState />
+        <EmptyState t={t} />
       ) : (
         <div className="space-y-6">
           {groups.map((group) => (

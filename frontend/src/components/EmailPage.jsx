@@ -1,21 +1,34 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getEmails, getGmailStatus, disconnectGmail, sendEmail, patchEmail, softDeleteEmail, searchContacts, BACKEND_URL } from '../api';
+import { translations } from '../i18n';
+
+function getT() {
+  const lang = localStorage.getItem('language') || 'en';
+  return translations[lang] || translations.en;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+function getLocale() {
+  const lang = localStorage.getItem('language') || 'en';
+  return lang === 'es' ? 'es-MX' : 'en-US';
+}
+
 function formatTime(iso) {
   if (!iso) return '';
+  const locale = getLocale();
   const date = new Date(iso);
   const now   = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   return date >= todayStart
-    ? date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-    : date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    ? date.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' })
+    : date.toLocaleDateString(locale, { month: 'short', day: 'numeric' });
 }
 
 function formatFullDate(iso) {
   if (!iso) return '';
-  return new Date(iso).toLocaleString('en-US', {
+  const locale = getLocale();
+  return new Date(iso).toLocaleString(locale, {
     weekday: 'short', month: 'short', day: 'numeric',
     hour: 'numeric', minute: '2-digit',
   });
@@ -91,14 +104,15 @@ function SkeletonRow() {
 // ── Empty state ───────────────────────────────────────────────────────────────
 
 function EmptyState({ connected }) {
+  const t = getT();
   return (
     <div className="flex flex-col items-center justify-center text-center py-20 px-6">
       <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mb-3">
         <EnvelopeIcon className="w-5 h-5 text-gray-300" />
       </div>
-      <p className="text-sm font-medium text-gray-500">No emails yet</p>
+      <p className="text-sm font-medium text-gray-500">{t.emailNoEmails}</p>
       <p className="text-xs text-gray-400 mt-1">
-        {connected ? 'Sent and received emails will appear here' : 'Connect Gmail to sync your emails'}
+        {connected ? t.emailConnectHint : t.emailNotConnected}
       </p>
     </div>
   );
@@ -146,6 +160,7 @@ function parseEmailFlags(email) {
 // Desktop: hover reveals action icon buttons.
 
 function SwipeableEmailRow({ email, isSelected, onClick, onDelete, onToggleRead, onArchive }) {
+  const t           = getT();
   const rowRef      = useRef(null);
   const touchStartX = useRef(null);
   const THRESHOLD   = 70;
@@ -191,11 +206,11 @@ function SwipeableEmailRow({ email, isSelected, onClick, onDelete, onToggleRead,
       {/* Left action bg — mark read (revealed when row slides right) */}
       <div className="absolute inset-0 bg-blue-500 flex items-center pl-5 z-0">
         <CheckCircleIcon className="w-5 h-5 text-white" />
-        <span className="text-xs text-white font-medium ml-2">{isUnread ? 'Mark read' : 'Mark unread'}</span>
+        <span className="text-xs text-white font-medium ml-2">{isUnread ? t.emailMarkRead : t.emailMarkUnread}</span>
       </div>
       {/* Right action bg — delete (revealed when row slides left) */}
       <div className="absolute inset-0 bg-red-500 flex items-center justify-end pr-5 z-0">
-        <span className="text-xs text-white font-medium mr-2">Delete</span>
+        <span className="text-xs text-white font-medium mr-2">{t.emailDelete}</span>
         <TrashIcon className="w-5 h-5 text-white" />
       </div>
 
@@ -247,12 +262,12 @@ function SwipeableEmailRow({ email, isSelected, onClick, onDelete, onToggleRead,
           <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
             {isOutbound && (
               <span className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-sky-50 text-sky-500 leading-none">
-                Sent
+                {t.emailSent}
               </span>
             )}
             {flags.isTrash && (
               <span className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-50 text-red-400 leading-none">
-                Trash
+                {t.emailTrash}
               </span>
             )}
             {email.subject && (
@@ -275,21 +290,20 @@ function SwipeableEmailRow({ email, isSelected, onClick, onDelete, onToggleRead,
           <button
             onClick={e => { e.stopPropagation(); onToggleRead(email); }}
             className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-300 hover:text-blue-500 transition-colors"
-            title={isUnread ? 'Mark as read' : 'Mark as unread'}
+            title={isUnread ? t.emailMarkRead : t.emailMarkUnread}
           >
             <CheckCircleIcon className="w-4 h-4" />
           </button>
           <button
             onClick={e => { e.stopPropagation(); onArchive(email); }}
             className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-300 hover:text-gray-600 transition-colors"
-            title="Archive"
           >
             <ArchiveIcon className="w-4 h-4" />
           </button>
           <button
             onClick={e => { e.stopPropagation(); onDelete(email); }}
             className="p-1.5 rounded-lg hover:bg-red-50 text-gray-300 hover:text-red-500 transition-colors"
-            title="Delete"
+            title={t.emailDelete}
           >
             <TrashIcon className="w-4 h-4" />
           </button>
@@ -302,6 +316,7 @@ function SwipeableEmailRow({ email, isSelected, onClick, onDelete, onToggleRead,
 // ── Email detail panel ────────────────────────────────────────────────────────
 
 function EmailDetailPanel({ email, onBack, onDelete, onToggleRead, onArchive }) {
+  const t          = getT();
   const flags      = parseEmailFlags(email);
   const isOutbound = flags.isSent;
   const isUnread   = flags.isUnread && !isOutbound;
@@ -321,12 +336,12 @@ function EmailDetailPanel({ email, onBack, onDelete, onToggleRead, onArchive }) 
           <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
           </svg>
-          Inbox
+          {t.emailBackToInbox}
         </button>
 
         {/* Subject */}
         <h2 className="flex-1 text-sm font-semibold text-gray-900 truncate min-w-0">
-          {email.subject || '(no subject)'}
+          {email.subject || t.emailNoSubject}
         </h2>
 
         {/* Action buttons */}
@@ -334,21 +349,21 @@ function EmailDetailPanel({ email, onBack, onDelete, onToggleRead, onArchive }) 
           <button
             onClick={() => onToggleRead(email)}
             className="p-2 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-blue-500 transition-colors"
-            title={isUnread ? 'Mark as read' : 'Mark as unread'}
+            title={isUnread ? t.emailMarkRead : t.emailMarkUnread}
           >
             <CheckCircleIcon className="w-4.5 h-4.5 w-5 h-5" />
           </button>
           <button
             onClick={() => onArchive(email)}
             className="p-2 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
-            title="Archive"
+            title={t.emailArchive}
           >
             <ArchiveIcon className="w-5 h-5" />
           </button>
           <button
             onClick={() => onDelete(email)}
             className="p-2 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"
-            title="Delete"
+            title={t.emailDelete}
           >
             <TrashIcon className="w-5 h-5" />
           </button>
@@ -360,16 +375,16 @@ function EmailDetailPanel({ email, onBack, onDelete, onToggleRead, onArchive }) 
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1 min-w-0 flex-1">
             <div className="flex gap-1.5 text-sm">
-              <span className="text-gray-400 shrink-0 w-8">From</span>
+              <span className="text-gray-400 shrink-0 w-8">{t.emailFrom}</span>
               <span className="text-gray-800 truncate font-medium">{from || '—'}</span>
             </div>
             <div className="flex gap-1.5 text-sm">
-              <span className="text-gray-400 shrink-0 w-8">To</span>
+              <span className="text-gray-400 shrink-0 w-8">{t.emailTo}</span>
               <span className="text-gray-800 truncate">{to || '—'}</span>
             </div>
             {email.subject && (
               <div className="flex gap-1.5 text-sm">
-                <span className="text-gray-400 shrink-0 w-8">Re</span>
+                <span className="text-gray-400 shrink-0 w-8">{t.emailRe}</span>
                 <span className="text-gray-800 truncate">{email.subject}</span>
               </div>
             )}
@@ -383,26 +398,26 @@ function EmailDetailPanel({ email, onBack, onDelete, onToggleRead, onArchive }) 
         <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
           <span className={`inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full
             ${isOutbound ? 'bg-sky-50 text-sky-600' : 'bg-blue-50 text-blue-600'}`}>
-            {isOutbound ? '↑ Sent' : '↓ Received'}
+            {isOutbound ? t.emailSentBadge : t.emailReceivedBadge}
           </span>
           {isUnread && (
             <span className="inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full bg-violet-500 text-white">
-              Unread
+              {t.emailUnread}
             </span>
           )}
           {flags.isStarred && (
             <span className="inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-500">
-              ★ Starred
+              {t.emailStarred}
             </span>
           )}
           {flags.isImportant && (
             <span className="inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full bg-orange-50 text-orange-500">
-              Important
+              {t.emailImportant}
             </span>
           )}
           {flags.isTrash && (
             <span className="inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full bg-red-50 text-red-400">
-              Trash
+              {t.emailTrash}
             </span>
           )}
         </div>
@@ -415,7 +430,7 @@ function EmailDetailPanel({ email, onBack, onDelete, onToggleRead, onArchive }) 
             {email.body_preview}
           </p>
         ) : (
-          <p className="text-sm text-gray-400 italic">No preview available for this email.</p>
+          <p className="text-sm text-gray-400 italic">{t.emailNoPreview}</p>
         )}
 
         {/* Attachments */}
@@ -426,7 +441,7 @@ function EmailDetailPanel({ email, onBack, onDelete, onToggleRead, onArchive }) 
           return (
             <div className="border-t border-gray-100 pt-4">
               <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                Attachments ({atts.length})
+                {t.emailAttachments} ({atts.length})
               </p>
               <div className="space-y-1.5">
                 {atts.map((att, i) => (
@@ -452,6 +467,7 @@ function EmailDetailPanel({ email, onBack, onDelete, onToggleRead, onArchive }) 
 // ── Email settings modal ──────────────────────────────────────────────────────
 
 function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting }) {
+  const t = getT();
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40"
@@ -463,7 +479,7 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-5 pb-3.5 border-b border-gray-100">
-          <h2 className="text-base font-semibold text-gray-900">Email Settings</h2>
+          <h2 className="text-base font-semibold text-gray-900">{t.emailSettings}</h2>
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-gray-600 transition-colors"
@@ -478,7 +494,7 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
         {/* Connected account */}
         <div className="px-5 py-4">
           <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-3">
-            Connected Account
+            {t.emailConnectedAccount}
           </p>
 
           {gmailStatus.connected ? (
@@ -489,7 +505,7 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
                 </div>
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-gray-900 truncate">{gmailStatus.email}</p>
-                  <p className="text-xs text-green-500 font-medium mt-0.5">Connected</p>
+                  <p className="text-xs text-green-500 font-medium mt-0.5">{t.emailConnectedStatus}</p>
                 </div>
               </div>
               <button
@@ -497,18 +513,18 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
                 disabled={disconnecting}
                 className="shrink-0 text-xs font-medium text-red-500 hover:text-red-700 disabled:opacity-50 transition-colors"
               >
-                {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+                {disconnecting ? t.emailDisconnecting : t.emailDisconnect}
               </button>
             </div>
           ) : gmailStatus.enabled ? (
             <div className="py-1">
-              <p className="text-sm text-gray-500 mb-3">No Gmail account connected.</p>
+              <p className="text-sm text-gray-500 mb-3">{t.emailGmailNotConnected}</p>
               <a
                 href={`${BACKEND_URL}/auth/google`}
                 className="flex items-center justify-center gap-2.5 w-full border border-gray-200 hover:border-gray-300 rounded-xl py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm"
               >
                 <GoogleLogo size={16} />
-                Connect Gmail Account
+                {t.emailConnectGmail}
               </a>
             </div>
           ) : (
@@ -518,14 +534,14 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
                   <GoogleLogo size={16} />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-sm font-medium text-gray-500">Gmail connection coming soon</p>
+                  <p className="text-sm font-medium text-gray-500">{t.emailGmailComingSoon}</p>
                   <p className="text-xs text-gray-400 mt-0.5 leading-snug">
-                    We're finishing Google verification before enabling this for testers.
+                    {t.emailGmailComingSoonBody}
                   </p>
                 </div>
               </div>
               <p className="text-[11px] text-gray-400 leading-relaxed">
-                Calls, texts, leads, and timeline are ready to test now.
+                {t.emailGmailTestReady}
               </p>
             </div>
           )}
@@ -533,10 +549,9 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
 
         {/* Sync info */}
         <div className="px-5 py-4 border-t border-gray-50 bg-gray-50/50">
-          <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Sync</p>
+          <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">{t.emailSyncTitle}</p>
           <p className="text-xs text-gray-500 leading-relaxed">
-            Emails are checked every minute when Gmail is connected.
-            The last 30 days of inbox and sent mail are imported on first connect.
+            {t.emailSyncBody}
           </p>
         </div>
 
@@ -546,7 +561,7 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
             onClick={onClose}
             className="w-full bg-gray-100 hover:bg-gray-200 text-sm font-medium text-gray-700 rounded-xl py-2.5 transition-colors"
           >
-            Done
+            {t.done}
           </button>
         </div>
       </div>
@@ -560,6 +575,7 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
 // Keyboard: ↑↓ to navigate, Enter to select, Escape to close.
 
 function RecipientInput({ query, onQueryChange, onSelect, autoFocus }) {
+  const t = getT();
   const [suggestions, setSuggestions] = useState([]);
   const [open,        setOpen]        = useState(false);
   const [activeIdx,   setActiveIdx]   = useState(-1);
@@ -637,7 +653,7 @@ function RecipientInput({ query, onQueryChange, onSelect, autoFocus }) {
         value={query}
         onChange={e => onQueryChange(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder="Name or email address"
+        placeholder={t.emailRecipientPH}
         className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-400 placeholder:text-gray-400"
       />
 
@@ -704,6 +720,7 @@ function formatBytes(bytes) {
 }
 
 function ComposeModal({ onClose, onSent }) {
+  const t = getT();
   // toQuery  — text currently in the input field (clears on contact selection)
   // toEmail  — actual email address for sending (set on autocomplete selection, null for raw input)
   // toName   — display name of the selected contact (null when raw input)
@@ -737,11 +754,11 @@ function ComposeModal({ onClose, onSent }) {
     const files = Array.from(e.target.files || []);
     const valid = files.filter(f => ALLOWED_ATTACH_TYPES.has(f.type));
     const rejected = files.length - valid.length;
-    if (rejected > 0) setError(`${rejected} file(s) skipped — unsupported type.`);
+    if (rejected > 0) setError(`${rejected} ${t.emailAttachmentSkipped}`);
     setAttachments(prev => {
       const merged = [...prev, ...valid];
       if (merged.length > 5) {
-        setError('Maximum 5 attachments.');
+        setError(t.emailMaxAttachments);
         return merged.slice(0, 5);
       }
       return merged;
@@ -756,12 +773,12 @@ function ComposeModal({ onClose, onSent }) {
 
   async function handleSend() {
     if (!recipientEmail || !body.trim()) {
-      setError('To and Message are required.');
+      setError(t.emailToRequired);
       return;
     }
     // For raw freeform input (no contact selected), enforce valid email format.
     if (!toEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) {
-      setError('Please enter a valid email address.');
+      setError(t.emailInvalidAddress);
       return;
     }
     setSending(true);
@@ -794,7 +811,7 @@ function ComposeModal({ onClose, onSent }) {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-gray-100">
-          <p className="text-sm font-semibold text-gray-900">New Email</p>
+          <p className="text-sm font-semibold text-gray-900">{t.emailNewEmail}</p>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -806,7 +823,7 @@ function ComposeModal({ onClose, onSent }) {
 
           {/* ── To ── */}
           <div>
-            <label className="block text-xs text-gray-500 mb-1">To</label>
+            <label className="block text-xs text-gray-500 mb-1">{t.emailToLabel}</label>
 
             {toEmail ? (
               // ── Contact chip (contact was selected from autocomplete) ──
@@ -843,23 +860,23 @@ function ComposeModal({ onClose, onSent }) {
 
           {/* ── Subject ── */}
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Subject</label>
+            <label className="block text-xs text-gray-500 mb-1">{t.emailSubjectLabel}</label>
             <input
               type="text"
               value={subject}
               onChange={e => setSubject(e.target.value)}
-              placeholder="(optional)"
+              placeholder={t.emailSubjectPH}
               className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-400 placeholder:text-gray-400"
             />
           </div>
 
           {/* ── Message ── */}
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Message</label>
+            <label className="block text-xs text-gray-500 mb-1">{t.emailMessageLabel}</label>
             <textarea
               value={body}
               onChange={e => setBody(e.target.value)}
-              placeholder="Write your message…"
+              placeholder={t.emailMessagePH}
               rows={6}
               className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-violet-400 placeholder:text-gray-400"
             />
@@ -905,7 +922,7 @@ function ComposeModal({ onClose, onSent }) {
 
         <div className="flex items-center justify-between px-5 pb-5 pt-1">
           <div className="flex items-center gap-3">
-            <p className="text-[11px] text-gray-400">⌘+Enter to send</p>
+            <p className="text-[11px] text-gray-400">{t.emailCmdEnter}</p>
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
@@ -916,7 +933,7 @@ function ComposeModal({ onClose, onSent }) {
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
               </svg>
-              Attach
+              {t.emailAttach}
             </button>
           </div>
           <div className="flex gap-2">
@@ -924,14 +941,14 @@ function ComposeModal({ onClose, onSent }) {
               onClick={onClose}
               className="text-sm text-gray-500 hover:text-gray-700 px-4 py-2 transition-colors"
             >
-              Cancel
+              {t.emailCancel}
             </button>
             <button
               onClick={handleSend}
               disabled={sending}
               className="text-sm font-medium bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white rounded-lg px-5 py-2 transition-colors"
             >
-              {sending ? 'Sending…' : 'Send'}
+              {sending ? t.emailSending : t.emailSend}
             </button>
           </div>
         </div>
@@ -999,6 +1016,7 @@ function GmailErrorBanner({ code, onDismiss }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function EmailPage() {
+  const t = getT();
   const [emails,        setEmails]        = useState([]);
   const [loading,       setLoading]       = useState(true);
   const [activeMailbox, setActiveMailbox] = useState('all'); // 'all' | 'inbox' | 'sent' | 'trash'
@@ -1046,7 +1064,7 @@ export default function EmailPage() {
     if (params.get('gmail_connected') === '1') {
       window.history.replaceState({}, '', window.location.pathname);
       setGmailError(null); // clear any previous error
-      showToast('Gmail connected! Importing recent emails…', 'info');
+      showToast(t.emailGmailConnectedToast, 'info');
       // Refresh status and open settings automatically
       getGmailStatus().then(s => { setGmailStatus(s); setSettingsOpen(true); }).catch(() => {});
       // Staggered re-fetches as the server-side backfill completes
@@ -1079,9 +1097,9 @@ export default function EmailPage() {
     try {
       await disconnectGmail();
       setGmailStatus({ connected: false, email: null });
-      showToast('Gmail disconnected.');
+      showToast(t.emailGmailDisconnected);
     } catch (err) {
-      showToast('Failed to disconnect: ' + err.message, 'error');
+      showToast(t.emailFailedDisconnect + err.message, 'error');
     } finally {
       setDisconnecting(false);
     }
@@ -1097,7 +1115,7 @@ export default function EmailPage() {
     } catch {
       // Revert on failure
       setEmails(prev => prev.map(e => e.id === email.id ? { ...e, is_read: email.is_read } : e));
-      showToast('Failed to update.', 'error');
+      showToast(t.emailFailedUpdate, 'error');
     }
   }
 
@@ -1105,12 +1123,12 @@ export default function EmailPage() {
     // Optimistic remove
     setEmails(prev => prev.filter(e => e.id !== email.id));
     if (selectedEmail?.id === email.id) setSelectedEmail(null);
-    showToast('Email deleted.');
+    showToast(t.emailDeletedToast);
     try {
       await softDeleteEmail(email.id);
     } catch {
       fetchEmails(); // Re-fetch on failure to restore
-      showToast('Failed to delete email.', 'error');
+      showToast(t.emailFailedDelete, 'error');
     }
   }
 
@@ -1118,12 +1136,12 @@ export default function EmailPage() {
     // Optimistic remove from inbox view
     setEmails(prev => prev.filter(e => e.id !== email.id));
     if (selectedEmail?.id === email.id) setSelectedEmail(null);
-    showToast('Email archived.');
+    showToast(t.emailArchivedToast);
     try {
       await patchEmail(email.id, { is_archived: 1 });
     } catch {
       fetchEmails();
-      showToast('Failed to archive email.', 'error');
+      showToast(t.emailFailedArchive, 'error');
     }
   }
 
@@ -1150,7 +1168,7 @@ export default function EmailPage() {
 
         {/* List header */}
         <div className="flex items-center justify-between px-4 pt-4 pb-3 shrink-0">
-          <h1 className="text-xl font-bold text-gray-900">Email</h1>
+          <h1 className="text-xl font-bold text-gray-900">{t.emailTitle}</h1>
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setSettingsOpen(true)}
@@ -1167,7 +1185,7 @@ export default function EmailPage() {
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                 </svg>
-                Compose
+                {t.emailCompose}
               </button>
             )}
           </div>
@@ -1183,14 +1201,14 @@ export default function EmailPage() {
           <div className="mx-4 mb-3 flex items-center justify-between gap-2 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 shrink-0">
             <div className="flex items-center gap-2 min-w-0">
               <div className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-              <p className="text-xs text-amber-700 font-medium truncate">Gmail not connected</p>
+              <p className="text-xs text-amber-700 font-medium truncate">{t.emailGmailNotConnectedStrip}</p>
             </div>
             <a
               href={`${BACKEND_URL}/auth/google`}
               className="shrink-0 flex items-center gap-1.5 text-xs font-semibold text-amber-700 hover:text-amber-900 bg-white border border-amber-200 rounded-lg px-2.5 py-1 transition-colors"
             >
               <GoogleLogo size={12} />
-              Connect
+              {t.emailConnectButton}
             </a>
           </div>
         )}
@@ -1198,10 +1216,10 @@ export default function EmailPage() {
           <div className="mx-4 mb-3 bg-gray-50 border border-gray-100 rounded-xl px-3 py-3 shrink-0">
             <div className="flex items-center gap-2 mb-1">
               <div className="w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0" />
-              <p className="text-xs font-semibold text-gray-500">Gmail connection coming soon</p>
+              <p className="text-xs font-semibold text-gray-500">{t.emailGmailComingSoonStrip}</p>
             </div>
             <p className="text-[11px] text-gray-400 leading-relaxed">
-              We're finishing Google verification before enabling Gmail sync for testers. Calls, texts, leads, and timeline are ready to test now.
+              {t.emailGmailComingSoonStrip2}
             </p>
           </div>
         )}
@@ -1215,10 +1233,10 @@ export default function EmailPage() {
         {/* Mailbox tabs */}
         <div className="flex items-center gap-0.5 px-4 pb-2 shrink-0 border-b border-gray-100">
           {[
-            { key: 'all',   label: 'All' },
-            { key: 'inbox', label: 'Inbox' },
-            { key: 'sent',  label: 'Sent' },
-            { key: 'trash', label: 'Trash' },
+            { key: 'all',   label: t.emailTabAll },
+            { key: 'inbox', label: t.emailTabInbox },
+            { key: 'sent',  label: t.emailTabSent },
+            { key: 'trash', label: t.emailTabTrash },
           ].map(tab => (
             <button
               key={tab.key}
@@ -1284,8 +1302,8 @@ export default function EmailPage() {
               <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3">
                 <EnvelopeIcon className="w-6 h-6 text-gray-300" />
               </div>
-              <p className="text-sm font-medium text-gray-400">Select an email to read</p>
-              <p className="text-xs text-gray-300 mt-1">Your emails appear on the left</p>
+              <p className="text-sm font-medium text-gray-400">{t.emailSelectPrompt}</p>
+              <p className="text-xs text-gray-300 mt-1">{t.emailSelectHint}</p>
             </div>
           </div>
         )}
@@ -1308,7 +1326,7 @@ export default function EmailPage() {
         <ComposeModal
           onClose={() => setComposeOpen(false)}
           onSent={() => {
-            showToast('Email sent!', 'success');
+            showToast(t.emailSentToast, 'success');
             fetchEmails();
           }}
         />

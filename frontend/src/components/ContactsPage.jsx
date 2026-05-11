@@ -3,6 +3,7 @@ import { getCalls, getAllContactProfiles } from '../api';
 import { normalizePhone } from '../utils/phone';
 import ContactHistoryModal from './ContactHistoryModal';
 import PhoneActionSheet from './PhoneActionSheet';
+import { translations } from '../i18n';
 
 const CATEGORY_STYLES = {
   'Lead':              'bg-blue-50 text-blue-700',
@@ -21,15 +22,15 @@ const AVATAR_COLORS = {
   'Likely Spam':       'bg-red-100 text-red-600',
 };
 
-function timeAgo(ts) {
+function timeAgo(ts, t) {
   const diff = Date.now() - ts;
   const m = Math.floor(diff / 60000);
-  if (m < 1) return 'Just now';
-  if (m < 60) return `${m}m ago`;
+  if (m < 1) return t.timeJustNow;
+  if (m < 60) return `${m}${t.timeAgoM}`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
+  if (h < 24) return `${h}${t.timeAgoH}`;
   const days = Math.floor(h / 24);
-  return days === 1 ? '1d ago' : `${days}d ago`;
+  return `${days}${t.timeAgoD}`;
 }
 
 // Take first sentence of AI summary as a compact context hint
@@ -40,6 +41,9 @@ function extractContext(summary) {
 }
 
 export default function ContactsPage({ leads, voiceDevice = {} }) {
+  const lang = localStorage.getItem('language') || 'en';
+  const t = translations[lang] || translations.en;
+
   const {
     makeCall,
     status: deviceStatus = 'idle',
@@ -175,9 +179,9 @@ export default function ContactsPage({ leads, voiceDevice = {} }) {
 
       {/* Header */}
       <div className="mb-5">
-        <h1 className="text-xl font-bold text-gray-900">Contacts</h1>
+        <h1 className="text-xl font-bold text-gray-900">{t.contactsTitle}</h1>
         <p className="text-sm text-gray-400 mt-0.5">
-          {contacts.length} {contacts.length === 1 ? 'contact' : 'contacts'} · auto-synced from calls &amp; leads
+          {contacts.length} {contacts.length === 1 ? t.contactsSingular : t.contactsPlural} · {t.contactsAutoSynced}
         </p>
       </div>
 
@@ -187,7 +191,7 @@ export default function ContactsPage({ leads, voiceDevice = {} }) {
           type="search"
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Search by name or number…"
+          placeholder={t.contactsSearchPH}
           className="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
         />
       </div>
@@ -195,9 +199,7 @@ export default function ContactsPage({ leads, voiceDevice = {} }) {
       {/* Contact list */}
       {filtered.length === 0 ? (
         <p className="text-sm text-gray-400 text-center py-16">
-          {search
-            ? 'No contacts match your search.'
-            : 'No contacts yet — they appear automatically when calls or voicemails come in.'}
+          {search ? t.contactsNoMatch : t.contactsEmpty}
         </p>
       ) : (
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
@@ -263,7 +265,7 @@ export default function ContactsPage({ leads, voiceDevice = {} }) {
                     {/* Timestamp + category badge */}
                     <div className="flex flex-col items-end gap-1">
                       <span className="text-[11px] text-gray-400 whitespace-nowrap tabular-nums">
-                        {timeAgo(contact.lastActivity)}
+                        {timeAgo(contact.lastActivity, t)}
                       </span>
                       {contact.category && contact.category !== 'Unknown' && (
                         <span className={`text-[10px] font-medium rounded-full px-2 py-0.5 whitespace-nowrap ${catStyle}`}>

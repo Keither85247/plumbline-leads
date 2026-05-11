@@ -1,6 +1,7 @@
 import { EVENT_META } from './normalizeEvent';
 import { parseTimestamp } from '../../utils/phone';
 import { API_BASE, recordingUrl } from '../../api';
+import { translations } from '../../i18n';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -104,7 +105,9 @@ function ClassBadge({ value }) {
 
 // ── EventRow ─────────────────────────────────────────────────────────────────
 
-export default function EventRow({ event, expanded, onToggle, onContactClick }) {
+export default function EventRow({ event, expanded, onToggle, onContactClick, t: tProp }) {
+  const lang = localStorage.getItem('language') || 'en';
+  const t = tProp || translations[lang] || translations.en;
   const meta = EVENT_META[event.type] ?? EVENT_META['call-outbound'];
   const duration    = meta.showDuration ? formatDuration(event.durationSeconds) : null;
   const isEmail     = event.type === 'email-inbound' || event.type === 'email-outbound';
@@ -170,18 +173,18 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
             {isSmsThread ? (
               <>
                 <span className="text-xs font-medium leading-none text-teal-600">
-                  {event.messageCount} {event.messageCount === 1 ? 'text' : 'texts'}
+                  {event.messageCount} {event.messageCount === 1 ? t.eventMessage : t.eventMessages}
                 </span>
                 {event.unreadCount > 0 && (
                   <span className="text-[10px] font-bold bg-teal-500 text-white rounded-full px-1.5 leading-[18px]">
-                    {event.unreadCount} new
+                    {event.unreadCount} {t.eventNew}
                   </span>
                 )}
               </>
             ) : (
               <>
                 <span className={`text-xs font-medium leading-none ${meta.labelColor}`}>
-                  {meta.label}
+                  {(meta.labelKey && t[meta.labelKey]) || meta.label}
                 </span>
                 {duration && (
                   <span className="text-[11px] text-gray-400 leading-none">· {duration}</span>
@@ -250,7 +253,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
             <div className="space-y-1.5">
               {event.messages.length > 5 && (
                 <p className="text-[10px] text-gray-400 text-center pb-0.5">
-                  {event.messages.length - 5} earlier {event.messages.length - 5 === 1 ? 'message' : 'messages'}
+                  {event.messages.length - 5} {t.eventEarlier} {event.messages.length - 5 === 1 ? t.eventMessage : t.eventMessages}
                 </p>
               )}
               {event.messages.slice(-5).map(msg => (
@@ -279,7 +282,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
           {!event.isOutbound && !isEmail && !isSms && event.summary && (
             <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">
-                Summary
+                {t.eventSummary}
               </p>
               <p className="text-xs text-gray-700 leading-relaxed">{event.summary}</p>
             </div>
@@ -289,7 +292,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
           {event.isOutbound && !isEmail && !isSms && event.summary && (
             <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">
-                Call Summary
+                {t.eventCallSummary}
               </p>
               <p className="text-xs text-gray-700 leading-relaxed">{event.summary}</p>
             </div>
@@ -299,7 +302,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
           {event.keyPoints.length > 0 && (
             <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">
-                Key Points
+                {t.eventKeyPoints}
               </p>
               <ul className="space-y-1.5">
                 {event.keyPoints.map((pt, i) => (
@@ -316,7 +319,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
           {event.note && (
             <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5">
               <p className="text-[10px] font-semibold text-amber-500 uppercase tracking-widest mb-1.5">
-                Your Note
+                {t.eventYourNote}
               </p>
               <p className="text-xs text-gray-700 leading-relaxed">{event.note}</p>
             </div>
@@ -326,7 +329,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
           {!isEmail && !isSms && !isSmsThread && event.recordingUrl && (
             <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">
-                Recording
+                {t.callsRecording}
               </p>
               <audio
                 controls
@@ -335,7 +338,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
                 className="w-full h-9"
                 style={{ colorScheme: 'light' }}
               >
-                Your browser does not support audio playback.
+                {t.callsAudioNotSupported}
               </audio>
             </div>
           )}
@@ -344,7 +347,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
           {!isEmail && !isSms && !isSmsThread && event.voicemailLeadId && event.voicemailRecordingUrl && (
             <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2.5">
               <p className="text-[10px] font-semibold text-indigo-400 uppercase tracking-widest mb-2">
-                Voicemail
+                {t.callsVoicemail}
               </p>
               <audio
                 controls
@@ -353,7 +356,7 @@ export default function EventRow({ event, expanded, onToggle, onContactClick }) 
                 className="w-full h-9"
                 style={{ colorScheme: 'light' }}
               >
-                Your browser does not support audio playback.
+                {t.callsAudioNotSupported}
               </audio>
             </div>
           )}

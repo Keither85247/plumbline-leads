@@ -13,15 +13,15 @@ const STATUS_COLORS = {
 
 const STATUSES = ['New', 'Contacted', 'Qualified', 'Closed'];
 
-function getAgeLabel(createdAt) {
+function getAgeLabel(createdAt, t) {
   const diffMs = Date.now() - new Date(createdAt).getTime();
   const minutes = Math.floor(diffMs / 60000);
-  if (minutes < 1) return 'Just now';
-  if (minutes < 60) return `${minutes}m old`;
+  if (minutes < 1) return t.timeJustNow;
+  if (minutes < 60) return `${minutes}${t.timeOldM}`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h old`;
+  if (hours < 24) return `${hours}${t.timeOldH}`;
   const days = Math.floor(hours / 24);
-  return `${days}d old`;
+  return `${days}${t.timeOldD}`;
 }
 
 function getUrgency(createdAt, status) {
@@ -284,7 +284,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
 
   const handleDelete = async () => {
     setMenuOpen(false);
-    if (!window.confirm('Permanently delete this lead? This cannot be undone.')) return;
+    if (!window.confirm(t.leadDeleteConfirm)) return;
     setUpdating(true);
     try {
       await deleteLead(lead.id);
@@ -300,7 +300,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
     month: 'short', day: 'numeric', year: 'numeric'
   });
 
-  const ageLabel = getAgeLabel(lead.created_at);
+  const ageLabel = getAgeLabel(lead.created_at, t);
   const urgency = getUrgency(lead.created_at, lead.status);
   const rawText = lead.raw_text || lead.transcript;
   const category = lead.category || 'Lead';
@@ -333,17 +333,17 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
             </button>
           )}
           {showCallerIdSecondary && (
-            <p className="text-xs text-gray-400 mt-0.5">Called from: {lead.phone_number}</p>
+            <p className="text-xs text-gray-400 mt-0.5">{t.leadCalledFrom} {lead.phone_number}</p>
           )}
           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             <p className="text-xs text-gray-400">{formattedDate}</p>
             <span className="text-xs text-gray-400">&middot;</span>
             <span className="text-xs text-gray-400">{ageLabel}</span>
-            {urgency === 'overdue' && <span className="text-xs font-medium text-red-600 bg-red-50 rounded px-1.5 py-0.5">Overdue</span>}
-            {urgency === 'warning' && <span className="text-xs font-medium text-yellow-700 bg-yellow-50 rounded px-1.5 py-0.5">Needs follow-up</span>}
+            {urgency === 'overdue' && <span className="text-xs font-medium text-red-600 bg-red-50 rounded px-1.5 py-0.5">{t.leadOverdue}</span>}
+            {urgency === 'warning' && <span className="text-xs font-medium text-yellow-700 bg-yellow-50 rounded px-1.5 py-0.5">{t.leadNeedsFollowup}</span>}
             {lead.message_count > 0 && (
               <span className="text-xs text-teal-700 bg-teal-50 rounded px-1.5 py-0.5 font-medium">
-                💬 {lead.message_count} {lead.message_count === 1 ? 'text' : 'texts'}
+                💬 {lead.message_count} {lead.message_count === 1 ? t.leadText : t.leadTexts}
               </span>
             )}
           </div>
@@ -383,21 +383,21 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                     onClick={handleUnarchive}
                     className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
                   >
-                    Unarchive
+                    {t.leadUnarchive}
                   </button>
                 ) : (
                   <button
                     onClick={handleArchive}
                     className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
                   >
-                    Archive
+                    {t.leadArchive}
                   </button>
                 )}
                 <button
                   onClick={handleDelete}
                   className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
                 >
-                  Delete
+                  {t.leadDelete}
                 </button>
               </div>
             )}
@@ -425,10 +425,10 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
           <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
             <div className="flex items-center justify-between mb-1">
               <div className="flex items-center gap-2">
-                <p className="text-xs font-medium text-gray-500">Suggested follow-up</p>
+                <p className="text-xs font-medium text-gray-500">{t.leadSuggestedFollowup}</p>
                 {!editingFollowUp
-                  ? <button onClick={handleEditClick} className="text-xs text-gray-400 hover:text-gray-600 transition-colors">Edit</button>
-                  : <button onClick={() => setEditingFollowUp(false)} className="text-xs text-blue-500 hover:text-blue-700 transition-colors">Done</button>
+                  ? <button onClick={handleEditClick} className="text-xs text-gray-400 hover:text-gray-600 transition-colors">{t.leadFollowupEdit}</button>
+                  : <button onClick={() => setEditingFollowUp(false)} className="text-xs text-blue-500 hover:text-blue-700 transition-colors">{t.leadFollowupDone}</button>
                 }
               </div>
               <button
@@ -440,7 +440,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                     : 'text-blue-500 hover:text-blue-700 disabled:opacity-50'
                 }`}
               >
-                {hasSent ? 'Sent ✓' : isSending ? 'Sending…' : 'Send'}
+                {hasSent ? t.leadSent : isSending ? t.leadSending : t.leadSend}
               </button>
             </div>
             {editingFollowUp ? (
@@ -481,7 +481,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                       disabled={isTranslating}
                       className="text-xs text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-50"
                     >
-                      {isTranslating ? t.translating : '↺ Retranslate'}
+                      {isTranslating ? t.translating : t.leadRetranslate}
                     </button>
                   </>
                 )}
@@ -493,7 +493,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
       {rawText && (
         <div className="mt-2 border-t border-gray-100 pt-2">
           <button onClick={() => setShowRaw(p => !p)} className="text-xs text-gray-400 hover:text-gray-600 transition-colors">
-            {showRaw ? 'Hide original message' : 'View original message'}
+            {showRaw ? t.leadHideOriginal : t.leadViewOriginal}
           </button>
           {showRaw && <p className="mt-2 text-xs text-gray-400 leading-relaxed whitespace-pre-wrap">{rawText}</p>}
         </div>

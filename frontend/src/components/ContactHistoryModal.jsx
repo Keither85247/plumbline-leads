@@ -3,6 +3,7 @@ import { normalizePhone, parseTimestamp } from '../utils/phone';
 import { API_BASE, getCallsByPhone, getEmailsByPhone, getMessageThread, getContactProfile, saveContactProfile } from '../api';
 import PhoneActionSheet from './PhoneActionSheet';
 import AddressAutocomplete from './AddressAutocomplete';
+import { translations } from '../i18n';
 
 /** Resolve a media URL — Twilio CDN URLs need to be proxied through our backend. */
 function resolveMediaUrl(url) {
@@ -25,7 +26,7 @@ const CONTACT_METHODS = ['Call', 'Text', 'Email', 'Any'];
 
 // ── Profile section ──────────────────────────────────────────────────────────
 
-function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
+function ProfileSection({ phone, contact, latestLead, onProfileSaved, t }) {
   const [profile,   setProfile]   = useState(null);
   const [editing,   setEditing]   = useState(false);
   const [draft,     setDraft]     = useState({});
@@ -85,16 +86,16 @@ function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
   if (editing) {
     return (
       <div className="px-6 py-4 border-b border-gray-100 space-y-3">
-        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Edit Profile</p>
+        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{t.contactEditProfile}</p>
 
         {/* ── Name ── */}
         <div>
-          <label className="block text-xs text-gray-500 mb-1">Name</label>
+          <label className="block text-xs text-gray-500 mb-1">{t.contactFieldName}</label>
           <input
             type="text"
             value={draft.name || ''}
             onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
-            placeholder="Full name"
+            placeholder={t.contactFieldNamePlaceholder}
             className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400 placeholder:text-gray-400"
           />
         </div>
@@ -102,7 +103,7 @@ function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
         {/* ── Address block ── */}
         <div className="space-y-2">
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Street address</label>
+            <label className="block text-xs text-gray-500 mb-1">{t.contactFieldStreet}</label>
             <AddressAutocomplete
               value={draft.address_line_1 || ''}
               onChange={val => setDraft(d => ({ ...d, address_line_1: val }))}
@@ -122,18 +123,18 @@ function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
 
           <div className="flex gap-2">
             <div className="flex-1 min-w-0">
-              <label className="block text-xs text-gray-500 mb-1">City</label>
+              <label className="block text-xs text-gray-500 mb-1">{t.contactFieldCity}</label>
               <input
                 type="text"
                 autoComplete="address-level2"
                 value={draft.city || ''}
                 onChange={e => setDraft(d => ({ ...d, city: e.target.value }))}
-                placeholder="City"
+                placeholder={t.contactFieldCity}
                 className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400 placeholder:text-gray-400"
               />
             </div>
             <div className="w-20 shrink-0">
-              <label className="block text-xs text-gray-500 mb-1">State</label>
+              <label className="block text-xs text-gray-500 mb-1">{t.contactFieldState}</label>
               <input
                 type="text"
                 autoComplete="address-level1"
@@ -145,7 +146,7 @@ function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
               />
             </div>
             <div className="w-24 shrink-0">
-              <label className="block text-xs text-gray-500 mb-1">ZIP</label>
+              <label className="block text-xs text-gray-500 mb-1">{t.contactFieldZip}</label>
               <input
                 type="text"
                 autoComplete="postal-code"
@@ -160,7 +161,7 @@ function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
         </div>
 
         <div>
-          <label className="block text-xs text-gray-500 mb-1">Email</label>
+          <label className="block text-xs text-gray-500 mb-1">{t.contactFieldEmail}</label>
           <input
             type="email"
             value={draft.email || ''}
@@ -171,7 +172,7 @@ function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
         </div>
 
         <div>
-          <label className="block text-xs text-gray-500 mb-1">Preferred Contact</label>
+          <label className="block text-xs text-gray-500 mb-1">{t.contactFieldPreferred}</label>
           <div className="flex gap-2 flex-wrap">
             {CONTACT_METHODS.map(m => (
               <button
@@ -190,11 +191,11 @@ function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
         </div>
 
         <div>
-          <label className="block text-xs text-gray-500 mb-1">Notes</label>
+          <label className="block text-xs text-gray-500 mb-1">{t.contactFieldNotes}</label>
           <textarea
             value={draft.notes || ''}
             onChange={e => setDraft(d => ({ ...d, notes: e.target.value }))}
-            placeholder="Gate code, dog in yard, preferred contractor…"
+            placeholder={t.contactFieldNotesPH}
             rows={2}
             className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 resize-none focus:outline-none focus:ring-2 focus:ring-blue-400"
           />
@@ -206,13 +207,13 @@ function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
             disabled={saving}
             className="text-xs font-medium bg-blue-600 text-white rounded-lg px-4 py-1.5 hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? t.contactSaving : t.contactSave}
           </button>
           <button
             onClick={handleCancel}
             className="text-xs font-medium text-gray-500 hover:text-gray-700 px-3 py-1.5 transition-colors"
           >
-            Cancel
+            {t.contactCancel}
           </button>
         </div>
       </div>
@@ -240,7 +241,7 @@ function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
       <div className="flex items-start justify-between gap-3 mb-3">
         <div>
           <p className="text-base font-semibold text-gray-900 leading-snug">
-            {name || 'Unknown Caller'}
+            {name || t.contactUnknownCaller}
             {company ? <span className="font-normal text-gray-400"> · {company}</span> : null}
           </p>
           {latestSummary && (
@@ -255,7 +256,7 @@ function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
             <path strokeLinecap="round" strokeLinejoin="round"
               d="M15.232 5.232l3.536 3.536M9 13l-4 1 1-4 9.293-9.293a1 1 0 011.414 0l2.586 2.586a1 1 0 010 1.414L9 13z" />
           </svg>
-          Edit
+          {t.contactEdit}
         </button>
       </div>
 
@@ -263,17 +264,17 @@ function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
       {hasAnyProfile ? (
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
           {addressDisplay && (
-            <ProfileField icon="location" label="Address" value={addressDisplay} />
+            <ProfileField icon="location" label={t.contactLabelAddress} value={addressDisplay} />
           )}
           {profile.email && (
-            <ProfileField icon="email" label="Email" value={profile.email} />
+            <ProfileField icon="email" label={t.contactFieldEmail} value={profile.email} />
           )}
           {profile.preferred_contact_method && (
-            <ProfileField icon="contact" label="Preferred" value={profile.preferred_contact_method} />
+            <ProfileField icon="contact" label={t.contactLabelPreferred} value={profile.preferred_contact_method} />
           )}
           {profile.notes && (
             <div className="col-span-2">
-              <ProfileField icon="note" label="Notes" value={profile.notes} />
+              <ProfileField icon="note" label={t.contactFieldNotes} value={profile.notes} />
             </div>
           )}
         </div>
@@ -285,7 +286,7 @@ function ProfileSection({ phone, contact, latestLead, onProfileSaved }) {
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
           </svg>
-          Add address, email, or notes
+          {t.contactAddProfile}
         </button>
       )}
     </div>
@@ -331,6 +332,9 @@ function ProfileField({ icon, label, value }) {
 // ── Main modal ───────────────────────────────────────────────────────────────
 
 export default function ContactHistoryModal({ phone, leads, onClose, onProfileSaved }) {
+  const lang = localStorage.getItem('language') || 'en';
+  const t = translations[lang] || translations.en;
+
   const [callNotes,        setCallNotes]        = useState([]);
   const [emailItems,       setEmailItems]       = useState([]);
   const [textMessages,     setTextMessages]     = useState([]);
@@ -401,7 +405,7 @@ export default function ContactHistoryModal({ phone, leads, onClose, onProfileSa
           </button>
           <div className="flex items-center gap-3">
             <span className="text-xs text-gray-400">
-              {timeline.length} {timeline.length === 1 ? 'interaction' : 'interactions'}
+              {timeline.length} {timeline.length === 1 ? t.contactHistoryInteraction : t.contactHistoryInteractions}
             </span>
             <button
               onClick={onClose}
@@ -424,19 +428,20 @@ export default function ContactHistoryModal({ phone, leads, onClose, onProfileSa
             contact={contact}
             latestLead={history[0] || null}
             onProfileSaved={onProfileSaved}
+            t={t}
           />
 
           {/* ── Interaction history ── */}
           <div className="px-6 py-4 space-y-3 flex-1">
             {timeline.length === 0 ? (
-              <p className="text-sm text-gray-400 text-center py-8">No history found.</p>
+              <p className="text-sm text-gray-400 text-center py-8">{t.contactHistoryNoHistory}</p>
             ) : (
               <>
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">History</p>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">{t.contactHistoryLabel}</p>
                 {timeline.map(item =>
-                  item._type === 'call'        ? <CallNoteItem  key={`call-${item.id}`}        item={item} /> :
-                  item._type === 'email'       ? <EmailItem     key={`email-${item.id}`}       item={item} /> :
-                  item._type === 'text-thread' ? <TextThreadItem key={`texts-${item.id}`}      item={item} /> :
+                  item._type === 'call'        ? <CallNoteItem  key={`call-${item.id}`}        item={item} t={t} /> :
+                  item._type === 'email'       ? <EmailItem     key={`email-${item.id}`}       item={item} t={t} /> :
+                  item._type === 'text-thread' ? <TextThreadItem key={`texts-${item.id}`}      item={item} t={t} /> :
                                                  <LeadItem      key={`lead-${item.id}`}        item={item} />
                 )}
               </>
@@ -498,7 +503,7 @@ function formatDuration(seconds) {
   return m === 0 ? `${s}s` : `${m}m ${s}s`;
 }
 
-function CallNoteItem({ item: call }) {
+function CallNoteItem({ item: call, t }) {
   const [showTranscript, setShowTranscript] = useState(false);
   const duration = formatDuration(call.duration);
 
@@ -513,20 +518,20 @@ function CallNoteItem({ item: call }) {
           </span>
           <span className="text-xs text-gray-300">·</span>
           <span className="text-xs text-blue-600 bg-blue-100 rounded px-1.5 py-0.5 font-medium">
-            {call.classification === 'Outbound' ? 'You called' : 'Answered call'}
+            {call.classification === 'Outbound' ? t.contactYouCalled : t.contactAnsweredCall}
           </span>
           {duration && <span className="text-xs text-gray-400">{duration}</span>}
         </div>
       </div>
       {call.summary && (
         <div className="mt-1">
-          <p className="text-xs font-semibold text-blue-600 uppercase tracking-wide mb-1">Summary</p>
+          <p className="text-xs font-semibold text-blue-600 uppercase tracking-wide mb-1">{t.contactSummaryLabel}</p>
           <p className="text-sm text-gray-700 leading-relaxed">{call.summary}</p>
         </div>
       )}
       {call.key_points && call.key_points.length > 0 && (
         <div className="mt-2">
-          <p className="text-xs font-semibold text-blue-500 uppercase tracking-wide mb-1">Key Points</p>
+          <p className="text-xs font-semibold text-blue-500 uppercase tracking-wide mb-1">{t.contactKeyPointsLabel}</p>
           <ul className="space-y-0.5">
             {call.key_points.map((point, i) => (
               <li key={i} className="text-xs text-gray-500 flex gap-1.5">
@@ -543,7 +548,7 @@ function CallNoteItem({ item: call }) {
             onClick={() => setShowTranscript(p => !p)}
             className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
           >
-            {showTranscript ? 'Hide transcript' : 'View transcript'}
+            {showTranscript ? t.contactHideTranscript : t.contactViewTranscript}
           </button>
           {showTranscript && (
             <p className="mt-1.5 text-xs text-gray-400 leading-relaxed whitespace-pre-wrap">
@@ -556,7 +561,7 @@ function CallNoteItem({ item: call }) {
   );
 }
 
-function TextThreadItem({ item }) {
+function TextThreadItem({ item, t }) {
   const [expanded, setExpanded] = useState(false);
   const messages = item.messages || [];
   const latest   = messages[messages.length - 1];
@@ -583,9 +588,9 @@ function TextThreadItem({ item }) {
             </span>
             <span className="text-xs text-gray-300">·</span>
             <span className="text-xs font-semibold text-teal-700 bg-teal-100 rounded px-1.5 py-0.5">
-              Text Conversation
+              {t.contactTextConversation}
             </span>
-            <span className="text-xs text-gray-400">{count} {count === 1 ? 'message' : 'messages'}</span>
+            <span className="text-xs text-gray-400">{count} {count === 1 ? t.contactMessage : t.contactMessages}</span>
           </div>
           <p className="text-sm text-gray-600 leading-snug truncate">{preview}</p>
         </div>
@@ -662,7 +667,7 @@ function TextThreadItem({ item }) {
             );
           })}
           {count > 20 && !expanded && (
-            <p className="text-xs text-gray-400 text-center">Showing last 20 of {count} messages</p>
+            <p className="text-xs text-gray-400 text-center">{t.contactShowingLast} {count} {count === 1 ? t.contactMessage : t.contactMessages}</p>
           )}
         </div>
       )}
@@ -678,22 +683,22 @@ function extractEmailAddress(str) {
 }
 
 // Human-friendly mailbox label
-function mailboxLabel(email) {
+function mailboxLabel(email, t) {
   const mb = email.mailbox;
-  if (mb === 'sent')  return 'Sent';
-  if (mb === 'trash') return 'Trash';
-  if (mb === 'spam')  return 'Spam';
+  if (mb === 'sent')  return t.contactMailboxSent;
+  if (mb === 'trash') return t.contactMailboxTrash;
+  if (mb === 'spam')  return t.contactMailboxSpam;
   // fall back to direction for rows without mailbox metadata
-  return email.direction === 'outbound' ? 'Sent' : 'Inbox';
+  return email.direction === 'outbound' ? t.contactMailboxSent : t.contactMailboxInbox;
 }
 
-function EmailItem({ item: email }) {
+function EmailItem({ item: email, t }) {
   const [expanded, setExpanded] = useState(false);
   const isOutbound  = email.direction === 'outbound';
   const counterpart = isOutbound ? email.to_address : email.from_address;
   const shortAddr   = extractEmailAddress(counterpart);
   const unread      = email.is_read === 0 && !isOutbound;
-  const mboxLabel   = mailboxLabel(email);
+  const mboxLabel   = mailboxLabel(email, t);
 
   return (
     <div
@@ -716,7 +721,7 @@ function EmailItem({ item: email }) {
             </span>
             {unread && (
               <span className="text-[10px] font-bold text-white bg-violet-500 rounded px-1.5 py-0.5 leading-none">
-                UNREAD
+                {t.contactUnread}
               </span>
             )}
           </div>
@@ -727,13 +732,13 @@ function EmailItem({ item: email }) {
               {email.subject}
             </p>
           ) : (
-            <p className="text-sm text-gray-400 italic leading-snug">(no subject)</p>
+            <p className="text-sm text-gray-400 italic leading-snug">{t.emailNoSubject}</p>
           )}
 
           {/* Counterpart address */}
           {shortAddr && (
             <p className="text-xs text-gray-400 mt-0.5 truncate">
-              {isOutbound ? 'To: ' : 'From: '}
+              {isOutbound ? `${t.emailTo}: ` : `${t.emailFrom}: `}
               <span className="text-gray-600">{shortAddr}</span>
             </p>
           )}
@@ -756,7 +761,7 @@ function EmailItem({ item: email }) {
               {email.body_preview}
             </p>
           ) : (
-            <p className="text-xs text-gray-400 italic">No preview available for this email.</p>
+            <p className="text-xs text-gray-400 italic">{t.contactNoPreview}</p>
           )}
         </div>
       )}

@@ -29,7 +29,7 @@ export const EVENT_TYPES = {
 // Keeps all color/label decisions in one place — EventRow just looks up by type.
 export const EVENT_META = {
   [EVENT_TYPES.INBOUND_ANSWERED]:   {
-    label: 'Incoming Call',
+    label: 'Incoming Call',      labelKey: 'eventLabelIncoming',
     labelColor: 'text-blue-600',
     iconBg: 'bg-blue-50',
     iconColor: 'text-blue-500',
@@ -37,7 +37,7 @@ export const EVENT_META = {
     iconType: 'phone',
   },
   [EVENT_TYPES.INBOUND_MISSED]:     {
-    label: 'Missed Call',
+    label: 'Missed Call',        labelKey: 'eventLabelMissed',
     labelColor: 'text-red-500',
     iconBg: 'bg-red-50',
     iconColor: 'text-red-400',
@@ -45,7 +45,7 @@ export const EVENT_META = {
     iconType: 'phone-missed',
   },
   [EVENT_TYPES.INBOUND_VOICEMAIL]:  {
-    label: 'Left a Voicemail',
+    label: 'Left a Voicemail',   labelKey: 'eventLabelVoicemail',
     labelColor: 'text-indigo-500',
     iconBg: 'bg-indigo-50',
     iconColor: 'text-indigo-400',
@@ -53,7 +53,7 @@ export const EVENT_META = {
     iconType: 'voicemail',
   },
   [EVENT_TYPES.OUTBOUND_ANSWERED]:  {
-    label: 'You Called',
+    label: 'You Called',         labelKey: 'eventLabelYouCalled',
     labelColor: 'text-emerald-600',
     iconBg: 'bg-emerald-50',
     iconColor: 'text-emerald-500',
@@ -61,7 +61,7 @@ export const EVENT_META = {
     iconType: 'phone-out',
   },
   [EVENT_TYPES.OUTBOUND_VOICEMAIL]: {
-    label: 'Left a Voicemail',
+    label: 'Left a Voicemail',   labelKey: 'eventLabelVoicemail',
     labelColor: 'text-indigo-500',
     iconBg: 'bg-indigo-50',
     iconColor: 'text-indigo-400',
@@ -69,7 +69,7 @@ export const EVENT_META = {
     iconType: 'voicemail',
   },
   [EVENT_TYPES.OUTBOUND_NO_ANSWER]: {
-    label: 'No Answer',
+    label: 'No Answer',          labelKey: 'eventLabelNoAnswer',
     labelColor: 'text-gray-400',
     iconBg: 'bg-gray-100',
     iconColor: 'text-gray-400',
@@ -77,7 +77,7 @@ export const EVENT_META = {
     iconType: 'phone-out',
   },
   [EVENT_TYPES.OUTBOUND_UNKNOWN]:   {
-    label: 'Outbound Call',
+    label: 'Outbound Call',      labelKey: 'eventLabelOutbound',
     labelColor: 'text-gray-400',
     iconBg: 'bg-gray-100',
     iconColor: 'text-gray-400',
@@ -85,7 +85,7 @@ export const EVENT_META = {
     iconType: 'phone-out',
   },
   [EVENT_TYPES.INBOUND_EMAIL]: {
-    label: 'Email Received',
+    label: 'Email Received',     labelKey: 'eventLabelEmailRcvd',
     labelColor: 'text-violet-600',
     iconBg: 'bg-violet-50',
     iconColor: 'text-violet-500',
@@ -93,7 +93,7 @@ export const EVENT_META = {
     iconType: 'email',
   },
   [EVENT_TYPES.OUTBOUND_EMAIL]: {
-    label: 'Email Sent',
+    label: 'Email Sent',         labelKey: 'eventLabelEmailSent',
     labelColor: 'text-violet-600',
     iconBg: 'bg-violet-50',
     iconColor: 'text-violet-500',
@@ -101,7 +101,7 @@ export const EVENT_META = {
     iconType: 'email-out',
   },
   [EVENT_TYPES.INBOUND_SMS]: {
-    label: 'Text Received',
+    label: 'Text Received',      labelKey: 'eventLabelTextRcvd',
     labelColor: 'text-teal-600',
     iconBg: 'bg-teal-50',
     iconColor: 'text-teal-500',
@@ -109,7 +109,7 @@ export const EVENT_META = {
     iconType: 'sms',
   },
   [EVENT_TYPES.OUTBOUND_SMS]: {
-    label: 'Text Sent',
+    label: 'Text Sent',          labelKey: 'eventLabelTextSent',
     labelColor: 'text-teal-600',
     iconBg: 'bg-teal-50',
     iconColor: 'text-teal-500',
@@ -117,7 +117,7 @@ export const EVENT_META = {
     iconType: 'sms-out',
   },
   [EVENT_TYPES.SMS_THREAD]: {
-    label: 'Text Conversation',
+    label: 'Text Conversation',  labelKey: 'eventLabelTextConv',
     labelColor: 'text-teal-600',
     iconBg: 'bg-teal-50',
     iconColor: 'text-teal-500',
