@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useRefreshKey, useInvalidate } from './refreshBus';
 import * as Sentry from '@sentry/react';
 import TranscriptForm from './components/TranscriptForm';
 import AudioUploadForm from './components/AudioUploadForm';
@@ -245,24 +246,24 @@ export default function App() {
   }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Calls-data refresh signal ─────────────────────────────────────────────
-  // Single integer that every calls-rendering component watches. Bumped from a
-  // few places so the lifecycle lives here and doesn't get duplicated:
+  // Sourced from the refresh bus (see refreshBus.jsx). The bus's
+  // `versions.calls` integer changes whenever someone calls
+  // invalidate('calls'). Existing child components (CallsPage, ContactsPage,
+  // TimelinePage, ContactHistoryModal) continue to receive `callsRefreshKey`
+  // as a prop, so this swap is invisible to them.
   //
+  // Bump triggers:
   //   1. voiceDevice.status hits 'ended' or 'ready' — the call row was just
   //      logged by the /voice-client webhook; refresh so it shows up.
   //   2. ~6 seconds after a call ends — catches the asynchronous Twilio
   //      recording-status webhook that lands later with duration/recording_url.
-  //   3. After saveOutboundNote() resolves — outcome/contractor_note just
-  //      changed; downstream rows must reflect that.
+  //   3. After saveOutboundNote() resolves — see the OutboundNoteModal wiring
+  //      below.
   //
-  // Components add `callsRefreshKey` to the dep array of their fetch
-  // useEffect. Background refreshes do NOT clear the existing list, so the
-  // UI never flickers between the call ending and the new row arriving.
-  const [callsRefreshKey, setCallsRefreshKey] = useState(0);
-  const bumpCallsRefreshKey = useCallback(
-    () => setCallsRefreshKey(k => k + 1),
-    []
-  );
+  // Background refreshes never blank existing data — children own their own
+  // fetch state.
+  const callsRefreshKey = useRefreshKey('calls');
+  const invalidate      = useInvalidate();
 
   // The 6-second delayed refresh lives in a ref instead of an effect cleanup
   // so the 'ended' → 'ready' transition (1.5s later) does NOT cancel it.
@@ -272,18 +273,17 @@ export default function App() {
 
   useEffect(() => {
     if (voiceDevice.status === 'ended' || voiceDevice.status === 'ready') {
-      bumpCallsRefreshKey();
+      invalidate('calls');
     }
     if (voiceDevice.status === 'ended') {
       // Replace any in-flight timer from a previous call so back-to-back
       // calls don't stack refreshes — each call gets exactly one delayed bump.
       clearTimeout(delayedCallsRefreshRef.current);
-      delayedCallsRefreshRef.current = setTimeout(bumpCallsRefreshKey, 6000);
+      delayedCallsRefreshRef.current = setTimeout(() => invalidate('calls'), 6000);
     }
-  }, [voiceDevice.status, bumpCallsRefreshKey]);
+  }, [voiceDevice.status, invalidate]);
 
-  // Drop the pending delayed refresh on unmount (e.g. logout) — setState
-  // on an unmounted component is harmless but the timer should still be cleared.
+  // Drop the pending delayed refresh on unmount (e.g. logout).
   useEffect(() => () => clearTimeout(delayedCallsRefreshRef.current), []);
 
   const [leads, setLeads] = useState([]);
@@ -400,53 +400,39 @@ export default function App() {
     }
   }, []);
 
-  // Initial fetch when the user signs in. Subsequent refreshes go through
-  // the polling + visibility + tab + post-call triggers below.
-  useEffect(() => { if (currentUser) fetchLeads(); }, [fetchLeads, currentUser]);
+  // ── Leads fetch — driven by the refresh bus ──────────────────────────────
+  // Single fetch effect — fires on sign-in and every time `leads` is
+  // invalidated. fetchLeads sets loadingLeads=false in its finally but never
+  // back to true, so background refreshes don't flicker the skeleton; the
+  // LeadList keys rows by lead.id, so React reconciles in place.
+  const leadsRefreshKey = useRefreshKey('leads');
+  useEffect(() => {
+    if (currentUser) fetchLeads();
+  }, [fetchLeads, currentUser, leadsRefreshKey]);
 
-  // ── Lead refresh triggers ─────────────────────────────────────────────────
-  // Previously leads were fetched ONCE on first sign-in and never again, so
-  // a voicemail-generated lead never appeared until full app kill/reopen.
-  // Multiple lightweight triggers funnel into fetchLeads (a stable
-  // useCallback). Each fetch overwrites the leads array via setLeads(data)
-  // — LeadList keys by lead.id so React reconciles in place without flicker.
-  //
-  //   1. 30-second polling while signed in (heartbeat refresh)
-  //   2. document visibilitychange → visible (catch app foreground)
-  //   3. window focus (catch desktop tab focus)
-  //   4. activeNav === 'overview' (user opened the Leads tab)
-  //   5. callsRefreshKey (a call/voicemail just landed — a new lead may
-  //      have been created by the voicemail processing pipeline)
+  // Heartbeat — invalidate the leads key every 30s while signed in. Each
+  // invalidation bumps leadsRefreshKey and re-runs the fetch effect above.
+  // visibility/focus refresh is handled globally by the RefreshBusProvider
+  // (calls invalidate('all')), so no per-feature listener is needed here.
   useEffect(() => {
     if (!currentUser) return;
-    const refresh = () => { fetchLeads(); };
+    const interval = setInterval(() => invalidate('leads'), 30_000);
+    return () => clearInterval(interval);
+  }, [currentUser, invalidate]);
 
-    const interval = setInterval(refresh, 30_000);
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') refresh();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', refresh);
-
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', refresh);
-    };
-  }, [currentUser, fetchLeads]);
-
-  // Tab-activation refresh: opening the Leads tab triggers an immediate
-  // fetch so the user always sees the freshest list when they arrive.
+  // Tab activation — opening the Leads (Overview) tab triggers an immediate
+  // invalidation so the user always lands on fresh data.
   useEffect(() => {
-    if (currentUser && activeNav === 'overview') fetchLeads();
-  }, [activeNav, currentUser, fetchLeads]);
+    if (currentUser && activeNav === 'overview') invalidate('leads');
+  }, [activeNav, currentUser, invalidate]);
 
-  // Post-call refresh: when callsRefreshKey bumps (call ended, recording
-  // webhook landed, etc.), a voicemail may have just produced a lead.
-  // Refetch so the new lead shows up without waiting for the 30s tick.
+  // Post-call / voicemail — a voicemail processed by /api/twilio/voicemail
+  // creates a lead asynchronously. callsRefreshKey already bumps after any
+  // call event (including the 6s delayed bump for the recording webhook), so
+  // we ride that signal to refresh leads too.
   useEffect(() => {
-    if (currentUser && callsRefreshKey > 0) fetchLeads();
-  }, [callsRefreshKey, currentUser, fetchLeads]);
+    if (currentUser && callsRefreshKey > 0) invalidate('leads');
+  }, [callsRefreshKey, currentUser, invalidate]);
 
   const handleProfileSave = useCallback(async ({ displayName, businessName: bizName }) => {
     const saved = await updateProfile({ displayName, businessName: bizName });
@@ -818,7 +804,7 @@ export default function App() {
                 voiceDevice.pendingPostCallNote.callSid || null,
               );
             } finally {
-              bumpCallsRefreshKey();
+              invalidate('calls');
             }
           }}
           onClose={voiceDevice.clearPostCallNote}

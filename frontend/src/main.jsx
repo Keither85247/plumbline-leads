@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import * as Sentry from '@sentry/react';
 import App from './App';
+import { RefreshBusProvider } from './refreshBus';
 import './index.css';
 
 // ── Sentry frontend error tracking ──────────────────────────────────────────
@@ -34,6 +35,8 @@ if ('serviceWorker' in navigator) {
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
+    <RefreshBusProvider>
+      <App />
+    </RefreshBusProvider>
   </React.StrictMode>
 );
