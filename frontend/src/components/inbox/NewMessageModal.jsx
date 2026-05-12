@@ -59,11 +59,6 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
   // no preview is open. Id-keyed instead of index so removing one attachment
   // never re-aims the preview at the wrong image.
   const [previewId,        setPreviewId]        = useState(null);
-  // Inline send-error state. Set when the backend rejects the message (e.g.
-  // INTERNATIONAL_SMS_DISABLED). Cleared on any subsequent edit so the user
-  // can fix the input and retry without dismissing a modal.
-  const [sendError,        setSendError]        = useState(null);
-  const [sending,          setSending]          = useState(false);
 
   const phoneRef       = useRef(null);
   const messageRef     = useRef(null);
@@ -143,37 +138,25 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
   const showRecipientError = recipientTouched && phone.trim().length > 0 && !hasValidRecipient;
 
   // ── Actions ────────────────────────────────────────────────────────────────
-  async function handleSend() {
+  function handleSend() {
     if (!hasValidRecipient) {
-      // Surface the validation error if the user clicks Send without a valid
-      // recipient. Send button is disabled in this case, but the keyboard
-      // shortcut (Cmd/Ctrl+Enter) can still trigger this path.
+      // Client-side validation failures (international, blank, gibberish)
+      // surface as inline errors in the modal. The Send button is disabled
+      // in this case, but Cmd/Ctrl+Enter can still trigger this path.
       setRecipientTouched(true);
       return;
     }
     const m = message.trim();
     if (!m && attachments.length === 0) return;
 
-    setSending(true);
-    setSendError(null);
-    try {
-      // Parent expects File[] for FormData uploading. Strip our wrapper objects.
-      // We AWAIT onSend so we know if the send actually succeeded — only then
-      // do we close the modal. The previous code called onClose() synchronously
-      // and lost the compose state if the send threw afterwards.
-      await onSend(resolvedPhone, m, attachments.map(a => a.file));
-      onClose();
-    } catch (err) {
-      // Map known backend codes to inline, actionable messages. Anything else
-      // falls back to the raw error — still shown inline, not as an alert.
-      const friendly =
-        err?.code === 'INTERNATIONAL_SMS_DISABLED'
-          ? 'International messaging is currently supported only for US and Canada numbers.'
-          : (err?.message || 'Failed to send message. Please try again.');
-      setSendError(friendly);
-    } finally {
-      setSending(false);
-    }
+    // Hand off to the parent — it takes ownership of the optimistic UI and
+    // the background send. We close immediately so the user lands in the
+    // thread with their pending bubble visible right away. Backend errors
+    // (rate limits, the rare international-edge-case that slipped past
+    // isUsCaPhone, network failures) are surfaced as a 'failed' message
+    // bubble inside the thread, not in the modal.
+    onSend(resolvedPhone, m, attachments.map(a => a.file));
+    onClose();
   }
 
   function handleKeyDown(e) {
@@ -188,8 +171,6 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
     // no longer trustworthy — clear it so validation goes back to "is this a
     // valid raw phone number?" rather than honouring a stale selection.
     if (selectedContact) setSelectedContact(null);
-    // Any edit clears the last server-side send error so the user can retry.
-    if (sendError) setSendError(null);
   }
 
   function handleSelectSuggestion(conv) {
@@ -422,29 +403,20 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
           <p className="text-[11px] text-gray-400 mt-1">{t.inboxCmdEnter}</p>
         </div>
 
-        {/* Server-side send error — non-destructive inline banner. Compose
-            state is fully preserved; user can edit and retry directly. */}
-        {sendError && (
-          <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-[12px] leading-snug text-red-600">
-            {sendError}
-          </div>
-        )}
-
         {/* Actions */}
         <div className="flex gap-2 justify-end">
           <button
             onClick={onClose}
-            disabled={sending}
-            className="text-sm px-4 py-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="text-sm px-4 py-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
           >
             {t.inboxCancel}
           </button>
           <button
             onClick={handleSend}
-            disabled={!canSend || sending}
+            disabled={!canSend}
             className="text-sm px-5 py-2 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {sending ? (t.inboxSending || 'Sending…') : t.inboxSend}
+            {t.inboxSend}
           </button>
         </div>
 

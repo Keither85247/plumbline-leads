@@ -44,37 +44,66 @@ export default function InboxLayout() {
   const [deleting,      setDeleting]         = useState(false);
 
   // ── Load + poll conversation list ──────────────────────────────────────────
+  // MERGE policy: we never just replace `conversations` with the server list,
+  // because that would wipe out locally-added "pending" conversations whose
+  // first message is still mid-flight on a slow backend. Pending conversations
+  // are kept until the server reports the same phone (then we drop the
+  // pending copy and use the server's version).
   useEffect(() => {
     let cancelled = false;
 
     function fetchConversations() {
       getConversations()
-        .then(data => { if (!cancelled) setConversations(data); })
+        .then(serverList => {
+          if (cancelled) return;
+          setConversations(prev => {
+            const serverPhones = new Set(serverList.map(c => c.phone));
+            const localPending = prev.filter(c => c.pending && !serverPhones.has(c.phone));
+            return [...localPending, ...serverList];
+          });
+        })
         .catch(err => console.error('[Inbox] Failed to load conversations:', err))
         .finally(() => { if (!cancelled) setLoading(false); });
     }
 
     fetchConversations();
-    const interval = setInterval(fetchConversations, 10_000); // refresh every 10s
+    const interval = setInterval(fetchConversations, 10_000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
   const selected = conversations.find(c => c.id === selectedId) ?? null;
-  const messages = selectedId ? (messageMap[selectedId] ?? null) : null; // null = not loaded yet
+  const messages = selectedId ? (messageMap[selectedId] ?? null) : null;
 
   // ── Poll the open thread ───────────────────────────────────────────────────
+  // MERGE policy: in-flight ('sending') and persistent ('failed') optimistic
+  // messages are preserved across polls. Once an optimistic message has been
+  // patched with the server's real id (success path), the next poll's
+  // serverIds set contains it and the optimistic copy is dropped, leaving
+  // the server row as the source of truth.
   useEffect(() => {
     if (!selectedId) return;
     let cancelled = false;
 
     function fetchThread() {
       getMessageThread(selectedId)
-        .then(msgs => { if (!cancelled) setMessageMap(m => ({ ...m, [selectedId]: msgs })); })
+        .then(serverMsgs => {
+          if (cancelled) return;
+          setMessageMap(prev => {
+            const local     = prev[selectedId] || [];
+            const serverIds = new Set(serverMsgs.map(m => m.id));
+            const stillLocal = local.filter(m =>
+              m.clientTempId
+              && !serverIds.has(m.id)
+              && (m.status === 'sending' || m.status === 'failed')
+            );
+            return { ...prev, [selectedId]: [...serverMsgs, ...stillLocal] };
+          });
+        })
         .catch(err => console.error('[Inbox] Failed to load thread:', err));
     }
 
-    fetchThread(); // load immediately on selection
-    const interval = setInterval(fetchThread, 5_000); // poll every 5s while open
+    fetchThread();
+    const interval = setInterval(fetchThread, 5_000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [selectedId]);
 
@@ -92,113 +121,161 @@ export default function InboxLayout() {
   }, []);
 
   // ── Send a message in the current thread ───────────────────────────────────
-  const handleSend = useCallback(async (text, files = []) => {
+  // Optimistic-first: the message bubble appears IMMEDIATELY with status
+  // 'sending', then transitions to 'sent' or 'failed' once the API resolves.
+  // Failed messages stay visible (with the error) so the user can see what
+  // happened instead of having the bubble silently disappear.
+  const handleSend = useCallback((text, files = []) => {
     if (!selectedId || (!text.trim() && files.length === 0)) return;
 
-    // Build object URLs for any attached images so we can show them immediately
+    const clientTempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const nowIso = new Date().toISOString();
     const optimisticMediaUrls = files.length > 0
       ? JSON.stringify(files.map(f => URL.createObjectURL(f)))
       : null;
 
-    // Optimistic UI update first
     const optimisticMsg = {
-      id:         `optimistic-${Date.now()}`,
-      body:       text.trim(),
-      media_urls: optimisticMediaUrls,
-      direction:  'outbound',
-      created_at: new Date().toISOString(),
+      id:           clientTempId,
+      clientTempId,
+      status:       'sending',
+      body:         text.trim(),
+      media_urls:   optimisticMediaUrls,
+      direction:    'outbound',
+      created_at:   nowIso,
     };
+
     setMessageMap(prev => ({
       ...prev,
       [selectedId]: [...(prev[selectedId] ?? []), optimisticMsg],
     }));
     setConversations(prev => prev.map(c =>
       c.id === selectedId
-        ? { ...c, lastMessage: text.trim() || '📷 Photo', lastMessageDir: 'outbound', timestamp: new Date().toISOString() }
+        ? { ...c, lastMessage: text.trim() || '📷 Photo', lastMessageDir: 'outbound', timestamp: nowIso }
         : c
     ));
 
-    // Real send
-    try {
-      await sendMessage(selectedId, text.trim(), files);
-    } catch (err) {
-      console.error('[Inbox] Send failed:', err.message);
-      // Revoke optimistic object URLs
-      if (optimisticMediaUrls) {
-        JSON.parse(optimisticMediaUrls).forEach(u => URL.revokeObjectURL(u));
-      }
-      // Remove optimistic message on failure
-      setMessageMap(prev => ({
-        ...prev,
-        [selectedId]: (prev[selectedId] ?? []).filter(m => m.id !== optimisticMsg.id),
-      }));
-      alert(`Failed to send message: ${err.message}`);
-    }
+    // Fire-and-forget. On resolution we patch the optimistic message in place
+    // (still identified by clientTempId) rather than removing+inserting, so
+    // its DOM position is stable and there's no flicker.
+    sendMessage(selectedId, text.trim(), files)
+      .then(result => {
+        setMessageMap(prev => ({
+          ...prev,
+          [selectedId]: (prev[selectedId] ?? []).map(m =>
+            m.clientTempId === clientTempId
+              ? { ...m, status: 'sent', id: result?.id ?? m.id, twilio_sid: result?.sid ?? null }
+              : m
+          ),
+        }));
+      })
+      .catch(err => {
+        console.error('[Inbox] Send failed:', err.message);
+        setMessageMap(prev => ({
+          ...prev,
+          [selectedId]: (prev[selectedId] ?? []).map(m =>
+            m.clientTempId === clientTempId
+              ? { ...m, status: 'failed', errorMessage: err.message || 'Failed to send' }
+              : m
+          ),
+        }));
+      });
   }, [selectedId]);
 
   // ── Compose: start a new conversation or open an existing one ──────────────
   //
-  // Flow:
-  //   1. Send first (await sendMessage). If it fails, we rethrow — the
-  //      compose modal catches the error and shows it inline while keeping
-  //      its state intact (recipient, message body, attachments).
-  //   2. Only AFTER the send succeeds do we navigate / optimistically
-  //      surface the new thread. Previously this navigation happened up
-  //      front, so a backend rejection (international SMS, suspended user,
-  //      rate-limit) left the user staring at "No Conversation Selected"
-  //      because the 10s polling refresh replaced the optimistic
-  //      conversation with the server's list while selectedId still pointed
-  //      at the now-missing row.
-  const handleComposeSend = useCallback(async (phone, text, files = []) => {
+  // Optimistic-first: synchronously
+  //   1. Adds (or reuses) the conversation in local state, flagged `pending`
+  //      if new so the conv-list poll's merge keeps it until the server has it
+  //   2. Selects it and switches mobileView to 'thread' so the user lands in
+  //      the thread immediately — no 4-5 s wait for the round trip
+  //   3. Appends the outbound message with status='sending'
+  //
+  // Then fires sendMessage in the background. On success the optimistic
+  // message is patched to status='sent' with the real id (the next thread
+  // poll naturally consolidates it). On failure the optimistic message is
+  // patched to status='failed' with the error text; the bubble stays in the
+  // thread so the user can see what happened.
+  //
+  // Client-side validation (international, blank, etc.) runs in the modal
+  // BEFORE onSend is invoked, so by the time we get here the recipient is
+  // already known-good.
+  const handleComposeSend = useCallback((phone, text, files = []) => {
     const normalizedPhone = phone.trim();
-
-    // 1. Send. Throws on failure → bubbles to the modal's catch.
-    await sendMessage(normalizedPhone, text.trim(), files);
-
-    // 2. Success path — navigate + optimistically render the new message
-    //    so the user immediately sees their thread without waiting for the
-    //    next conversation poll.
-    const existing = conversations.find(c => c.phone === normalizedPhone);
-
-    if (existing) {
-      handleSelect(existing.id);
-    } else {
-      const newConv = {
-        id:             normalizedPhone,
-        phone:          normalizedPhone,
-        name:           normalizedPhone,
-        lastMessage:    text || (files.length > 0 ? '📷 Photo' : ''),
-        lastMessageDir: 'outbound',
-        timestamp:      new Date().toISOString(),
-        unread:         0,
-      };
-      setConversations(prev => [newConv, ...prev]);
-      setMessageMap(prev => ({ ...prev, [normalizedPhone]: [] }));
-      setSelectedId(normalizedPhone);
-      setMobileView('thread');
-    }
-
-    const targetId = existing ? existing.id : normalizedPhone;
-
-    // Local-only previews for any attached images so the just-sent message
-    // shows immediately. The real media_urls will arrive from the next
-    // thread poll; we revoke these blob URLs only when the component
-    // unmounts (acceptable — small set, short-lived).
+    const clientTempId    = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const nowIso          = new Date().toISOString();
     const optimisticMediaUrls = files.length > 0
       ? JSON.stringify(files.map(f => URL.createObjectURL(f)))
       : null;
 
+    const existing = conversations.find(c => c.phone === normalizedPhone);
+    const targetId = existing ? existing.id : normalizedPhone;
+
+    // 1. Conversation — add as pending if new; update preview if existing.
+    if (existing) {
+      setConversations(prev => prev.map(c =>
+        c.id === existing.id
+          ? { ...c, lastMessage: text.trim() || '📷 Photo', lastMessageDir: 'outbound', timestamp: nowIso }
+          : c
+      ));
+    } else {
+      setConversations(prev => [
+        {
+          id:             normalizedPhone,
+          phone:          normalizedPhone,
+          name:           normalizedPhone,
+          lastMessage:    text.trim() || (files.length > 0 ? '📷 Photo' : ''),
+          lastMessageDir: 'outbound',
+          timestamp:      nowIso,
+          unread:         0,
+          pending:        true,
+        },
+        ...prev,
+      ]);
+    }
+
+    // 2. Optimistic message — appended to the thread.
     const optimisticMsg = {
-      id:         `optimistic-${Date.now()}`,
-      body:       text.trim(),
-      media_urls: optimisticMediaUrls,
-      direction:  'outbound',
-      created_at: new Date().toISOString(),
+      id:           clientTempId,
+      clientTempId,
+      status:       'sending',
+      body:         text.trim(),
+      media_urls:   optimisticMediaUrls,
+      direction:    'outbound',
+      created_at:   nowIso,
     };
     setMessageMap(prev => ({
       ...prev,
       [targetId]: [...(prev[targetId] ?? []), optimisticMsg],
     }));
+
+    // 3. Navigate immediately. For existing convs handleSelect resets unread
+    //    + marks-read on the backend; for brand-new convs that's a harmless
+    //    no-op (the endpoint just zero-touches a phone with no inbound).
+    handleSelect(targetId);
+
+    // 4. Background send — patch optimistic in place once it resolves.
+    sendMessage(normalizedPhone, text.trim(), files)
+      .then(result => {
+        setMessageMap(prev => ({
+          ...prev,
+          [targetId]: (prev[targetId] ?? []).map(m =>
+            m.clientTempId === clientTempId
+              ? { ...m, status: 'sent', id: result?.id ?? m.id, twilio_sid: result?.sid ?? null }
+              : m
+          ),
+        }));
+      })
+      .catch(err => {
+        console.error('[Inbox] Compose send failed:', err.message);
+        setMessageMap(prev => ({
+          ...prev,
+          [targetId]: (prev[targetId] ?? []).map(m =>
+            m.clientTempId === clientTempId
+              ? { ...m, status: 'failed', errorMessage: err.message || 'Failed to send' }
+              : m
+          ),
+        }));
+      });
   }, [conversations, handleSelect]);
 
   // ── Soft-delete (hide) a conversation ──────────────────────────────────────
