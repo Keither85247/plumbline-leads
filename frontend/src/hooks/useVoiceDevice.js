@@ -87,31 +87,96 @@ export function useVoiceDevice() {
   // reference it without stale-closure issues.
   // `isInbound` distinguishes inbound (recorded/transcribed by backend) from
   // outbound (not recorded) so the post-call note modal only fires for outbound.
+  //
+  // Lifecycle invariants enforced here:
+  //   - Post-call note modal fires ONLY when an outbound call truly connected
+  //     for at least MIN_REAL_CALL_MS (i.e. the user actually had a chance to
+  //     talk). A call that dies in <3s of accept → disconnect (caller-ID
+  //     rejected, dialed number invalid, instant remote hangup, WebRTC bridge
+  //     failure, TwiML ran out of verbs) shows "Call did not connect" instead
+  //     of a misleading "How did it go?" prompt.
+  //   - Every SDK event is logged with CallSid + timing so the call lifecycle
+  //     is traceable end-to-end in production logs.
   function wireCallEvents(call, { isInbound = false, phone = null } = {}) {
-    call.on('ringing', () => setStatus('ringing'));
+    const MIN_REAL_CALL_MS = 3000;
+    // Captured in closure so the disconnect handler can compute call duration
+    // without racing the React state setter for `status`.
+    let acceptedAt = null;
+    const initialCallSid =
+      call.parameters?.CallSid ||
+      call.customParameters?.get?.('CallSid') ||
+      null;
+
+    console.log('[VoiceDevice] wireCallEvents', {
+      isInbound,
+      phone,
+      callSid: initialCallSid,
+      at: Date.now(),
+    });
+
+    call.on('ringing', (hasEarlyMedia) => {
+      console.log('[VoiceDevice] Event: ringing', {
+        callSid: initialCallSid,
+        hasEarlyMedia,
+        at: Date.now(),
+      });
+      setStatus('ringing');
+    });
 
     call.on('accept', () => {
+      acceptedAt = Date.now();
+      console.log('[VoiceDevice] Event: accept (call truly connected)', {
+        callSid: initialCallSid,
+        acceptedAt,
+      });
       stopAllAlerts();
       setActiveCall(call);
       setStatus('connected');
     });
 
     call.on('disconnect', () => {
+      const disconnectedAt = Date.now();
+      const duration = acceptedAt ? disconnectedAt - acceptedAt : 0;
+      const reallyConnected = acceptedAt !== null && duration >= MIN_REAL_CALL_MS;
+
+      console.log('[VoiceDevice] Event: disconnect', {
+        callSid: initialCallSid,
+        acceptedAt,
+        disconnectedAt,
+        durationMs: duration,
+        reallyConnected,
+        isInbound,
+      });
+
       stopAllAlerts();
       setActiveCall(null);
       setIncomingCall(null);
       setStatus('ended');
 
-      // Trigger post-call note prompt for outbound calls only.
-      // Inbound calls are already recorded + summarised by the backend pipeline.
-      //
-      // Capturing CallSid here is critical: the backend uses it to UPDATE the
-      // EXACT call row when the user saves a note. Without it, repeat calls
-      // to the same contact can have their notes overwritten because the
-      // phone-based fallback matches "most recent outbound to this phone".
-      if (!isInbound && phone) {
-        const callSid = call.parameters?.CallSid || call.customParameters?.get('CallSid') || null;
-        setPendingPostCallNote({ phone, callSid });
+      // Post-call note modal fires ONLY for outbound calls that genuinely
+      // connected. A call that lasted <3s of accept→disconnect (or never
+      // accepted at all) is treated as a failed setup — we surface a friendly
+      // error instead of asking the user to characterise a non-conversation.
+      // The note path still works for real calls; the modal just no longer
+      // appears for dead-on-arrival ones.
+      if (!isInbound && phone && reallyConnected) {
+        const sid =
+          call.parameters?.CallSid ||
+          call.customParameters?.get?.('CallSid') ||
+          initialCallSid;
+        console.log('[VoiceDevice] Triggering post-call note modal', {
+          callSid: sid,
+          durationMs: duration,
+        });
+        setPendingPostCallNote({ phone, callSid: sid });
+      } else if (!isInbound && phone) {
+        console.warn('[VoiceDevice] Outbound call ended without real connection — suppressing post-call modal', {
+          callSid: initialCallSid,
+          acceptedAt,
+          durationMs: duration,
+          reason: !acceptedAt ? 'never_accepted' : 'too_short',
+        });
+        setError('Call did not connect. Please try again.');
       }
 
       // Brief "ended" display, then back to ready
@@ -119,6 +184,11 @@ export function useVoiceDevice() {
     });
 
     call.on('cancel', () => {
+      console.log('[VoiceDevice] Event: cancel', {
+        callSid: initialCallSid,
+        acceptedAt,
+        at: Date.now(),
+      });
       // Fires when the remote caller hangs up before the call is answered,
       // OR when an outbound attempt is cancelled. Always reset to ready.
       stopAllAlerts();
@@ -128,7 +198,18 @@ export function useVoiceDevice() {
 
     call.on('error', (err) => {
       stopAllAlerts();
-      console.error('[VoiceDevice] Call error — code:', err.code, '| message:', err.message, '| twilioError:', err.twilioError);
+      console.error('[VoiceDevice] Event: error', {
+        callSid: initialCallSid,
+        code: err.code,
+        message: err.message,
+        twilioError: err.twilioError,
+        // err.causes/explanation/solutions exist on Twilio SDK errors —
+        // log them so production logs reveal WHY the call failed.
+        causes: err.causes,
+        explanation: err.explanation,
+        solutions: err.solutions,
+        at: Date.now(),
+      });
       setError(err.message);
       setActiveCall(null);
       setIncomingCall(null);
@@ -260,12 +341,24 @@ export function useVoiceDevice() {
     setError(null);
 
     try {
+      console.log('[VoiceDevice] makeCall → device.connect', { to: e164, at: Date.now() });
       const call = await device.connect({ params: { To: e164 } });
+      console.log('[VoiceDevice] device.connect resolved', {
+        to: e164,
+        callSid: call?.parameters?.CallSid || null,
+        at: Date.now(),
+      });
       setActiveCall(call);
-      // isInbound: false + phone captured — disconnect will trigger post-call note modal
+      // isInbound: false + phone captured — disconnect will trigger post-call note
+      // modal ONLY if the call truly connected (see MIN_REAL_CALL_MS in wireCallEvents).
       wireCallEvents(call, { isInbound: false, phone: e164 });
     } catch (err) {
-      console.error('[VoiceDevice] makeCall failed:', err.message);
+      console.error('[VoiceDevice] makeCall failed', {
+        to: e164,
+        code: err.code,
+        message: err.message,
+        twilioError: err.twilioError,
+      });
       setError(err.message);
       setStatus('failed');
     }

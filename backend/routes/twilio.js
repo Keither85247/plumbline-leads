@@ -753,8 +753,18 @@ router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) 
       dial.number(To);
     }
 
-    log.info('/voice-client responding with TwiML', { callerId: callerId || 'none', hasBaseUrl: !!baseUrl });
-    return res.type('text/xml').send(twiml.toString());
+    const twimlXml = twiml.toString();
+    // Log the full TwiML so we can see exactly what Twilio is being told to
+    // do. Helpful when calls die immediately after connect — usually means
+    // the dialed verb completed faster than expected (rejected callerId,
+    // invalid number, instant remote hangup, etc.).
+    log.info('/voice-client responding with TwiML', {
+      callSid: CallSid,
+      callerId: callerId || 'none',
+      hasBaseUrl: !!baseUrl,
+      twiml: twimlXml,
+    });
+    return res.type('text/xml').send(twimlXml);
   } catch (err) {
     log.error('/voice-client unhandled error', { err: err.message, callSid: CallSid });
     // Always return valid TwiML — a 500 here causes Twilio SDK error 31000
