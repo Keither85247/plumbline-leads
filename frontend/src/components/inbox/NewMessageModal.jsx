@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { translations } from '../../i18n';
 
 const ACCEPTED_MIME = 'image/jpeg,image/jpg,image/png,image/gif,image/webp';
 const MAX_FILES = 5;
@@ -20,6 +21,9 @@ function formatPhoneDisplay(num) {
  *   conversations[]               used for To-field autocomplete
  */
 export default function NewMessageModal({ onSend, onClose, conversations = [] }) {
+  const lang = localStorage.getItem('language') || 'en';
+  const t = translations[lang] || translations.en;
+
   const [phone,           setPhone]           = useState('');
   const [message,         setMessage]         = useState('');
   const [attachments,     setAttachments]     = useState([]);
@@ -106,7 +110,7 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
       >
         {/* Header */}
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-900">New message</h3>
+          <h3 className="text-sm font-semibold text-gray-900">{t.inboxNewMessage}</h3>
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
@@ -120,14 +124,23 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
 
         {/* ── To field with autocomplete ───────────────────────────────────── */}
         <div className="relative">
-          <label className="block text-xs text-gray-500 mb-1.5">To</label>
+          <label className="block text-xs text-gray-500 mb-1.5">{t.inboxToLabel}</label>
           <input
             ref={phoneRef}
-            type="tel"
+            // Plain text input — the field accepts BOTH contact names and raw
+            // phone numbers, so we cannot use type="tel" / inputMode="numeric"
+            // (those open a numeric-only keypad on mobile and block letters).
+            // The autocomplete dropdown below filters by name OR phone digits.
+            type="text"
+            inputMode="text"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="words"
+            spellCheck={false}
             value={phone}
             onChange={e => { setPhone(e.target.value); setShowSuggestions(true); }}
             onFocus={() => setShowSuggestions(true)}
-            placeholder="Name or phone number"
+            placeholder={t.inboxToNamePH}
             className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400 placeholder:text-gray-400"
           />
 
@@ -199,7 +212,7 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
         {/* ── Message textarea + attach button ─────────────────────────────── */}
         <div>
           <div className="flex items-center justify-between mb-1.5">
-            <label className="text-xs text-gray-500">Message</label>
+            <label className="text-xs text-gray-500">{t.inboxMessageLabel}</label>
 
             {/* Paperclip / attach button */}
             <button
@@ -216,7 +229,7 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
                 <path strokeLinecap="round" strokeLinejoin="round"
                   d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66L9.41 17.41a2 2 0 01-2.83-2.83l8.49-8.48" />
               </svg>
-              Attach photo
+              {t.inboxAttachPhoto}
             </button>
 
             {/* Hidden file input */}
@@ -234,11 +247,11 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
             ref={messageRef}
             value={message}
             onChange={e => setMessage(e.target.value)}
-            placeholder={attachments.length > 0 ? 'Add a caption… (optional)' : 'Type a message…'}
+            placeholder={attachments.length > 0 ? t.inboxCaptionPH : t.inboxTypePH}
             rows={3}
             className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-400 placeholder:text-gray-400"
           />
-          <p className="text-[11px] text-gray-400 mt-1">⌘ + Enter to send</p>
+          <p className="text-[11px] text-gray-400 mt-1">{t.inboxCmdEnter}</p>
         </div>
 
         {/* Actions */}
@@ -247,14 +260,14 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
             onClick={onClose}
             className="text-sm px-4 py-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
           >
-            Cancel
+            {t.inboxCancel}
           </button>
           <button
             onClick={handleSend}
             disabled={!canSend}
             className="text-sm px-5 py-2 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            Send
+            {t.inboxSend}
           </button>
         </div>
       </div>
