@@ -110,9 +110,15 @@ router.get('/', (req, res) => {
         ORDER BY created_at DESC LIMIT 1
       )
       AND m.user_id = ?
+      -- Per-user soft-delete: exclude conversations the user has hidden.
+      -- The hide is cleared automatically by inbound/outbound writes, so any
+      -- new message restores the conversation without manual restore UI.
+      AND m.phone NOT IN (
+        SELECT phone FROM conversation_hides WHERE user_id = ?
+      )
       GROUP BY m.phone
       ORDER BY m.created_at DESC
-    `).all(req.userId, req.userId, req.userId);
+    `).all(req.userId, req.userId, req.userId, req.userId);
 
     return res.json(rows.map(r => {
       const digits       = (r.phone || '').replace(/\D/g, '');
@@ -195,6 +201,38 @@ router.patch('/:phone/read', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// DELETE /api/messages/conversations/:phone
+//
+// Soft-delete (hide) a conversation from the current user's inbox. The
+// underlying messages rows are NOT deleted — audit/debugging history is
+// preserved. The hide is a per-user record in conversation_hides keyed on
+// (user_id, phone); Tester A's deletion never affects Tester B.
+//
+// Auto-restore: any subsequent inbound or outbound message for the same
+// (user_id, phone) pair removes the hide (see /api/twilio/sms and
+// /api/messages/send below), so the conversation re-appears the next time
+// the user has a real reason to see it.
+// ---------------------------------------------------------------------------
+router.delete('/conversations/:phone', (req, res) => {
+  try {
+    const phone = normalizePhone(decodeURIComponent(req.params.phone));
+    if (!phone) return res.status(400).json({ error: 'phone is required' });
+
+    db.prepare(`
+      INSERT INTO conversation_hides (user_id, phone, hidden_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(user_id, phone) DO UPDATE SET hidden_at = CURRENT_TIMESTAMP
+    `).run(req.userId, phone);
+
+    log.info('Conversation hidden', { userId: req.userId, phone });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[Messages] DELETE conversation error:', err.message);
+    return res.status(500).json({ error: 'Failed to delete conversation' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/messages/send — outbound SMS or MMS via Twilio
 // ---------------------------------------------------------------------------
 router.post('/send', upload.array('media', 5), smsGuards, async (req, res) => {
@@ -251,6 +289,11 @@ router.post('/send', upload.array('media', 5), smsGuards, async (req, res) => {
       INSERT INTO messages (phone, direction, body, twilio_sid, status, media_urls, user_id)
       VALUES (?, 'outbound', ?, ?, ?, ?, ?)
     `).run(toE164, (body || '').trim(), message.sid, message.status || 'sent', storedMedia, req.userId);
+
+    // Auto-restore: sending a new message to a previously-hidden conversation
+    // clears the hide so the thread re-appears in the user's inbox list.
+    db.prepare('DELETE FROM conversation_hides WHERE user_id = ? AND phone = ?')
+      .run(req.userId, toE164);
 
     if (tempPaths.length > 0) {
       setTimeout(() => {

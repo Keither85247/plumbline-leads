@@ -404,6 +404,14 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
     ).run(From || 'unknown', (Body || '').trim(), mediaUrlsJson, assignedUserId || null);
     messageRowId = msgRow.lastInsertRowid;
     log.info('Inbound SMS saved to messages', { messageId: messageRowId });
+
+    // Auto-restore: an incoming message from a previously-hidden contact
+    // un-hides the conversation for the assigned user so they see the new
+    // message in their inbox.
+    if (assignedUserId && From) {
+      db.prepare('DELETE FROM conversation_hides WHERE user_id = ? AND phone = ?')
+        .run(assignedUserId, From);
+    }
   } catch (err) {
     log.error('Failed to save inbound SMS to messages table', { err: err.message });
   }

@@ -462,6 +462,21 @@ try {
   console.error('[DB] Voicemail greeting migration error:', err.message);
 }
 
+// ── Per-user soft-deleted conversations ───────────────────────────────────────
+// One row per (user, phone) pair the user has chosen to remove from their
+// inbox. Hides are PER-USER — Tester A's deletions never affect Tester B.
+// Messages themselves are never deleted; the GET /api/messages query filters
+// out hidden rows, and any subsequent inbound or outbound message for the
+// pair clears the row (auto-restore).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS conversation_hides (
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    phone      TEXT    NOT NULL,
+    hidden_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, phone)
+  )
+`);
+
 // ── Per-user Twilio phone numbers ─────────────────────────────────────────────
 // One row per purchased Twilio number. assigned_user_id is nullable (unassigned).
 // Inbound call/SMS routing reads this table to determine which user owns a number.

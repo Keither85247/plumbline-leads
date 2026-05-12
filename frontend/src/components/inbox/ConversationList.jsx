@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import ConversationItem from './ConversationItem';
+import { translations } from '../../i18n';
 
 function SearchIcon() {
   return (
@@ -24,7 +25,10 @@ function ConversationSkeleton() {
   );
 }
 
-export default function ConversationList({ conversations, selectedId, onSelect, onCompose, loading = false }) {
+export default function ConversationList({ conversations, selectedId, onSelect, onCompose, onDelete, loading = false }) {
+  const lang = localStorage.getItem('language') || 'en';
+  const t = translations[lang] || translations.en;
+
   const [query, setQuery] = useState('');
 
   const filtered = query.trim()
@@ -44,7 +48,7 @@ export default function ConversationList({ conversations, selectedId, onSelect, 
       <div className="shrink-0 px-4 pt-4 pb-3 border-b border-gray-100">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-semibold text-gray-900">
-            Inbox
+            {t.inboxTitle}
             {unreadCount > 0 && (
               <span className="ml-2 text-[10px] font-semibold text-blue-600 bg-blue-50 rounded-full px-1.5 py-0.5">
                 {unreadCount}
@@ -73,7 +77,7 @@ export default function ConversationList({ conversations, selectedId, onSelect, 
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="Search conversations…"
+            placeholder={t.inboxSearchPH}
             className="w-full bg-gray-50 border border-gray-200 rounded-lg pl-8 pr-3 py-2 text-xs text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-400 transition-colors"
           />
         </div>
@@ -86,7 +90,7 @@ export default function ConversationList({ conversations, selectedId, onSelect, 
         ) : filtered.length === 0 ? (
           <div className="px-4 py-10 text-center">
             <p className="text-xs text-gray-400">
-              {query ? 'No results.' : 'No conversations yet.'}
+              {query ? t.inboxNoResults : t.inboxNoConversations}
             </p>
           </div>
         ) : (
@@ -97,6 +101,7 @@ export default function ConversationList({ conversations, selectedId, onSelect, 
                   conversation={conv}
                   selected={conv.id === selectedId}
                   onClick={() => onSelect(conv.id)}
+                  onDelete={onDelete}
                 />
                 {/* Thin divider — skip on selected to avoid double line with border */}
                 {conv.id !== selectedId && (

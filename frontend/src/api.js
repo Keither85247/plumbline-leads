@@ -583,6 +583,24 @@ export async function markMessagesRead(phone) {
   return res.json();
 }
 
+/**
+ * Soft-delete (hide) a conversation from the current user's inbox. Messages
+ * themselves are preserved server-side; the conversation is just hidden from
+ * the list. A new inbound or outbound message to the same phone auto-
+ * restores it.
+ */
+export async function deleteConversation(phone) {
+  const res = await apiFetch(
+    `${API_BASE}/messages/conversations/${encodeURIComponent(phone)}`,
+    { method: 'DELETE' }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to delete conversation');
+  }
+  return res.json();
+}
+
 /** Mark all unseen missed calls (within 48h) as seen. */
 export async function markCallsSeen() {
   const res = await apiFetch(`${API_BASE}/calls/mark-seen`, { method: 'POST' });

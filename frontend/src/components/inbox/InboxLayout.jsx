@@ -3,7 +3,7 @@ import ConversationList from './ConversationList';
 import MessageThread from './MessageThread';
 import LeadDetailsPanel from './LeadDetailsPanel';
 import NewMessageModal from './NewMessageModal';
-import { getConversations, getMessageThread, sendMessage, markMessagesRead } from '../../api';
+import { getConversations, getMessageThread, sendMessage, markMessagesRead, deleteConversation } from '../../api';
 import { translations } from '../../i18n';
 
 function EmptyThreadState({ t }) {
@@ -37,6 +37,11 @@ export default function InboxLayout() {
   const [mobileView,    setMobileView]       = useState('list'); // 'list' | 'thread'
   const [composeOpen,   setComposeOpen]      = useState(false);
   const [loading,       setLoading]          = useState(true);
+  // Conversation pending deletion confirmation. `null` when no modal is open;
+  // otherwise the full conversation object (so we can render its name in the
+  // dialog). Separate from `deleting` so the modal stays disabled mid-request.
+  const [pendingDelete, setPendingDelete]    = useState(null);
+  const [deleting,      setDeleting]         = useState(false);
 
   // ── Load + poll conversation list ──────────────────────────────────────────
   useEffect(() => {
@@ -196,6 +201,52 @@ export default function InboxLayout() {
     }));
   }, [conversations, handleSelect]);
 
+  // ── Soft-delete (hide) a conversation ──────────────────────────────────────
+  // Two-stage: ConversationItem invokes onDelete with the conversation, which
+  // sets `pendingDelete` to surface the confirmation modal. The modal's
+  // Delete button calls `confirmDelete`, which performs the hide.
+  const handleDeleteRequest = useCallback((conv) => {
+    setPendingDelete(conv);
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    if (!pendingDelete || deleting) return;
+    const { id, phone } = pendingDelete;
+    setDeleting(true);
+    try {
+      await deleteConversation(phone);
+      // Optimistic: drop the conversation locally so the list updates
+      // immediately. Server-side it's soft-deleted; the next conversation
+      // poll won't return it either.
+      setConversations(prev => prev.filter(c => c.id !== id));
+      setMessageMap(prev => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      // If the deleted conversation was selected, clear selection and pop
+      // mobile back to the list view so we don't sit on a dead thread.
+      if (selectedId === id) {
+        setSelectedId(null);
+        setMobileView('list');
+      }
+      setPendingDelete(null);
+    } catch (err) {
+      console.error('[Inbox] Delete conversation failed:', err.message);
+      // Keep the modal open so the user can see the error and retry. The
+      // existing pendingDelete is preserved; nothing has been removed from
+      // local state because the API call failed before our setConversations.
+      alert(`Failed to delete conversation: ${err.message}`);
+    } finally {
+      setDeleting(false);
+    }
+  }, [pendingDelete, deleting, selectedId]);
+
+  const cancelDelete = useCallback(() => {
+    if (deleting) return;
+    setPendingDelete(null);
+  }, [deleting]);
+
   return (
     // Fills the full available height. Parent in App.jsx must be flex-1 + overflow-hidden.
     <div className="flex flex-1 min-h-0 overflow-hidden bg-white border-t border-gray-100">
@@ -211,6 +262,7 @@ export default function InboxLayout() {
           selectedId={selectedId}
           onSelect={handleSelect}
           onCompose={() => setComposeOpen(true)}
+          onDelete={handleDeleteRequest}
           loading={loading}
         />
       </aside>
@@ -247,6 +299,55 @@ export default function InboxLayout() {
           onClose={() => setComposeOpen(false)}
           conversations={conversations}
         />
+      )}
+
+      {/* ── Delete-conversation confirmation ─────────────────────── */}
+      {pendingDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-conv-title"
+          onClick={cancelDelete}
+          onKeyDown={e => { if (e.key === 'Escape') cancelDelete(); }}
+        >
+          <div
+            className="w-full max-w-sm bg-white rounded-2xl shadow-2xl px-5 py-5"
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 id="delete-conv-title" className="text-base font-semibold text-gray-900 mb-1">
+              {t.inboxDeleteConvTitle || 'Delete conversation?'}
+            </h3>
+            <p className="text-sm text-gray-500 leading-relaxed mb-1">
+              {t.inboxDeleteConvBody  || 'This will remove this conversation from your inbox. This cannot be undone.'}
+            </p>
+            <p className="text-xs text-gray-400 truncate mb-5">
+              {pendingDelete.name && pendingDelete.name !== pendingDelete.phone
+                ? `${pendingDelete.name} · ${pendingDelete.phone}`
+                : pendingDelete.phone}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={cancelDelete}
+                disabled={deleting}
+                className="text-sm px-4 py-2 rounded-lg text-gray-600 hover:text-gray-800 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {t.inboxCancel || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="text-sm px-5 py-2 rounded-lg bg-red-600 text-white font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {deleting
+                  ? (t.inboxDeleting || 'Deleting…')
+                  : (t.inboxDelete   || 'Delete')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
