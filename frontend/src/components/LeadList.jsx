@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import LeadCard from './LeadCard';
 import ContactHistoryModal from './ContactHistoryModal';
 import { getArchivedLeads, unarchiveLead } from '../api';
+import { useInvalidate } from '../refreshBus';
 import { translations } from '../i18n';
 
 function getDateLabel(dateStr, t) {
@@ -46,6 +47,7 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
   const [selectedPhone, setSelectedPhone] = useState(null);
   const [archivedLeads, setArchivedLeads] = useState([]);
   const [loadingArchived, setLoadingArchived] = useState(false);
+  const invalidate = useInvalidate();
 
   // Fetch archived leads when that tab is activated
   useEffect(() => {
@@ -74,7 +76,14 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
   const handleUnarchive = async (id) => {
     try {
       await unarchiveLead(id);
+      // Drop the row from the locally-cached archived list immediately so
+      // the archived tab reflects the action without waiting for a refetch.
       setArchivedLeads(prev => prev.filter(l => l.id !== id));
+      // Invalidate the leads bus key so App.jsx's master fetch picks up the
+      // now-unarchived lead. Previously this step was missing — App's `leads`
+      // stayed stale until the 30s heartbeat polled, so switching to a
+      // category tab showed the lead as "missing" for up to 30 seconds.
+      invalidate('leads');
     } catch (err) {
       console.error('Unarchive failed:', err);
     }

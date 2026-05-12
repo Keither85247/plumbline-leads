@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { updateLeadStatus, archiveLead, unarchiveLead, deleteLead, translateText, sendMessage } from '../api';
+import { useInvalidate } from '../refreshBus';
 import { normalizePhone, parseTimestamp } from '../utils/phone';
 import PhoneActionSheet from './PhoneActionSheet';
 import { translations } from '../i18n';
@@ -172,6 +173,7 @@ function Tag({ icon, text, variant = 'other' }) {
 
 export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contractorName, onContactClick, isArchived = false, language = 'en', replyTranslation = false }) {
   const t = translations[language] || translations.en;
+  const invalidate = useInvalidate();
   const [updating, setUpdating] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const [descExpanded, setDescExpanded] = useState(false);
@@ -261,7 +263,12 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
     setUpdating(true);
     try {
       await archiveLead(lead.id);
+      // Optimistic local update: parent removes the row from whichever list
+      // is currently rendering this card (active leads OR archived).
       onLeadRemoved(lead.id);
+      // Invalidate the leads bus key so any other surface that depends on
+      // the active-leads list (e.g. App.jsx's master leads state) refetches.
+      invalidate('leads');
     } catch (err) {
       console.error('Archive failed:', err);
     } finally {
@@ -275,6 +282,10 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
     try {
       await unarchiveLead(lead.id);
       onLeadRemoved(lead.id);
+      // The unarchived lead now belongs back in App's master `leads` state.
+      // Invalidating triggers fetchLeads — the row reappears in the
+      // category sub-tab without waiting for the 30s heartbeat poll.
+      invalidate('leads');
     } catch (err) {
       console.error('Unarchive failed:', err);
     } finally {
