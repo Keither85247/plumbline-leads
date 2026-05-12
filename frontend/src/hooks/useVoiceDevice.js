@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Device } from '@twilio/voice-sdk';
-import { API_BASE } from '../api';
+import { API_BASE, ensureCallLogged } from '../api';
 
 // Normalize to E.164 for Twilio
 function toE164(num) {
@@ -138,9 +138,13 @@ export function useVoiceDevice() {
       const disconnectedAt = Date.now();
       const duration = acceptedAt ? disconnectedAt - acceptedAt : 0;
       const reallyConnected = acceptedAt !== null && duration >= MIN_REAL_CALL_MS;
+      const sid =
+        call.parameters?.CallSid ||
+        call.customParameters?.get?.('CallSid') ||
+        initialCallSid;
 
       console.log('[VoiceDevice] Event: disconnect', {
-        callSid: initialCallSid,
+        callSid: sid,
         acceptedAt,
         disconnectedAt,
         durationMs: duration,
@@ -153,17 +157,37 @@ export function useVoiceDevice() {
       setIncomingCall(null);
       setStatus('ended');
 
+      // ── Call history is independent of post-call feedback ────────────────
+      // Fire-and-forget: guarantee a calls row exists for this CallSid even
+      // if the user dismisses the post-call modal without saving and even if
+      // the /voice-client webhook never landed (Render free-tier cold start
+      // / network blip). The backend endpoint is idempotent — safe to call
+      // alongside the webhook and alongside saveOutboundNote.
+      //
+      // We only do this when an outbound call truly connected, so failed
+      // setups (never accepted) don't pollute the history list. Short calls
+      // (<MIN_REAL_CALL_MS but accepted) ARE logged — they're real calls
+      // that the user might want to see, just not worth asking feedback on.
+      if (!isInbound && phone && sid && acceptedAt !== null) {
+        ensureCallLogged({ callSid: sid, phone, direction: 'outbound' })
+          .then(result => {
+            console.log('[VoiceDevice] ensure-logged result', { callSid: sid, ...result });
+          })
+          .catch(err => {
+            console.warn('[VoiceDevice] ensure-logged failed', { callSid: sid, err: err.message });
+          });
+      }
+
       // Post-call note modal fires ONLY for outbound calls that genuinely
-      // connected. A call that lasted <3s of accept→disconnect (or never
-      // accepted at all) is treated as a failed setup — we surface a friendly
-      // error instead of asking the user to characterise a non-conversation.
-      // The note path still works for real calls; the modal just no longer
-      // appears for dead-on-arrival ones.
+      // connected for at least MIN_REAL_CALL_MS. A call that lasted <3s of
+      // accept→disconnect (or never accepted at all) is treated as a failed
+      // setup — we surface a friendly error instead of asking the user to
+      // characterise a non-conversation. The note path still works for real
+      // calls; the modal just no longer appears for dead-on-arrival ones.
+      //
+      // Critically: the call history row is created above regardless of
+      // whether this modal shows. Skip → no API call → row already exists.
       if (!isInbound && phone && reallyConnected) {
-        const sid =
-          call.parameters?.CallSid ||
-          call.customParameters?.get?.('CallSid') ||
-          initialCallSid;
         console.log('[VoiceDevice] Triggering post-call note modal', {
           callSid: sid,
           durationMs: duration,
@@ -171,7 +195,7 @@ export function useVoiceDevice() {
         setPendingPostCallNote({ phone, callSid: sid });
       } else if (!isInbound && phone) {
         console.warn('[VoiceDevice] Outbound call ended without real connection — suppressing post-call modal', {
-          callSid: initialCallSid,
+          callSid: sid,
           acceptedAt,
           durationMs: duration,
           reason: !acceptedAt ? 'never_accepted' : 'too_short',

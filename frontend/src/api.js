@@ -339,6 +339,25 @@ export async function translateText(text, targetLang) {
   return res.json(); // { translated }
 }
 
+// Ensure a calls row exists for the given Twilio CallSid. Called by the voice
+// device hook on every real outbound disconnect so that call history is
+// guaranteed to record the call — even when the user dismisses the post-call
+// note modal without saving. Idempotent on the backend (existence check +
+// COALESCE-only enrichment + UNIQUE INDEX on call_sid).
+export async function ensureCallLogged({ callSid, phone, direction = 'outbound' }) {
+  if (!callSid) return null;
+  const res = await apiFetch(`${API_BASE}/calls/ensure-logged`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ callSid, phone, direction }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to ensure call logged');
+  }
+  return res.json(); // { ok, created, id }
+}
+
 // Save a contractor-written note for a just-completed outbound call.
 // Pass `callSid` (from the Twilio SDK call object) so the backend can target
 // the EXACT row — required to preserve history when the same contact is

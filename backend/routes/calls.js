@@ -281,6 +281,61 @@ router.post('/outbound-note', express.json(), (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/calls/ensure-logged
+//
+// Idempotent backstop: guarantees a calls row exists for `callSid` after an
+// outbound call ends, INDEPENDENT of whether the user provides post-call
+// feedback. The /voice-client webhook is the primary path that logs calls,
+// but Render free-tier cold starts can delay or drop it. Without this
+// endpoint, dismissing the post-call modal with "Skip" would silently lose
+// the call from Recent Calls / Timeline / Contact history.
+//
+// Call history is a function of the telephony lifecycle, not of the
+// feedback form — this endpoint enforces that invariant.
+//
+// Idempotency:
+//   - existence check by call_sid + COALESCE-only UPDATE for enrichment
+//   - the partial UNIQUE INDEX on calls(call_sid) is the DB-level safety net
+//   - safe to invoke concurrently with /voice-client and saveOutboundNote
+// ---------------------------------------------------------------------------
+router.post('/ensure-logged', express.json(), (req, res) => {
+  const { callSid, phone, direction = 'outbound' } = req.body || {};
+
+  if (!callSid || typeof callSid !== 'string') {
+    return res.status(400).json({ error: 'callSid is required' });
+  }
+
+  const normalizedPhone = phone ? normalizePhone(phone) : null;
+  const classification  = direction === 'outbound' ? 'Outbound' : 'Unknown';
+
+  try {
+    const existing = db.prepare('SELECT id FROM calls WHERE call_sid = ?').get(callSid);
+    if (existing) {
+      // Row already created by the webhook (or a prior ensure-logged call).
+      // Enrich NULL fields only — never overwrite anything the webhook set.
+      db.prepare(`
+        UPDATE calls SET
+          from_number = COALESCE(from_number, ?),
+          user_id     = COALESCE(user_id, ?)
+        WHERE id = ?
+      `).run(normalizedPhone || phone || null, req.userId, existing.id);
+      return res.json({ ok: true, created: false, id: existing.id });
+    }
+
+    const result = db.prepare(`
+      INSERT INTO calls (from_number, call_sid, classification, user_id)
+      VALUES (?, ?, ?, ?)
+    `).run(normalizedPhone || phone || null, callSid, classification, req.userId);
+
+    console.log(`[Calls] ensure-logged inserted row id=${result.lastInsertRowid} call_sid=${callSid} (user ${req.userId})`);
+    return res.json({ ok: true, created: true, id: result.lastInsertRowid });
+  } catch (err) {
+    console.error('[Calls] ensure-logged error:', err.message);
+    return res.status(500).json({ error: 'Failed to ensure call logged' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/calls/mark-seen
 // ---------------------------------------------------------------------------
 router.post('/mark-seen', (req, res) => {
