@@ -375,6 +375,23 @@ export async function logEmail(data) {
   return res.json();
 }
 
+/**
+ * Create a new manual contact.
+ * Requires at least one of: name, phone, email.
+ */
+export async function createContact(data) {
+  const res = await apiFetch(`${API_BASE}/contacts`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to create contact');
+  }
+  return res.json();
+}
+
 /** Returns all saved contact profiles as an array. */
 export async function getAllContactProfiles() {
   const res = await apiFetch(`${API_BASE}/contacts`);

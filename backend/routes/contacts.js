@@ -1,10 +1,20 @@
+'use strict';
 const express = require('express');
-const db = require('../db');
+const db      = require('../db');
 
 const router = express.Router();
 
+// Normalise a phone string to digits only (US: strip leading 1 from 11-digit).
+function normalizePhone(raw) {
+  if (!raw) return null;
+  const digits = String(raw).replace(/\D/g, '');
+  if (!digits) return null;
+  return digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/contacts
+// Returns all saved contact profiles for the authenticated user.
 // ---------------------------------------------------------------------------
 router.get('/', (req, res) => {
   try {
@@ -20,6 +30,7 @@ router.get('/', (req, res) => {
 
 // ---------------------------------------------------------------------------
 // GET /api/contacts/search?q=...
+// Full-text search over name, phone, email, company for this user.
 // Must be defined BEFORE the /:phone wildcard route.
 // ---------------------------------------------------------------------------
 router.get('/search', (req, res) => {
@@ -27,42 +38,134 @@ router.get('/search', (req, res) => {
   if (!q) return res.json([]);
 
   try {
-    const rows = db.prepare(`
-      SELECT t.phone, t.email, t.name
-      FROM (
-        SELECT
-          c.phone,
-          c.email,
-          COALESCE(
-            (
-              SELECT l.contact_name
-              FROM leads l
-              WHERE
-                REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-                  COALESCE(l.callback_number, l.phone_number, ''),
-                  '+',''),'-',''),' ',''),'(',''),')','') = c.phone
-                AND l.contact_name != 'Unknown'
-                AND l.user_id = ?
-              ORDER BY l.created_at DESC
-              LIMIT 1
-            ),
-            c.email
-          ) AS name
-        FROM contacts c
-        WHERE c.email IS NOT NULL AND trim(c.email) != ''
-          AND c.user_id = ?
-      ) t
-      WHERE
-        instr(lower(t.email), ?) > 0
-        OR instr(lower(t.name),  ?) > 0
-      ORDER BY t.name ASC
-      LIMIT 8
-    `).all(req.userId, req.userId, q, q);
+    // Search across contacts table fields
+    const fromContacts = db.prepare(`
+      SELECT
+        c.id,
+        c.phone,
+        c.email,
+        c.name,
+        c.company,
+        c.contact_type
+      FROM contacts c
+      WHERE c.user_id = ?
+        AND (
+          instr(lower(COALESCE(c.name,    '')), ?) > 0
+          OR instr(lower(COALESCE(c.email,   '')), ?) > 0
+          OR instr(lower(COALESCE(c.company, '')), ?) > 0
+          OR instr(COALESCE(c.phone, ''), ?)        > 0
+        )
+      ORDER BY c.updated_at DESC
+      LIMIT 10
+    `).all(req.userId, q, q, q, q);
 
-    res.json(rows);
+    // Also surface contacts from leads that haven't been profiled yet
+    const fromLeads = db.prepare(`
+      SELECT DISTINCT
+        NULL          AS id,
+        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+          COALESCE(l.callback_number, l.phone_number, ''),
+          '+',''),'-',''),' ',''),'(',''),')','') AS phone,
+        NULL          AS email,
+        l.contact_name AS name,
+        l.company_name AS company,
+        l.category     AS contact_type
+      FROM leads l
+      WHERE l.user_id = ?
+        AND l.contact_name != 'Unknown'
+        AND (
+          instr(lower(l.contact_name), ?) > 0
+          OR instr(lower(COALESCE(l.company_name, '')), ?) > 0
+          OR instr(COALESCE(l.phone_number, l.callback_number, ''), ?) > 0
+        )
+      ORDER BY l.created_at DESC
+      LIMIT 10
+    `).all(req.userId, q, q, q);
+
+    // Merge, dedupe by phone
+    const seen  = new Set();
+    const merged = [];
+    for (const row of [...fromContacts, ...fromLeads]) {
+      const key = row.phone || `id:${row.id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(row);
+      }
+    }
+
+    res.json(merged.slice(0, 10));
   } catch (err) {
     console.error('[Contacts] Search failed:', err.message);
     res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/contacts
+// Create a new manual contact. Requires at least one of: name, phone, email.
+// ---------------------------------------------------------------------------
+router.post('/', express.json(), (req, res) => {
+  const userId = req.userId;
+  const {
+    name,
+    phone,
+    email,
+    company,
+    notes,
+    contact_type = 'Lead',
+  } = req.body || {};
+
+  const trimName    = (name    || '').trim();
+  const trimEmail   = (email   || '').trim().toLowerCase();
+  const trimCompany = (company || '').trim();
+  const trimNotes   = (notes   || '').trim();
+
+  const normalizedPhone = normalizePhone(phone);
+
+  // Require at least one identifying field
+  if (!trimName && !normalizedPhone && !trimEmail) {
+    return res.status(400).json({ error: 'Enter at least a name, phone, or email.' });
+  }
+
+  // Email format check
+  if (trimEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimEmail)) {
+    return res.status(400).json({ error: 'Enter a valid email address.' });
+  }
+
+  // Duplicate phone check (within this user's contacts)
+  if (normalizedPhone) {
+    const existing = db.prepare(
+      'SELECT id FROM contacts WHERE user_id = ? AND phone = ?'
+    ).get(userId, normalizedPhone);
+    if (existing) {
+      return res.status(409).json({ error: 'A contact with this phone number already exists.' });
+    }
+  }
+
+  const validTypes = ['Lead', 'Customer', 'Vendor', 'Supplier'];
+  const safeType   = validTypes.includes(contact_type) ? contact_type : 'Lead';
+
+  try {
+    const result = db.prepare(`
+      INSERT INTO contacts
+        (user_id, phone, name, email, company, notes, contact_type, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `).run(
+      userId,
+      normalizedPhone || null,
+      trimName        || null,
+      trimEmail       || null,
+      trimCompany     || null,
+      trimNotes       || null,
+      safeType,
+    );
+
+    const row = db.prepare('SELECT * FROM contacts WHERE id = ?').get(result.lastInsertRowid);
+    console.log(`[Contacts] Created contact id=${row.id} for user ${userId}: "${trimName || trimEmail || normalizedPhone}" (${safeType})`);
+    res.status(201).json(row);
+  } catch (err) {
+    console.error('[Contacts] POST failed:', err.message);
+    res.status(500).json({ error: 'Failed to create contact' });
   }
 });
 
@@ -82,7 +185,7 @@ router.get('/:phone', (req, res) => {
 // PUT /api/contacts/:phone
 // Upsert: if a row for this (user, phone) pair exists, update it; else insert.
 // ---------------------------------------------------------------------------
-router.put('/:phone', (req, res) => {
+router.put('/:phone', express.json(), (req, res) => {
   const { phone }  = req.params;
   const userId     = req.userId;
   const {
@@ -90,6 +193,8 @@ router.put('/:phone', (req, res) => {
     address,
     email,
     notes,
+    company,
+    contact_type,
     preferred_contact_method,
     formatted_address,
     address_line_1,
@@ -102,13 +207,11 @@ router.put('/:phone', (req, res) => {
   } = req.body;
 
   try {
-    // Find an existing row this user owns or a legacy (NULL) row to claim
     const existing = db.prepare(
       'SELECT id FROM contacts WHERE phone = ? AND user_id = ? LIMIT 1'
     ).get(phone, userId);
 
     if (existing) {
-      // Update in place — also stamps user_id so the NULL row becomes owned
       db.prepare(`
         UPDATE contacts SET
           user_id                  = ?,
@@ -116,6 +219,8 @@ router.put('/:phone', (req, res) => {
           address                  = ?,
           email                    = ?,
           notes                    = ?,
+          company                  = ?,
+          contact_type             = COALESCE(?, contact_type),
           preferred_contact_method = ?,
           formatted_address        = ?,
           address_line_1           = ?,
@@ -133,6 +238,8 @@ router.put('/:phone', (req, res) => {
         address            || null,
         email              || null,
         notes              || null,
+        company            || null,
+        contact_type       || null,
         preferred_contact_method || null,
         formatted_address  || null,
         address_line_1     || null,
@@ -145,13 +252,12 @@ router.put('/:phone', (req, res) => {
         existing.id,
       );
     } else {
-      // No existing row — insert a fresh one for this user
       db.prepare(`
         INSERT INTO contacts
-          (user_id, phone, name, address, email, notes, preferred_contact_method,
-           formatted_address, address_line_1, city, state, postal_code, country,
-           lat, lng, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          (user_id, phone, name, address, email, notes, company, contact_type,
+           preferred_contact_method, formatted_address, address_line_1,
+           city, state, postal_code, country, lat, lng, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       `).run(
         userId,
         phone,
@@ -159,6 +265,8 @@ router.put('/:phone', (req, res) => {
         address            || null,
         email              || null,
         notes              || null,
+        company            || null,
+        contact_type       || 'Lead',
         preferred_contact_method || null,
         formatted_address  || null,
         address_line_1     || null,

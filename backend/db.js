@@ -302,6 +302,60 @@ try {
   console.error('[DB] Contacts migration error:', err.message);
 }
 
+// ── Allow contacts.phone to be NULL ──────────────────────────────────────────
+// Manual contacts added by the user may not have a phone number.
+// The previous schema had phone TEXT NOT NULL; recreate to remove the constraint.
+// SQLite's UNIQUE constraint treats NULL values as distinct, so multiple
+// phone-less rows per user are allowed (each gets its own row).
+try {
+  const tbl = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='contacts'"
+  ).get();
+  // Only run if phone column still has NOT NULL constraint
+  if (tbl && /phone\s+TEXT\s+NOT\s+NULL/i.test(tbl.sql)) {
+    db.exec(`
+      CREATE TABLE contacts_v3 (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id                  INTEGER REFERENCES users(id),
+        phone                    TEXT,
+        name                     TEXT,
+        address                  TEXT,
+        email                    TEXT,
+        notes                    TEXT,
+        preferred_contact_method TEXT,
+        formatted_address        TEXT,
+        address_line_1           TEXT,
+        city                     TEXT,
+        state                    TEXT,
+        postal_code              TEXT,
+        country                  TEXT,
+        lat                      REAL,
+        lng                      REAL,
+        updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, phone)
+      );
+      INSERT INTO contacts_v3
+        (id, user_id, phone, name, address, email, notes, preferred_contact_method,
+         formatted_address, address_line_1, city, state, postal_code, country,
+         lat, lng, updated_at)
+      SELECT
+        id, user_id, phone, name, address, email, notes, preferred_contact_method,
+        formatted_address, address_line_1, city, state, postal_code, country,
+        lat, lng, updated_at
+      FROM contacts;
+      DROP TABLE contacts;
+      ALTER TABLE contacts_v3 RENAME TO contacts;
+    `);
+    console.log('[DB] Contacts phone made nullable (supports manual contacts without phone)');
+  }
+} catch (err) {
+  console.error('[DB] Contacts phone-nullable migration error:', err.message);
+}
+
+// Company and contact_type for manually-created contacts
+try { db.exec('ALTER TABLE contacts ADD COLUMN company TEXT'); } catch {}
+try { db.exec("ALTER TABLE contacts ADD COLUMN contact_type TEXT NOT NULL DEFAULT 'Lead'"); } catch {}
+
 // ── App-wide settings ─────────────────────────────────────────────────────────
 // Simple key/value store for global configuration (e.g. voicemail greeting).
 // Not per-user — one shared value for the whole account.
