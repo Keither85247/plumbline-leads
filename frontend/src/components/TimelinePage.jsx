@@ -94,7 +94,7 @@ function EmptyState({ t }) {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function TimelinePage({ onContactClick }) {
+export default function TimelinePage({ onContactClick, callsRefreshKey = 0 }) {
   const lang = localStorage.getItem('language') || 'en';
   const t = translations[lang] || translations.en;
 
@@ -102,7 +102,11 @@ export default function TimelinePage({ onContactClick }) {
   const [loading,    setLoading]    = useState(true);
   const [expandedId, setExpandedId] = useState(null);
 
+  // Refetches on mount and whenever App bumps callsRefreshKey. Background
+  // refreshes keep `events` populated so the list never blanks out — only
+  // the very first load (events.length === 0) shows the loading state.
   useEffect(() => {
+    let cancelled = false;
     async function loadAll() {
       const [calls, emails, conversations] = await Promise.all([
         getCalls(),
@@ -124,13 +128,14 @@ export default function TimelinePage({ onContactClick }) {
         ...conversations.map((c, i) => normalizeSmsThread(c, threads[i])),
       ].sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
 
-      setEvents(all);
+      if (!cancelled) setEvents(all);
     }
 
     loadAll()
       .catch(err => console.error('[Timeline] fetch failed:', err))
-      .finally(() => setLoading(false));
-  }, []);
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [callsRefreshKey]);
 
   const locale = lang === 'es' ? 'es-MX' : 'en-US';
   const groups = groupByDate(events, t, locale);

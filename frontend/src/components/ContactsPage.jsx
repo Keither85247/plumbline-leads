@@ -93,7 +93,7 @@ function Toast({ message, onDone }) {
 }
 
 // ── Main component ───────────────────────────────────────────────────────────
-export default function ContactsPage({ leads, voiceDevice = {} }) {
+export default function ContactsPage({ leads, voiceDevice = {}, callsRefreshKey = 0 }) {
   const lang = localStorage.getItem('language') || 'en';
   const t    = translations[lang] || translations.en;
 
@@ -108,24 +108,24 @@ export default function ContactsPage({ leads, voiceDevice = {} }) {
   const [showAddModal,     setShowAddModal]      = useState(false);
   const [toast,            setToast]            = useState(null);
 
+  // Initial profile load is one-shot — profiles only change when the user
+  // explicitly edits them via the modal, so we don't refresh on call activity.
   useEffect(() => {
-    getCalls()
-      .then(setCalls)
-      .catch(err => console.error('[Contacts] calls fetch failed:', err));
-
     getAllContactProfiles()
       .then(setAllProfiles)
       .catch(() => {});
   }, []);
 
-  // Refresh call data when a call ends so interaction counts stay current
+  // Fetch the latest calls on mount AND whenever App bumps callsRefreshKey
+  // (call ended, recording-status webhook landed, outbound note saved).
+  // Background refreshes keep the existing list visible — no flicker.
   useEffect(() => {
-    if (deviceStatus === 'ended' || deviceStatus === 'ready') {
-      getCalls()
-        .then(setCalls)
-        .catch(() => {});
-    }
-  }, [deviceStatus]);
+    let cancelled = false;
+    getCalls()
+      .then(data => { if (!cancelled) setCalls(data); })
+      .catch(err => console.error('[Contacts] calls fetch failed:', err));
+    return () => { cancelled = true; };
+  }, [callsRefreshKey]);
 
   // Update profile name/data in list when ContactHistoryModal saves
   const handleProfileSaved = useCallback((phone, profile) => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import * as Sentry from '@sentry/react';
 import TranscriptForm from './components/TranscriptForm';
 import AudioUploadForm from './components/AudioUploadForm';
@@ -242,6 +242,48 @@ export default function App() {
   useEffect(() => {
     if (currentUser) voiceDevice.initialize();
   }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Calls-data refresh signal ─────────────────────────────────────────────
+  // Single integer that every calls-rendering component watches. Bumped from a
+  // few places so the lifecycle lives here and doesn't get duplicated:
+  //
+  //   1. voiceDevice.status hits 'ended' or 'ready' — the call row was just
+  //      logged by the /voice-client webhook; refresh so it shows up.
+  //   2. ~6 seconds after a call ends — catches the asynchronous Twilio
+  //      recording-status webhook that lands later with duration/recording_url.
+  //   3. After saveOutboundNote() resolves — outcome/contractor_note just
+  //      changed; downstream rows must reflect that.
+  //
+  // Components add `callsRefreshKey` to the dep array of their fetch
+  // useEffect. Background refreshes do NOT clear the existing list, so the
+  // UI never flickers between the call ending and the new row arriving.
+  const [callsRefreshKey, setCallsRefreshKey] = useState(0);
+  const bumpCallsRefreshKey = useCallback(
+    () => setCallsRefreshKey(k => k + 1),
+    []
+  );
+
+  // The 6-second delayed refresh lives in a ref instead of an effect cleanup
+  // so the 'ended' → 'ready' transition (1.5s later) does NOT cancel it.
+  // Without the ref, React would clear the timer on the next render, and the
+  // late-arriving recording webhook would never reach the UI.
+  const delayedCallsRefreshRef = useRef(null);
+
+  useEffect(() => {
+    if (voiceDevice.status === 'ended' || voiceDevice.status === 'ready') {
+      bumpCallsRefreshKey();
+    }
+    if (voiceDevice.status === 'ended') {
+      // Replace any in-flight timer from a previous call so back-to-back
+      // calls don't stack refreshes — each call gets exactly one delayed bump.
+      clearTimeout(delayedCallsRefreshRef.current);
+      delayedCallsRefreshRef.current = setTimeout(bumpCallsRefreshKey, 6000);
+    }
+  }, [voiceDevice.status, bumpCallsRefreshKey]);
+
+  // Drop the pending delayed refresh on unmount (e.g. logout) — setState
+  // on an unmounted component is harmless but the timer should still be cleared.
+  useEffect(() => () => clearTimeout(delayedCallsRefreshRef.current), []);
 
   const [leads, setLeads] = useState([]);
   const [loadingLeads, setLoadingLeads] = useState(true);
@@ -591,6 +633,7 @@ export default function App() {
             <CallsPage
               onContactClick={setCallsPagePhone}
               voiceDevice={voiceDevice}
+              callsRefreshKey={callsRefreshKey}
               onCallsSeen={() => { console.log('[Badge] onCallsSeen fired → setCallsBadge(0)'); setCallsBadge(0); }}
             />
           )}
@@ -599,10 +642,19 @@ export default function App() {
 
           {activeNav === 'email' && <EmailPage />}
 
-          {activeNav === 'timeline' && <TimelinePage onContactClick={setCallsPagePhone} />}
+          {activeNav === 'timeline' && (
+            <TimelinePage
+              onContactClick={setCallsPagePhone}
+              callsRefreshKey={callsRefreshKey}
+            />
+          )}
 
           {activeNav === 'contacts' && (
-            <ContactsPage leads={leads} voiceDevice={voiceDevice} />
+            <ContactsPage
+              leads={leads}
+              voiceDevice={voiceDevice}
+              callsRefreshKey={callsRefreshKey}
+            />
           )}
 
           {activeNav === 'admin' && currentUser?.is_owner && (
@@ -697,7 +749,15 @@ export default function App() {
       {voiceDevice.pendingPostCallNote && (
         <OutboundNoteModal
           phone={voiceDevice.pendingPostCallNote.phone}
-          onSave={(note, outcome) => saveOutboundNote(voiceDevice.pendingPostCallNote.phone, note, outcome)}
+          onSave={async (note, outcome) => {
+            // Persist the note/outcome, then bump the shared refresh key so
+            // every calls-rendering surface picks up the updated row.
+            try {
+              await saveOutboundNote(voiceDevice.pendingPostCallNote.phone, note, outcome);
+            } finally {
+              bumpCallsRefreshKey();
+            }
+          }}
           onClose={voiceDevice.clearPostCallNote}
         />
       )}
@@ -707,6 +767,7 @@ export default function App() {
         <ContactHistoryModal
           phone={callsPagePhone}
           leads={leads}
+          callsRefreshKey={callsRefreshKey}
           onClose={() => setCallsPagePhone(null)}
         />
       )}

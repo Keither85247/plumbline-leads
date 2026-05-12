@@ -94,7 +94,7 @@ function formatDuration(seconds) {
   return m === 0 ? `${s}s` : `${m}m ${s}s`;
 }
 
-export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSeen, language = 'en' }) {
+export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSeen, language = 'en', callsRefreshKey = 0 }) {
   const t = translations[language] || translations.en;
   const TABS = [
     { key: 'Dialer',    label: t.callsTabDialer   },
@@ -132,22 +132,30 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
   const isFailed = deviceStatus === 'failed';
   const isBusy = isDialing || isRinging || isConnected || isEnded;
 
+  // Fetches Recent calls / voicemails. Re-runs whenever the user switches
+  // tabs OR App bumps callsRefreshKey (call ended, recording webhook landed,
+  // outbound note saved). Background refreshes keep the existing list visible
+  // — we only show the loading spinner on the very first render of a tab,
+  // never on a refresh, so the list never flickers between updates.
   useEffect(() => {
+    let cancelled = false;
     if (activeTab === 'Recent') {
-      setLoadingCalls(true);
+      if (calls.length === 0) setLoadingCalls(true);
       getCalls()
-        .then(data => setCalls(data))
+        .then(data => { if (!cancelled) setCalls(data); })
         .catch(err => console.error('Failed to load calls:', err))
-        .finally(() => setLoadingCalls(false));
+        .finally(() => { if (!cancelled) setLoadingCalls(false); });
     }
     if (activeTab === 'Voicemail') {
-      setLoadingCalls(true);
+      if (voicemails.length === 0) setLoadingCalls(true);
       getVoicemailLeads()
-        .then(data => setVoicemails(data))
+        .then(data => { if (!cancelled) setVoicemails(data); })
         .catch(err => console.error('Failed to load voicemails:', err))
-        .finally(() => setLoadingCalls(false));
+        .finally(() => { if (!cancelled) setLoadingCalls(false); });
     }
-  }, [activeTab]);
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, callsRefreshKey]);
 
   // After switching to Voicemail tab via a Recent-row click, scroll to the
   // specific voicemail and briefly highlight it. Fires once voicemails load.

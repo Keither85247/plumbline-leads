@@ -331,7 +331,7 @@ function ProfileField({ icon, label, value }) {
 
 // ── Main modal ───────────────────────────────────────────────────────────────
 
-export default function ContactHistoryModal({ phone, leads, onClose, onProfileSaved }) {
+export default function ContactHistoryModal({ phone, leads, onClose, onProfileSaved, callsRefreshKey = 0 }) {
   const lang = localStorage.getItem('language') || 'en';
   const t = translations[lang] || translations.en;
 
@@ -340,18 +340,23 @@ export default function ContactHistoryModal({ phone, leads, onClose, onProfileSa
   const [textMessages,     setTextMessages]     = useState([]);
   const [actionSheetPhone, setActionSheetPhone] = useState(null);
 
+  // Refetches when the modal opens (phone changes) AND whenever App bumps
+  // callsRefreshKey — so calls placed while this modal is open immediately
+  // appear in the history list without requiring close/reopen.
   useEffect(() => {
     if (!phone) return;
+    let cancelled = false;
     getCallsByPhone(phone)
-      .then(setCallNotes)
+      .then(d => { if (!cancelled) setCallNotes(d); })
       .catch(err => console.error('Failed to load call notes:', err));
     getEmailsByPhone(phone)
-      .then(setEmailItems)
+      .then(d => { if (!cancelled) setEmailItems(d); })
       .catch(err => console.error('Failed to load email history:', err));
     getMessageThread(phone)
-      .then(setTextMessages)
+      .then(d => { if (!cancelled) setTextMessages(d); })
       .catch(err => console.error('Failed to load text messages:', err));
-  }, [phone]);
+    return () => { cancelled = true; };
+  }, [phone, callsRefreshKey]);
 
   if (!phone) return null;
 
