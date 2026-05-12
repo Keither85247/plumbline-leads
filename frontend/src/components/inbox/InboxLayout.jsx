@@ -1,10 +1,34 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import ConversationList from './ConversationList';
 import MessageThread from './MessageThread';
 import LeadDetailsPanel from './LeadDetailsPanel';
 import NewMessageModal from './NewMessageModal';
 import { getConversations, getMessageThread, sendMessage, markMessagesRead, deleteConversation } from '../../api';
 import { translations } from '../../i18n';
+
+// Revoke any blob: URLs owned by an optimistic message. Server URLs (e.g.
+// /api/messages/media/...) are skipped, so this is always safe to call on
+// any message shape — including server-only rows that have media_urls.
+//
+// media_urls is stored as a JSON string in the DB / API but our optimistic
+// path also writes it as the same JSON string format, so a single parse
+// handles both. If parsing fails we bail silently — we'd rather leak a URL
+// than throw inside a state setter.
+function revokeBlobMediaUrls(message) {
+  if (!message || !message.media_urls) return;
+  let urls;
+  try {
+    urls = typeof message.media_urls === 'string'
+      ? JSON.parse(message.media_urls)
+      : message.media_urls;
+  } catch { return; }
+  if (!Array.isArray(urls)) return;
+  for (const url of urls) {
+    if (typeof url === 'string' && url.startsWith('blob:')) {
+      try { URL.revokeObjectURL(url); } catch {}
+    }
+  }
+}
 
 function EmptyThreadState({ t }) {
   return (
@@ -42,6 +66,22 @@ export default function InboxLayout() {
   // dialog). Separate from `deleting` so the modal stays disabled mid-request.
   const [pendingDelete, setPendingDelete]    = useState(null);
   const [deleting,      setDeleting]         = useState(false);
+
+  // Mirror current messageMap into a ref so the unmount-only cleanup effect
+  // can read the latest blob URLs without taking a dep on messageMap (which
+  // would re-run the cleanup on every change and prematurely revoke URLs
+  // that are still visible).
+  const messageMapRef = useRef(messageMap);
+  useEffect(() => { messageMapRef.current = messageMap; }, [messageMap]);
+  useEffect(() => () => {
+    // On unmount (logout, full app close, route change away from inbox),
+    // revoke every blob: URL still pinned by an optimistic message. Server
+    // URLs are skipped by the helper. Wrapped in try/catch via the helper
+    // so a malformed message never crashes the cleanup.
+    for (const msgs of Object.values(messageMapRef.current)) {
+      if (Array.isArray(msgs)) msgs.forEach(revokeBlobMediaUrls);
+    }
+  }, []);
 
   // ── Load + poll conversation list ──────────────────────────────────────────
   // MERGE policy: we never just replace `conversations` with the server list,
@@ -96,6 +136,15 @@ export default function InboxLayout() {
               && !serverIds.has(m.id)
               && (m.status === 'sending' || m.status === 'failed')
             );
+            // Anything in `local` that we're NOT keeping is being replaced
+            // by a server row (or is just stale). Revoke any blob URLs the
+            // dropped messages owned — the SafeImage rendering them will
+            // unmount in the upcoming commit, so the underlying File data
+            // no longer needs to be pinned. Skips non-blob URLs by design.
+            const keepIds = new Set(stillLocal.map(m => m.id));
+            for (const m of local) {
+              if (!keepIds.has(m.id)) revokeBlobMediaUrls(m);
+            }
             return { ...prev, [selectedId]: [...serverMsgs, ...stillLocal] };
           });
         })
@@ -297,6 +346,12 @@ export default function InboxLayout() {
       // poll won't return it either.
       setConversations(prev => prev.filter(c => c.id !== id));
       setMessageMap(prev => {
+        // Revoke any optimistic blob URLs in this conv's messages before
+        // dropping them — once the entry is removed, those URLs would
+        // become unreachable from any state and the underlying File data
+        // would be pinned for the rest of the session.
+        const dropping = prev[id] || [];
+        for (const m of dropping) revokeBlobMediaUrls(m);
         const next = { ...prev };
         delete next[id];
         return next;
