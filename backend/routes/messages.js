@@ -152,6 +152,13 @@ router.get('/media-proxy', (req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/', (req, res) => {
   try {
+    // The unread count uses the SAME definition as /api/counts (is_read=0 on
+    // inbound rows). Previously this column used a "no outbound reply"
+    // heuristic via a LEFT JOIN m2 — that always reported the latest inbound
+    // as unread regardless of whether the user had opened the thread, so
+    // PATCH /:phone/read (which writes is_read=1) had no effect on the row
+    // styling. Bottom-nav counter and row state are now driven by the same
+    // column.
     const rows = db.prepare(`
       SELECT
         m.phone,
@@ -159,7 +166,12 @@ router.get('/', (req, res) => {
         m.direction    AS lastMessageDir,
         m.media_urls   AS lastMessageMedia,
         m.created_at   AS timestamp,
-        SUM(CASE WHEN m.direction = 'inbound' AND m2.id IS NULL THEN 1 ELSE 0 END) AS unread,
+        (SELECT COUNT(*) FROM messages u
+          WHERE u.phone = m.phone
+            AND u.user_id = ?
+            AND u.direction = 'inbound'
+            AND (u.is_read IS NULL OR u.is_read = 0)
+        ) AS unread,
         (SELECT contact_name FROM leads
           WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone_number,'+',''),'-',''),' ',''),'(',''),')','')
               = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(m.phone,'+',''),'-',''),' ',''),'(',''),')','')
@@ -167,8 +179,6 @@ router.get('/', (req, res) => {
             AND user_id = ?
           ORDER BY created_at DESC LIMIT 1) AS contact_name
       FROM messages m
-      LEFT JOIN messages m2
-        ON m2.phone = m.phone AND m2.direction = 'outbound' AND m2.created_at >= m.created_at
       WHERE m.id = (
         SELECT id FROM messages m3
         WHERE m3.phone = m.phone
@@ -182,9 +192,8 @@ router.get('/', (req, res) => {
       AND m.phone NOT IN (
         SELECT phone FROM conversation_hides WHERE user_id = ?
       )
-      GROUP BY m.phone
       ORDER BY m.created_at DESC
-    `).all(req.userId, req.userId, req.userId, req.userId);
+    `).all(req.userId, req.userId, req.userId, req.userId, req.userId);
 
     return res.json(rows.map(r => {
       const digits       = (r.phone || '').replace(/\D/g, '');
