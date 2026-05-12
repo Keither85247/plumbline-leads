@@ -44,6 +44,16 @@ export function useVoiceDevice() {
   const deviceRef   = useRef(null);
   const ringtoneRef = useRef(null);
 
+  // True while a token refresh / device reinit is in flight. Used to
+  // dedupe concurrent triggers (tokenWillExpire + visibilitychange + focus
+  // can all fire close together when the user returns from background).
+  const refreshingRef = useRef(false);
+
+  // Mirrors activeCall + incomingCall as a single boolean. Read from inside
+  // the refresh helper without taking those as deps, so we never tear down
+  // the Device mid-call.
+  const callInFlightRef = useRef(false);
+
   // ── Ringtone + title alert ────────────────────────────────────────────────
   // Audio plays on desktop browsers where autoplay is unlocked by the user
   // gesture that called initialize(). On iOS Safari, autoplay is blocked
@@ -131,6 +141,7 @@ export function useVoiceDevice() {
       });
       stopAllAlerts();
       setActiveCall(call);
+      callInFlightRef.current = true;
       setStatus('connected');
     });
 
@@ -155,6 +166,7 @@ export function useVoiceDevice() {
       stopAllAlerts();
       setActiveCall(null);
       setIncomingCall(null);
+      callInFlightRef.current = false;
       setStatus('ended');
 
       // ── Call history is independent of post-call feedback ────────────────
@@ -217,6 +229,7 @@ export function useVoiceDevice() {
       // OR when an outbound attempt is cancelled. Always reset to ready.
       stopAllAlerts();
       setIncomingCall(null);
+      callInFlightRef.current = false;
       setStatus(deviceRef.current ? 'ready' : 'idle');
     });
 
@@ -237,11 +250,127 @@ export function useVoiceDevice() {
       setError(err.message);
       setActiveCall(null);
       setIncomingCall(null);
+      callInFlightRef.current = false;
       setStatus('failed');
     });
   }
 
   // ── Initialize Device ──────────────────────────────────────────────────────
+
+  // Build a fresh Device with all listeners attached. Pulled out of
+  // initialize() so refreshVoiceSession() can recreate the Device when
+  // updateToken() isn't enough (e.g. after a fatal device error). Listeners
+  // include the proper Twilio-SDK token-lifecycle hooks (tokenWillExpire +
+  // error code 20104) so we no longer rely on a brittle setTimeout that
+  // gets throttled while the app is backgrounded.
+  const createDevice = useCallback((token) => {
+    const device = new Device(token, {
+      logLevel: 'debug',
+      codecPreferences: ['opus', 'pcmu'],
+    });
+
+    device.on('registered', () => {
+      console.log('[VoiceDevice] Registered — ready for calls');
+      setError(null);   // clear any stale reconnect error
+      setStatus('ready');
+    });
+
+    device.on('unregistered', () => {
+      console.log('[VoiceDevice] Unregistered');
+      setStatus('idle');
+    });
+
+    // PROACTIVE refresh — Twilio fires this ~30s before the access token
+    // expires. Unlike setTimeout, the SDK manages this internally based on
+    // the JWT's `exp` claim, so it works correctly across backgrounding
+    // (the SDK fires it as soon as the page is foregrounded if the time
+    // has already passed).
+    device.on('tokenWillExpire', () => {
+      console.log('[VoiceDevice] tokenWillExpire — refreshing');
+      refreshVoiceSession('token_will_expire');
+    });
+
+    device.on('error', (err) => {
+      console.error('[VoiceDevice] Device error — code:', err.code, '| message:', err.message, '| twilioError:', err.twilioError);
+      // 20104 = AccessTokenExpired. Recover automatically instead of
+      // wedging into a sticky 'failed' state — the user shouldn't have to
+      // kill/reopen the app over a token TTL.
+      if (err.code === 20104) {
+        console.log('[VoiceDevice] AccessTokenExpired (20104) — refreshing');
+        refreshVoiceSession('device_error_20104');
+        return;
+      }
+      setError(err.message);
+      setStatus('failed');
+    });
+
+    device.on('incoming', (call) => {
+      const from = call.parameters?.From || call.customParameters?.get('From') || 'Unknown';
+      console.log('[VoiceDevice] Incoming call from:', from);
+      setRemoteIdentity(from);
+      setIncomingCall(call);
+      callInFlightRef.current = true;
+      setStatus('incoming');
+      ringtoneRef.current?.play().catch(() => {});
+      startTitleFlash(from);
+      wireCallEvents(call, { isInbound: true, phone: from });
+    });
+
+    device.register();
+    return device;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Single source of truth for token refresh / device recovery. All four
+  // triggers (tokenWillExpire, error 20104, visibilitychange→visible,
+  // window focus) funnel through here, deduped by refreshingRef. Active
+  // calls are NEVER torn down — refresh defers when a call is in flight
+  // and is retried when the call ends or the next trigger fires.
+  const refreshVoiceSession = useCallback(async (reason) => {
+    if (refreshingRef.current) {
+      console.log('[VoiceDevice] refresh already in flight — skipping', { reason });
+      return;
+    }
+    if (callInFlightRef.current) {
+      console.log('[VoiceDevice] active call — deferring refresh', { reason });
+      return;
+    }
+
+    refreshingRef.current = true;
+    console.log('[VoiceDevice] refreshVoiceSession start', { reason });
+    setStatus('registering'); // reuse "Connecting to voice…" copy
+
+    try {
+      const newToken = await fetchToken();
+
+      if (deviceRef.current) {
+        try {
+          deviceRef.current.updateToken(newToken);
+          console.log('[VoiceDevice] updateToken succeeded', { reason });
+        } catch (updateErr) {
+          // If updateToken throws (device in a fatal state, destroyed, etc.),
+          // recreate the Device with the fresh token.
+          console.warn('[VoiceDevice] updateToken failed — recreating device', {
+            reason, err: updateErr.message,
+          });
+          try { deviceRef.current.destroy(); } catch {}
+          deviceRef.current = null;
+          deviceRef.current = createDevice(newToken);
+        }
+      } else {
+        deviceRef.current = createDevice(newToken);
+      }
+
+      setError(null);
+      // status will move to 'ready' via the device 'registered' event
+    } catch (err) {
+      console.error('[VoiceDevice] refreshVoiceSession failed', { reason, err: err.message });
+      setError(err.message);
+      setStatus('failed');
+    } finally {
+      refreshingRef.current = false;
+    }
+  }, [createDevice]);
 
   const initialize = useCallback(async () => {
     if (deviceRef.current) return; // already initialized
@@ -268,60 +397,43 @@ export function useVoiceDevice() {
       document.addEventListener('click',      unlockRingtone, { once: true, capture: true });
 
       const token = await fetchToken();
-      const device = new Device(token, {
-        logLevel: 'debug',
-        codecPreferences: ['opus', 'pcmu'],
-      });
-
-      device.on('registered', () => {
-        console.log('[VoiceDevice] Registered — ready for calls');
-        setStatus('ready');
-      });
-
-      device.on('unregistered', () => {
-        console.log('[VoiceDevice] Unregistered');
-        setStatus('idle');
-      });
-
-      device.on('error', (err) => {
-        console.error('[VoiceDevice] Device error — code:', err.code, '| message:', err.message, '| twilioError:', err.twilioError);
-        setError(err.message);
-        setStatus('failed');
-      });
-
-      device.on('incoming', (call) => {
-        const from = call.parameters?.From || call.customParameters?.get('From') || 'Unknown';
-        console.log('[VoiceDevice] Incoming call from:', from);
-        setRemoteIdentity(from);
-        setIncomingCall(call);
-        setStatus('incoming');
-        ringtoneRef.current?.play().catch(() => {}); // works on desktop; silently ignored on iOS
-        startTitleFlash(from);
-        // isInbound: true — ensures post-call note modal is NOT shown for inbound calls
-        wireCallEvents(call, { isInbound: true, phone: from });
-      });
-
-      // Token refresh before expiry (55 min, token TTL is 60)
-      const refreshTimer = setTimeout(async () => {
-        try {
-          const newToken = await fetchToken();
-          device.updateToken(newToken);
-          console.log('[VoiceDevice] Token refreshed');
-        } catch (e) {
-          console.warn('[VoiceDevice] Token refresh failed:', e.message);
-        }
-      }, 55 * 60 * 1000);
-
-      device.register();
-      deviceRef.current = device;
-
-      return () => clearTimeout(refreshTimer);
+      deviceRef.current = createDevice(token);
     } catch (err) {
       console.error('[VoiceDevice] Init failed:', err.message);
       setError(err.message);
       setStatus('failed');
     }
-  }, []);
+  }, [createDevice]);
+
+  // ── App-resume / visibility recovery ───────────────────────────────────────
+  // Browsers throttle background timers heavily, so a token that should
+  // refresh at 55min can quietly pass its expiry while the app is hidden.
+  // When the user returns we re-validate the session: refreshVoiceSession
+  // is idempotent + deduplicated, and skipped during active calls.
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState === 'visible') {
+        refreshVoiceSession('visibility_visible');
+      }
+    }
+    function onFocus() {
+      refreshVoiceSession('window_focus');
+    }
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [refreshVoiceSession]);
+
+  // Manual retry surface for the UI — clears the error and triggers a
+  // refresh. Bound at module scope so the Dialer / failure card can wire
+  // a "Retry" button without prop-drilling.
+  const retryVoiceSession = useCallback(() => {
+    setError(null);
+    refreshVoiceSession('manual_retry');
+  }, [refreshVoiceSession]);
 
   // ── Outbound call ──────────────────────────────────────────────────────────
 
@@ -449,5 +561,9 @@ export function useVoiceDevice() {
     rejectCall,
     hangUp,
     clearPostCallNote,
+    // Manual retry — drives the "Tap to retry" affordance the failure card
+    // shows when refresh has failed several times. Cleared error first then
+    // routes through the standard refresh pipeline.
+    retryVoiceSession,
   };
 }

@@ -676,7 +676,10 @@ export default function App() {
         }}
       />
 
-      {/* Voice call error toast — shown when a call attempt fails from any page */}
+      {/* Voice call error toast — shown when a call attempt fails from any page.
+          Includes a Retry button so the user is never stuck after a Twilio
+          token expires or a transient device error — refreshVoiceSession is
+          deduplicated + active-call-safe so tapping Retry is always safe. */}
       {voiceDevice.status === 'failed' && voiceDevice.error && (
         <div className="fixed inset-x-0 top-16 z-50 flex justify-center px-4 pointer-events-none">
           <div className="w-full max-w-sm bg-red-50 border border-red-200 rounded-xl shadow-lg px-4 py-3 flex items-center gap-3 pointer-events-auto">
@@ -686,6 +689,13 @@ export default function App() {
             <p className="flex-1 text-sm text-red-700 font-medium">
               {t.appCallFailed}{voiceDevice.error}
             </p>
+            <button
+              type="button"
+              onClick={voiceDevice.retryVoiceSession}
+              className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg text-red-700 bg-white border border-red-200 hover:bg-red-100 transition-colors"
+            >
+              {t.appRetry || 'Retry'}
+            </button>
           </div>
         </div>
       )}
