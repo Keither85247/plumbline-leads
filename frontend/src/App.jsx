@@ -314,6 +314,11 @@ export default function App() {
   const [callsBadge, setCallsBadge] = useState(0);
   const [remoteCounts, setRemoteCounts] = useState({ texts: 0, emails: 0 });
 
+  // Watch the bus's `counts` key — invalidate('counts') from anywhere
+  // (EmailPage's mark-as-read, future inbox / leads mutations, etc.)
+  // re-fires this effect immediately instead of waiting for the 30s tick.
+  const countsRefreshKey = useRefreshKey('counts');
+
   useEffect(() => {
     if (!currentUser) return; // don't poll while logged out
     let cancelled = false;
@@ -350,7 +355,7 @@ export default function App() {
     fetch_();
     const t = setInterval(fetch_, 30_000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [currentUser]);
+  }, [currentUser, countsRefreshKey]);
 
   // ── Backend health indicator ──────────────────────────────────────────────
   // 'checking' → gray pulse  |  'up' → green  |  'down' → red

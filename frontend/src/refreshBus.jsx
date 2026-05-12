@@ -37,7 +37,10 @@
 // refetch"; each component still owns its own fetch logic and state.
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
-const REFRESH_KEYS = ['leads', 'calls', 'messages', 'contacts', 'timeline'];
+// `counts` drives the bottom-nav unread badges (calls/texts/emails).
+// Invalidate it any time a user action changes read state so the badge
+// updates without waiting for the 30 s getCounts heartbeat.
+const REFRESH_KEYS = ['leads', 'calls', 'messages', 'contacts', 'timeline', 'counts'];
 
 const RefreshBusContext = createContext(null);
 

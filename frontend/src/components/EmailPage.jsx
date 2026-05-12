@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getEmails, getGmailStatus, disconnectGmail, sendEmail, patchEmail, softDeleteEmail, searchContacts, BACKEND_URL } from '../api';
+import { useInvalidate } from '../refreshBus';
 import { translations } from '../i18n';
 
 function getT() {
@@ -1027,6 +1028,7 @@ export default function EmailPage() {
   const [settingsOpen,  setSettingsOpen]  = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [toast,         setToast]         = useState(null); // { message, type }
+  const invalidate = useInvalidate();
 
   // ── Fetch email list ───────────────────────────────────────────────────────
   // `fetchEmails` is the stable callback used both by the main effect and by
@@ -1112,6 +1114,10 @@ export default function EmailPage() {
     if (selectedEmail?.id === email.id) setSelectedEmail(s => s && { ...s, is_read: newRead });
     try {
       await patchEmail(email.id, { is_read: newRead });
+      // The bottom-nav email badge comes from getCounts polled every 30s.
+      // Without this invalidate, opening an unread email would update the
+      // row instantly but the badge would stay stale for up to 30 seconds.
+      invalidate('counts');
     } catch {
       // Revert on failure
       setEmails(prev => prev.map(e => e.id === email.id ? { ...e, is_read: email.is_read } : e));
@@ -1121,11 +1127,15 @@ export default function EmailPage() {
 
   async function handleDelete(email) {
     // Optimistic remove
+    const wasUnread = email.is_read === 0 && email.direction !== 'outbound';
     setEmails(prev => prev.filter(e => e.id !== email.id));
     if (selectedEmail?.id === email.id) setSelectedEmail(null);
     showToast(t.emailDeletedToast);
     try {
       await softDeleteEmail(email.id);
+      // Refresh the bottom-nav badge if we just removed an unread inbound —
+      // the counts query (counts.js) filters out is_deleted=1.
+      if (wasUnread) invalidate('counts');
     } catch {
       fetchEmails(); // Re-fetch on failure to restore
       showToast(t.emailFailedDelete, 'error');
@@ -1134,11 +1144,14 @@ export default function EmailPage() {
 
   async function handleArchive(email) {
     // Optimistic remove from inbox view
+    const wasUnread = email.is_read === 0 && email.direction !== 'outbound';
     setEmails(prev => prev.filter(e => e.id !== email.id));
     if (selectedEmail?.id === email.id) setSelectedEmail(null);
     showToast(t.emailArchivedToast);
     try {
       await patchEmail(email.id, { is_archived: 1 });
+      // Same as delete — archived emails are excluded from the counts query.
+      if (wasUnread) invalidate('counts');
     } catch {
       fetchEmails();
       showToast(t.emailFailedArchive, 'error');
