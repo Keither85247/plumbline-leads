@@ -13,6 +13,7 @@ import OutboundNoteModal from './components/OutboundNoteModal';
 import InboxLayout from './components/inbox/InboxLayout';
 import EmailPage from './components/EmailPage';
 import AdminPage from './components/AdminPage';
+import PaywallGate from './components/PaywallGate';
 import LoginPage from './components/LoginPage';
 import NumberPickerModal from './components/NumberPickerModal';
 import { getLeads, saveOutboundNote, getCounts, getMe, logout, updateProfile, API_BASE, AuthError } from './api';
@@ -116,6 +117,31 @@ const BOTTOM_NAV_ICONS = [
     ),
   },
 ];
+
+// ── Paywall access helper ─────────────────────────────────────────────────────
+// Returns true when the user should be allowed past the paywall gate.
+// This is the ONLY place that decides paywall access — keep it here.
+//
+// To add Stripe/subscription later:
+//  - Add 'active' and 'trial' to the allowed statuses below (already there)
+//  - Set access_status on the backend when subscription is confirmed
+//
+// To remove tester bypass:
+//  - Set VITE_ENABLE_TESTER_BYPASS=false on Vercel
+//  - Set ENABLE_TESTER_BYPASS=false on Render
+//  - The 'tester' status still grants access so existing testers aren't locked out;
+//    stop accepting new tester bypasses via the env vars instead.
+function paywallCleared(user) {
+  if (!user) return false;
+  if (user.is_owner) return true;
+  const status = user.access_status || '';
+  if (['tester', 'active', 'trial'].includes(status)) return true;
+  // Legacy localStorage flag — lets existing testers (who bypassed pre-server-tracking)
+  // pass through without seeing the paywall again. Removed once all users have
+  // server-side status upgraded.
+  if (localStorage.getItem('plIsTester') === '1') return true;
+  return false;
+}
 
 const STATUS_ORDER = { New: 0, Contacted: 1, Qualified: 2, Closed: 3 };
 
@@ -383,6 +409,21 @@ export default function App() {
       <Sentry.ErrorBoundary fallback={<div className="h-dvh flex items-center justify-center"><p className="text-sm text-gray-500">Something went wrong.</p></div>}>
         <LoginPage onSuccess={handleLoginSuccess} />
       </Sentry.ErrorBoundary>
+    );
+  }
+
+  // Paywall gate — shown when user hasn't cleared access yet
+  // Owner accounts and users with access_status tester/active/trial pass through.
+  if (!paywallCleared(currentUser)) {
+    return (
+      <PaywallGate
+        user={currentUser}
+        onBypass={(updatedUser) => {
+          setCurrentUser(updatedUser);
+          // If the user still has no number, checkAssignedNumber will handle it
+          checkAssignedNumber(updatedUser);
+        }}
+      />
     );
   }
 

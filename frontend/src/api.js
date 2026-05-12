@@ -197,6 +197,20 @@ export async function register({ email, password, displayName, businessName }) {
 }
 
 /**
+ * Activate the tester bypass for the current user.
+ * Backend must have ENABLE_TESTER_BYPASS=true.
+ * Returns { ok: true, access_status: 'tester' } on success.
+ */
+export async function activateTesterBypass() {
+  const res = await apiFetch(`${AUTH_BASE}/tester-bypass`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Tester bypass failed');
+  }
+  return res.json();
+}
+
+/**
  * Log out — deletes the server-side session and clears the cookie.
  */
 export async function logout() {

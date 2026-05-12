@@ -1,11 +1,21 @@
 'use strict';
-const express  = require('express');
-const router   = express.Router();
-const bcrypt   = require('bcrypt');
-const crypto   = require('crypto');
-const { google } = require('googleapis');
-const db = require('../db');
+const express      = require('express');
+const router       = express.Router();
+const bcrypt       = require('bcrypt');
+const crypto       = require('crypto');
+const { google }   = require('googleapis');
+const db           = require('../db');
+const requireAuth  = require('../middleware/requireAuth');
 const { oauth2Client, syncRecentEmails } = require('../services/gmailService');
+
+// ── Access status helper ──────────────────────────────────────────────────────
+// Derives the effective access status for a user row.
+// Owners bypass paywall unconditionally. Everyone else uses the stored column.
+function effectiveAccessStatus(user) {
+  if (!user) return 'unknown';
+  if (user.is_owner) return 'owner';
+  return user.access_status || 'unknown';
+}
 
 // ── Session helpers ───────────────────────────────────────────────────────────
 
@@ -115,7 +125,15 @@ router.post('/login', express.json(), async (req, res) => {
   console.log(`[Auth] assignedNumber for user ${user.id}: ${phoneRow ? phoneRow.phone_number : 'none'}`);
 
   // Include token in response body for Safari ITP (blocked cross-origin cookies).
-  return res.json({ id: user.id, email: user.email, display_name: user.display_name, is_owner: user.is_owner, token, assignedNumber: phoneRow || null });
+  return res.json({
+    id:            user.id,
+    email:         user.email,
+    display_name:  user.display_name,
+    is_owner:      user.is_owner,
+    access_status: effectiveAccessStatus(user),
+    token,
+    assignedNumber: phoneRow || null,
+  });
 });
 
 // ── POST /auth/register ───────────────────────────────────────────────────────
@@ -191,6 +209,7 @@ router.post('/register', express.json(), async (req, res) => {
     email:         normalizedEmail,
     display_name:  display_name.trim(),
     is_owner:      0,
+    access_status: 'unknown',
     token,
     assignedNumber: null,
   });
@@ -228,7 +247,7 @@ router.get('/me', (req, res) => {
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
 
   const row = db.prepare(`
-    SELECT u.id, u.email, u.display_name, u.is_owner
+    SELECT u.id, u.email, u.display_name, u.is_owner, u.access_status
     FROM sessions s
     JOIN users u ON u.id = s.user_id
     WHERE s.token = ?
@@ -245,7 +264,34 @@ router.get('/me', (req, res) => {
     'SELECT id, phone_number, friendly_name, twilio_sid FROM phone_numbers WHERE assigned_user_id = ? LIMIT 1'
   ).get(row.id);
 
-  return res.json({ ...row, assignedNumber: phoneRow || null });
+  return res.json({
+    ...row,
+    access_status:  effectiveAccessStatus(row),
+    assignedNumber: phoneRow || null,
+  });
+});
+
+// ── POST /auth/tester-bypass ──────────────────────────────────────────────────
+// Marks the authenticated user as a beta tester, granting paywall access.
+// Gated by ENABLE_TESTER_BYPASS=true env var on the backend.
+// Cannot be used to elevate to owner/admin.
+
+router.post('/tester-bypass', requireAuth, (req, res) => {
+  if (process.env.ENABLE_TESTER_BYPASS !== 'true') {
+    return res.status(403).json({ error: 'Tester bypass is not currently enabled' });
+  }
+
+  const user = db.prepare('SELECT id, is_owner, access_status FROM users WHERE id = ?').get(req.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  // Owners already have full access; no-op but succeed gracefully
+  if (user.is_owner) {
+    return res.json({ ok: true, access_status: 'owner' });
+  }
+
+  db.prepare("UPDATE users SET access_status = 'tester' WHERE id = ?").run(req.userId);
+  console.log(`[Auth] Tester bypass activated for user ${req.userId}`);
+  return res.json({ ok: true, access_status: 'tester' });
 });
 
 // ── Gmail OAuth ───────────────────────────────────────────────────────────────

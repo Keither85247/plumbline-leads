@@ -50,7 +50,8 @@ router.post('/reset-demo', requireOwner, (req, res) => {
 
 router.get('/users', requireOwner, (_req, res) => {
   const users = db.prepare(`
-    SELECT u.id, u.email, u.display_name, u.is_owner, u.is_suspended, u.created_at,
+    SELECT u.id, u.email, u.display_name, u.business_name, u.is_owner, u.is_suspended,
+           u.access_status, u.created_at,
            pn.phone_number AS assigned_number, pn.is_suspended AS number_suspended
     FROM users u
     LEFT JOIN phone_numbers pn ON pn.assigned_user_id = u.id

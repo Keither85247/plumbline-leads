@@ -199,6 +199,10 @@ try { db.exec('ALTER TABLE users ADD COLUMN is_owner INTEGER NOT NULL DEFAULT 0'
 // Tester account suspension — owner can flip this to 1 to block all activity
 try { db.exec('ALTER TABLE users ADD COLUMN is_suspended INTEGER NOT NULL DEFAULT 0'); } catch {}
 try { db.exec('ALTER TABLE users ADD COLUMN business_name TEXT'); } catch {}
+// Access/subscription status — drives the paywall gate after login
+// Values: 'unknown' (default) | 'tester' | 'trial' | 'active' | 'blocked'
+// Owners are always treated as 'owner' regardless of this column.
+try { db.exec("ALTER TABLE users ADD COLUMN access_status TEXT NOT NULL DEFAULT 'unknown'"); } catch {}
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 // One row per active login. Token is a 32-byte random hex string stored in an

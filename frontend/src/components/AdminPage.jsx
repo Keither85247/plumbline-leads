@@ -41,6 +41,26 @@ function StatCard({ label, value, accent }) {
 
 // ── Row ───────────────────────────────────────────────────────────────────────
 
+// Maps access_status → badge style
+const ACCESS_BADGE = {
+  owner:   { label: 'owner',   cls: 'bg-indigo-100 text-indigo-700' },
+  tester:  { label: 'tester',  cls: 'bg-blue-100 text-blue-700' },
+  active:  { label: 'active',  cls: 'bg-green-100 text-green-700' },
+  trial:   { label: 'trial',   cls: 'bg-emerald-100 text-emerald-700' },
+  blocked: { label: 'blocked', cls: 'bg-red-100 text-red-600' },
+  unknown: { label: 'unknown', cls: 'bg-gray-100 text-gray-400' },
+};
+
+function AccessBadge({ user }) {
+  const status = user.is_owner ? 'owner' : (user.access_status || 'unknown');
+  const { label, cls } = ACCESS_BADGE[status] || ACCESS_BADGE.unknown;
+  return (
+    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wide ${cls}`}>
+      {label}
+    </span>
+  );
+}
+
 function UserRow({ user, t }) {
   return (
     <div className="px-4 py-3 flex items-start gap-3">
@@ -57,22 +77,17 @@ function UserRow({ user, t }) {
           <span className="text-sm font-semibold text-gray-800 truncate">
             {user.display_name || user.email}
           </span>
-          {/* Role badge */}
-          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
-            user.is_owner
-              ? 'bg-indigo-100 text-indigo-600'
-              : 'bg-gray-100 text-gray-500'
-          }`}>
-            {user.is_owner ? t.adminOwner : t.adminTester}
-          </span>
-          {/* Suspended badge */}
+          <AccessBadge user={user} />
           {!!user.is_suspended && (
-            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-100 text-red-600">
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-100 text-red-600 uppercase tracking-wide">
               {t.adminSuspended}
             </span>
           )}
         </div>
         <p className="text-xs text-gray-400 truncate">{user.email}</p>
+        {user.business_name && (
+          <p className="text-xs text-gray-500 truncate">{user.business_name}</p>
+        )}
         <p className="text-xs text-gray-400 mt-0.5">
           {user.assigned_number
             ? <span className="text-green-600 font-medium">{user.assigned_number}</span>

@@ -1,9 +1,10 @@
 import { useState, useRef } from 'react';
 import CoreValueSlide from './slides/CoreValueSlide';
 import HowItWorksSlide from './slides/HowItWorksSlide';
-import PricingSlide from './slides/PricingSlide';
 
-const TOTAL_STEPS = 3;
+// Two intro slides shown before login — marketing/orientation only.
+// The paywall/access gate (PaywallGate) runs AFTER login as a separate screen.
+const TOTAL_STEPS = 2;
 
 export default function FirstRunOnboarding({ onComplete }) {
   const [step, setStep] = useState(0);
@@ -21,9 +22,8 @@ export default function FirstRunOnboarding({ onComplete }) {
     }, 200);
   };
 
-  const finish = (isTester = false) => {
+  const finish = () => {
     localStorage.setItem('plOnboardingSeen', '1');
-    if (isTester) localStorage.setItem('plIsTester', '1');
     onComplete();
   };
 
@@ -35,12 +35,7 @@ export default function FirstRunOnboarding({ onComplete }) {
     if (touchStartX.current === null) return;
     const delta = touchStartX.current - e.changedTouches[0].clientX;
     touchStartX.current = null;
-    // Swipe left (>60px) advances; step 2 (pricing) swipe-left = Get Started
-    if (delta > 60) {
-      if (step < TOTAL_STEPS - 1) {
-        goNext();
-      }
-    }
+    if (delta > 60 && step < TOTAL_STEPS - 1) goNext();
   };
 
   return (
@@ -60,35 +55,27 @@ export default function FirstRunOnboarding({ onComplete }) {
         }}
       >
         {step === 0 && <CoreValueSlide onNext={goNext} />}
-        {step === 1 && <HowItWorksSlide onNext={goNext} />}
-        {step === 2 && (
-          <PricingSlide
-            onGetStarted={() => finish(false)}
-            onTesterBypass={() => finish(true)}
-          />
-        )}
+        {step === 1 && <HowItWorksSlide onNext={finish} />}
       </div>
 
-      {/* Progress dots — hidden on pricing slide */}
-      {step < 2 && (
-        <div
-          className="absolute bottom-0 left-0 right-0 flex items-center justify-center gap-2 pb-5"
-          style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 20px)' }}
-        >
-          {[0, 1].map(i => (
-            <div
-              key={i}
-              style={{
-                width:            i === step ? 24 : 8,
-                height:           8,
-                borderRadius:     4,
-                background:       i === step ? '#2563EB' : '#CBD5E1',
-                transition:       'width 250ms ease, background 250ms ease',
-              }}
-            />
-          ))}
-        </div>
-      )}
+      {/* Progress dots */}
+      <div
+        className="absolute bottom-0 left-0 right-0 flex items-center justify-center gap-2 pb-5"
+        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 20px)' }}
+      >
+        {[0, 1].map(i => (
+          <div
+            key={i}
+            style={{
+              width:        i === step ? 24 : 8,
+              height:       8,
+              borderRadius: 4,
+              background:   i === step ? '#2563EB' : '#CBD5E1',
+              transition:   'width 250ms ease, background 250ms ease',
+            }}
+          />
+        ))}
+      </div>
     </div>
   );
 }

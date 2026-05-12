@@ -434,6 +434,18 @@ export const translations = {
     onboardEverythingConn:'Everything stays connected.',
     onboardEverythingConnSub: 'Every call, text, voicemail, and follow-up tied to the customer automatically.',
 
+    // PaywallGate — post-login access gate (future subscription screen)
+    paywallLabel:        'Simple pricing',
+    paywallHeadline:     "Built for contractors who can't afford to miss leads.",
+    paywallSub:          'Calls, texts, leads, contacts, and customer history — one simple workspace.',
+    paywallCta:          'Start Free Trial',
+    paywallCtaSoon:      'Coming Soon',
+    paywallTesterBtn:    "I'm a Tester",
+    paywallTesterNote:   'Beta testers can continue for free during testing.',
+    paywallActivating:   'Activating…',
+    paywallCtaHint:      'Subscription coming soon — check back for early-access pricing.',
+    paywallAccessStatus: 'Access',
+
     // App-level strings
     appSomethingWrong:    'Something went wrong.',
     appErrorReported:     'The error has been reported. Try reloading the page.',
@@ -958,6 +970,18 @@ export const translations = {
     onboardNeverLoseSub:  'Llamadas, textos, correos e historial del cliente — todo en un lugar.',
     onboardEverythingConn:'Todo queda conectado.',
     onboardEverythingConnSub: 'Cada llamada, texto, buzón de voz y seguimiento vinculado al cliente automáticamente.',
+
+    // PaywallGate
+    paywallLabel:        'Precio sencillo',
+    paywallHeadline:     'Hecho para contratistas que no pueden perder clientes.',
+    paywallSub:          'Llamadas, textos, clientes, contactos e historial — todo en un solo lugar.',
+    paywallCta:          'Prueba gratis',
+    paywallCtaSoon:      'Próximamente',
+    paywallTesterBtn:    'Soy tester',
+    paywallTesterNote:   'Los testers beta pueden continuar gratis durante las pruebas.',
+    paywallActivating:   'Activando…',
+    paywallCtaHint:      'Suscripción disponible pronto — acceso anticipado con precio especial.',
+    paywallAccessStatus: 'Acceso',
 
     // App-level strings
     appSomethingWrong:    'Algo salió mal.',
