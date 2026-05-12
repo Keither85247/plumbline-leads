@@ -400,7 +400,53 @@ export default function App() {
     }
   }, []);
 
+  // Initial fetch when the user signs in. Subsequent refreshes go through
+  // the polling + visibility + tab + post-call triggers below.
   useEffect(() => { if (currentUser) fetchLeads(); }, [fetchLeads, currentUser]);
+
+  // ── Lead refresh triggers ─────────────────────────────────────────────────
+  // Previously leads were fetched ONCE on first sign-in and never again, so
+  // a voicemail-generated lead never appeared until full app kill/reopen.
+  // Multiple lightweight triggers funnel into fetchLeads (a stable
+  // useCallback). Each fetch overwrites the leads array via setLeads(data)
+  // — LeadList keys by lead.id so React reconciles in place without flicker.
+  //
+  //   1. 30-second polling while signed in (heartbeat refresh)
+  //   2. document visibilitychange → visible (catch app foreground)
+  //   3. window focus (catch desktop tab focus)
+  //   4. activeNav === 'overview' (user opened the Leads tab)
+  //   5. callsRefreshKey (a call/voicemail just landed — a new lead may
+  //      have been created by the voicemail processing pipeline)
+  useEffect(() => {
+    if (!currentUser) return;
+    const refresh = () => { fetchLeads(); };
+
+    const interval = setInterval(refresh, 30_000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', refresh);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [currentUser, fetchLeads]);
+
+  // Tab-activation refresh: opening the Leads tab triggers an immediate
+  // fetch so the user always sees the freshest list when they arrive.
+  useEffect(() => {
+    if (currentUser && activeNav === 'overview') fetchLeads();
+  }, [activeNav, currentUser, fetchLeads]);
+
+  // Post-call refresh: when callsRefreshKey bumps (call ended, recording
+  // webhook landed, etc.), a voicemail may have just produced a lead.
+  // Refetch so the new lead shows up without waiting for the 30s tick.
+  useEffect(() => {
+    if (currentUser && callsRefreshKey > 0) fetchLeads();
+  }, [callsRefreshKey, currentUser, fetchLeads]);
 
   const handleProfileSave = useCallback(async ({ displayName, businessName: bizName }) => {
     const saved = await updateProfile({ displayName, businessName: bizName });
