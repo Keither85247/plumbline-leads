@@ -32,8 +32,8 @@ const settingsRouter   = require('./routes/settings');
 const numbersRouter    = require('./routes/numbers');
 const requireAuth      = require('./middleware/requireAuth');
 
-const { startPolling }          = require('./jobs/gmailPoller');
-const { backfillMissingLabels } = require('./services/gmailService');
+const { startPolling }                                     = require('./jobs/gmailPoller');
+const { backfillMissingLabels, getAllConnectedUserIds }     = require('./services/gmailService');
 
 // ── One-time owner password reset ─────────────────────────────────────────────
 // Set RESET_OWNER_PASSWORD + RESET_OWNER_EMAIL in Render env vars.
@@ -291,7 +291,8 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);
   startPolling(60_000);
-  backfillMissingLabels().catch(err =>
-    console.error('[Startup] Label backfill error:', err.message)
-  );
+  // Run label backfill for every user that has a connected Gmail account
+  const connectedIds = getAllConnectedUserIds();
+  Promise.all(connectedIds.map(uid => backfillMissingLabels(uid)))
+    .catch(err => console.error('[Startup] Label backfill error:', err.message));
 });

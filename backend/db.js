@@ -236,12 +236,14 @@ try {
   const owner = db.prepare('SELECT id FROM users WHERE is_owner = 1 ORDER BY id LIMIT 1').get();
   if (owner) {
     const stamp = db.transaction(() => {
-      const r1 = db.prepare('UPDATE leads    SET user_id = ? WHERE user_id IS NULL').run(owner.id);
-      const r2 = db.prepare('UPDATE calls    SET user_id = ? WHERE user_id IS NULL').run(owner.id);
-      const r3 = db.prepare('UPDATE emails   SET user_id = ? WHERE user_id IS NULL').run(owner.id);
-      const r4 = db.prepare('UPDATE messages SET user_id = ? WHERE user_id IS NULL').run(owner.id);
-      const r5 = db.prepare('UPDATE contacts SET user_id = ? WHERE user_id IS NULL').run(owner.id);
-      return r1.changes + r2.changes + r3.changes + r4.changes + r5.changes;
+      const r1 = db.prepare('UPDATE leads        SET user_id = ? WHERE user_id IS NULL').run(owner.id);
+      const r2 = db.prepare('UPDATE calls        SET user_id = ? WHERE user_id IS NULL').run(owner.id);
+      const r3 = db.prepare('UPDATE emails       SET user_id = ? WHERE user_id IS NULL').run(owner.id);
+      const r4 = db.prepare('UPDATE messages     SET user_id = ? WHERE user_id IS NULL').run(owner.id);
+      const r5 = db.prepare('UPDATE contacts     SET user_id = ? WHERE user_id IS NULL').run(owner.id);
+      // Gmail tokens without a user_id belong to the owner (pre-multi-user tokens)
+      const r6 = db.prepare('UPDATE gmail_tokens SET user_id = ? WHERE user_id IS NULL').run(owner.id);
+      return r1.changes + r2.changes + r3.changes + r4.changes + r5.changes + r6.changes;
     });
     const total = stamp();
     if (total > 0) console.log(`[DB] Stamped ${total} legacy rows → owner user_id=${owner.id}`);

@@ -158,11 +158,11 @@ router.post('/', upload.array('attachments', 5), async (req, res) => {
   let threadId       = null;
 
   if (direction === 'outbound' && to_address && body) {
-    if (!gmailService.isConnected()) {
+    if (!gmailService.isConnected(req.userId)) {
       return res.status(400).json({ error: 'Gmail not connected. Connect your account first.' });
     }
     try {
-      const sent = await gmailService.sendEmail({ to: to_address, subject: subject || '', body, attachments });
+      const sent = await gmailService.sendEmail(req.userId, { to: to_address, subject: subject || '', body, attachments });
       gmailMessageId = sent.id       ?? null;
       threadId       = sent.threadId ?? null;
       console.log(`[Emails] Sent via Gmail to ${to_address} (msgId: ${gmailMessageId}, attachments: ${attachments.length})`);

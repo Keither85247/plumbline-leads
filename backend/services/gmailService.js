@@ -2,48 +2,75 @@
 const { google } = require('googleapis');
 const db = require('../db');
 
-// ── OAuth2 client ─────────────────────────────────────────────────────────────
+// ── OAuth2 client factory ─────────────────────────────────────────────────────
+// The shared oauth2Client is used ONLY for the OAuth URL generation and code
+// exchange in auth.js. All per-user Gmail API calls use isolated clients
+// created by loadCredentials(userId) so tokens never bleed across accounts.
 
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.GOOGLE_REDIRECT_URI,
-);
+function createBaseClient() {
+  return new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI,
+  );
+}
 
-// ── Token persistence ─────────────────────────────────────────────────────────
+// Exported for auth.js OAuth flow (URL generation + code exchange only).
+// Do NOT use this for making Gmail API calls — use getClient(userId) instead.
+const oauth2Client = createBaseClient();
+
+// ── Per-user token persistence ────────────────────────────────────────────────
 
 /**
- * Load stored tokens from DB and apply to the OAuth2 client.
- * Returns the DB row, or null if not connected.
+ * Load stored tokens for a specific user and return an authenticated OAuth2 client.
+ * Returns null if the user has no connected Gmail account.
+ *
+ * Each call creates a fresh, isolated client — no global state shared between users.
+ *
+ * @param {number} userId
+ * @returns {{ client: OAuth2Client, row: object } | null}
  */
-function loadCredentials() {
-  const row = db.prepare('SELECT * FROM gmail_tokens ORDER BY id LIMIT 1').get();
+function loadCredentials(userId) {
+  if (!userId) return null;
+  const row = db.prepare('SELECT * FROM gmail_tokens WHERE user_id = ?').get(userId);
   if (!row) return null;
-  oauth2Client.setCredentials({
+
+  const client = createBaseClient();
+  client.setCredentials({
     access_token:  row.access_token,
     refresh_token: row.refresh_token,
     expiry_date:   row.expiry_date,
   });
-  return row;
-}
 
-// When googleapis auto-refreshes an expired access token, persist the new one.
-oauth2Client.on('tokens', (tokens) => {
-  const row = db.prepare('SELECT id FROM gmail_tokens ORDER BY id LIMIT 1').get();
-  if (!row) return;
-  db.prepare(`
-    UPDATE gmail_tokens
-    SET access_token = ?,
-        expiry_date  = ?,
-        updated_at   = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).run(tokens.access_token, tokens.expiry_date ?? null, row.id);
-});
+  // Auto-persist refreshed tokens for this specific user only
+  client.on('tokens', (tokens) => {
+    console.log(`[Gmail] Access token auto-refreshed for user ${userId}`);
+    db.prepare(`
+      UPDATE gmail_tokens
+      SET access_token = ?,
+          expiry_date  = ?,
+          updated_at   = CURRENT_TIMESTAMP
+      WHERE user_id = ?
+    `).run(tokens.access_token, tokens.expiry_date ?? null, userId);
+  });
+
+  return { client, row };
+}
 
 // ── Connection helpers ────────────────────────────────────────────────────────
 
-function isConnected() {
-  return !!db.prepare('SELECT id FROM gmail_tokens LIMIT 1').get();
+/** Returns true only if this specific user has a connected Gmail account. */
+function isConnected(userId) {
+  if (!userId) return false;
+  return !!db.prepare('SELECT id FROM gmail_tokens WHERE user_id = ?').get(userId);
+}
+
+/** Returns the Gmail address connected by this specific user, or null. */
+function getConnectedEmail(userId) {
+  if (!userId) return null;
+  console.log(`[Gmail] getConnectedEmail called for user ${userId}`);
+  const row = db.prepare('SELECT email FROM gmail_tokens WHERE user_id = ?').get(userId);
+  return row?.email ?? null;
 }
 
 /**
@@ -58,54 +85,52 @@ function isInvalidGrant(err) {
 }
 
 /**
- * Clear all stored Gmail tokens from the DB.
- * Call this when Google returns invalid_grant so the app knows Gmail is
- * disconnected and the user sees a reconnect prompt instead of silent errors.
+ * Clear this user's Gmail tokens from the DB.
+ * Call when Google returns invalid_grant so the user sees a reconnect prompt.
+ *
+ * @param {number} userId
  */
-function invalidateToken() {
-  db.prepare('DELETE FROM gmail_tokens').run();
-  console.warn('[Gmail] Token invalidated — user must reconnect Gmail');
+function invalidateToken(userId) {
+  if (!userId) return;
+  db.prepare('DELETE FROM gmail_tokens WHERE user_id = ?').run(userId);
+  console.warn(`[Gmail] Token invalidated for user ${userId} — must reconnect Gmail`);
 }
 
-function getConnectedEmail() {
-  const row = db.prepare('SELECT email FROM gmail_tokens LIMIT 1').get();
-  return row?.email ?? null;
-}
-
-/** Returns an authenticated Gmail API client, throws if not connected. */
-function getClient() {
-  if (!loadCredentials()) {
-    throw new Error('Gmail not connected — run OAuth flow first');
+/**
+ * Returns an authenticated Gmail API client for the given user.
+ * Throws if the user has no connected Gmail account.
+ *
+ * @param {number} userId
+ */
+function getClient(userId) {
+  console.log(`[Gmail] getClient called for user ${userId}`);
+  const result = loadCredentials(userId);
+  if (!result) {
+    throw new Error(`Gmail not connected for user ${userId} — run OAuth flow first`);
   }
-  return google.gmail({ version: 'v1', auth: oauth2Client });
+  return google.gmail({ version: 'v1', auth: result.client });
 }
 
 // ── Email sending ─────────────────────────────────────────────────────────────
 
 /**
- * Send an email via the authenticated Gmail account.
- * Builds RFC 2822 / MIME multipart when attachments are provided,
- * otherwise sends a simple text/plain message.
+ * Send an email via the authenticated Gmail account of the given user.
  *
- * @param {{
- *   to:          string,
- *   subject:     string,
- *   body:        string,
- *   attachments?: Array<{ filename: string, mimeType: string, buffer: Buffer }>
- * }} params
- * @returns {{ id: string, threadId: string }} Gmail message object
+ * @param {number} userId
+ * @param {{ to, subject, body, attachments? }} params
  */
-async function sendEmail({ to, subject, body, attachments = [] }) {
-  const gmail    = getClient();
-  const from     = getConnectedEmail();
-  const boundary = `boundary_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+async function sendEmail(userId, { to, subject, body, attachments = [] }) {
+  const result = loadCredentials(userId);
+  if (!result) throw new Error('Gmail not connected — connect your account first');
 
+  const gmail    = google.gmail({ version: 'v1', auth: result.client });
+  const from     = result.row.email;
+  const boundary = `boundary_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const subjectEncoded = `=?utf-8?B?${Buffer.from(subject || '').toString('base64')}?=`;
 
   let raw;
 
   if (attachments.length === 0) {
-    // ── Plain text — no attachments ───────────────────────────────────────────
     const parts = [
       `From: ${from}`,
       `To: ${to}`,
@@ -118,7 +143,6 @@ async function sendEmail({ to, subject, body, attachments = [] }) {
     ];
     raw = Buffer.from(parts.join('\r\n')).toString('base64url');
   } else {
-    // ── Multipart/mixed — body + attachments ──────────────────────────────────
     const crlf = '\r\n';
     const lines = [
       `From: ${from}`,
@@ -133,10 +157,8 @@ async function sendEmail({ to, subject, body, attachments = [] }) {
       '',
       Buffer.from(body || '').toString('base64'),
     ];
-
     for (const att of attachments) {
-      // Sanitise filename (no path traversal, ASCII-safe)
-      const safeName = att.filename.replace(/[^\w.\-]/g, '_');
+      const safeName    = att.filename.replace(/[^\w.\-]/g, '_');
       const nameEncoded = `=?utf-8?B?${Buffer.from(att.filename).toString('base64')}?=`;
       lines.push(
         `--${boundary}`,
@@ -147,7 +169,6 @@ async function sendEmail({ to, subject, body, attachments = [] }) {
         att.buffer.toString('base64'),
       );
     }
-
     lines.push(`--${boundary}--`);
     raw = Buffer.from(lines.join(crlf)).toString('base64url');
   }
@@ -157,21 +178,14 @@ async function sendEmail({ to, subject, body, attachments = [] }) {
     requestBody: { raw },
   });
 
-  return res.data; // { id, threadId, labelIds }
+  console.log(`[Gmail] Sent email for user ${userId} to ${to}`);
+  return res.data;
 }
 
 // ── Email fetching ────────────────────────────────────────────────────────────
 
-/**
- * List message stubs from Gmail inbox since `sinceTimestamp` (ms epoch).
- * Default lookback: 24 hours.
- *
- * @param {{ sinceTimestamp?: number }} options
- * @returns Array of { id, threadId } stubs
- */
-async function listRecentMessages({ sinceTimestamp } = {}) {
-  const gmail = getClient();
-
+async function listRecentMessages(userId, { sinceTimestamp } = {}) {
+  const gmail = getClient(userId);
   const sinceSeconds = sinceTimestamp
     ? Math.floor(sinceTimestamp / 1000)
     : Math.floor((Date.now() - 24 * 60 * 60 * 1000) / 1000);
@@ -181,16 +195,11 @@ async function listRecentMessages({ sinceTimestamp } = {}) {
     q:          `in:inbox after:${sinceSeconds}`,
     maxResults: 50,
   });
-
   return res.data.messages ?? [];
 }
 
-/**
- * Fetch full message payload for a given Gmail message ID.
- * @param {string} messageId
- */
-async function getMessageDetails(messageId) {
-  const gmail = getClient();
+async function getMessageDetails(userId, messageId) {
+  const gmail = getClient(userId);
   const res = await gmail.users.messages.get({
     userId: 'me',
     id:     messageId,
@@ -201,21 +210,12 @@ async function getMessageDetails(messageId) {
 
 // ── Message parsing helpers ───────────────────────────────────────────────────
 
-/**
- * Convert Gmail header array to a plain { name: value } map (lowercase keys).
- */
 function parseHeaders(headers = []) {
   const map = {};
-  for (const { name, value } of headers) {
-    map[name.toLowerCase()] = value;
-  }
+  for (const { name, value } of headers) map[name.toLowerCase()] = value;
   return map;
 }
 
-/**
- * Recursively extract the first text/plain part from a message payload.
- * Returns the decoded string, or null if none found.
- */
 function extractPlainText(payload) {
   if (!payload) return null;
   if (payload.mimeType === 'text/plain' && payload.body?.data) {
@@ -228,108 +228,82 @@ function extractPlainText(payload) {
   return null;
 }
 
-/**
- * Derive a normalised mailbox bucket from Gmail label IDs.
- * Priority: trash > spam > sent (exclusive) > inbox > other.
- *
- * @param {string[]} labelIds
- * @returns {'inbox'|'sent'|'trash'|'spam'|'other'}
- */
 function mailboxFromLabels(labelIds = []) {
-  if (labelIds.includes('TRASH'))                                         return 'trash';
-  if (labelIds.includes('SPAM'))                                          return 'spam';
-  if (labelIds.includes('SENT') && !labelIds.includes('INBOX'))          return 'sent';
-  if (labelIds.includes('INBOX'))                                         return 'inbox';
-  if (labelIds.includes('SENT'))                                          return 'sent';
+  if (labelIds.includes('TRASH'))                                return 'trash';
+  if (labelIds.includes('SPAM'))                                 return 'spam';
+  if (labelIds.includes('SENT') && !labelIds.includes('INBOX')) return 'sent';
+  if (labelIds.includes('INBOX'))                                return 'inbox';
+  if (labelIds.includes('SENT'))                                 return 'sent';
   return 'other';
 }
 
 // ── Initial backfill ──────────────────────────────────────────────────────────
 
 /**
- * Fetch recent Gmail history and store it in the emails table.
- * Uses metadata-only format (headers + snippet) for speed — no body download.
- * Called once after OAuth connect; the regular poller handles incremental sync.
+ * Fetch recent Gmail history for a specific user and store in the emails table.
+ * All inserted rows are stamped with the user's user_id.
  *
+ * @param {number} userId
  * @param {{ daysBack?: number, maxPerLabel?: number }} options
- *   daysBack     — how far back to look (default 30 days)
- *   maxPerLabel  — cap on inbox messages AND on sent messages (default 100 each)
- * @returns {{ imported: number, skipped: number }}
  */
-async function syncRecentEmails({ daysBack = 30, maxPerLabel = 100 } = {}) {
-  const gmail          = getClient();
-  const connectedEmail = (getConnectedEmail() || '').toLowerCase();
+async function syncRecentEmails(userId, { daysBack = 30, maxPerLabel = 100 } = {}) {
+  if (!userId) throw new Error('syncRecentEmails requires a userId');
+
+  const result = loadCredentials(userId);
+  if (!result) throw new Error(`Gmail not connected for user ${userId}`);
+
+  const gmail          = google.gmail({ version: 'v1', auth: result.client });
+  const connectedEmail = (result.row.email || '').toLowerCase();
   const sinceSeconds   = Math.floor((Date.now() - daysBack * 24 * 60 * 60 * 1000) / 1000);
 
-  // ── 1. List stubs from inbox + sent in parallel ────────────────────────────
+  console.log(`[Backfill] Starting for user ${userId} (${connectedEmail}), ${daysBack} days back`);
+
   const [inboxRes, sentRes] = await Promise.all([
-    gmail.users.messages.list({
-      userId:     'me',
-      q:          `in:inbox after:${sinceSeconds}`,
-      maxResults: maxPerLabel,
-    }),
-    gmail.users.messages.list({
-      userId:     'me',
-      q:          `in:sent after:${sinceSeconds}`,
-      maxResults: maxPerLabel,
-    }),
+    gmail.users.messages.list({ userId: 'me', q: `in:inbox after:${sinceSeconds}`, maxResults: maxPerLabel }),
+    gmail.users.messages.list({ userId: 'me', q: `in:sent after:${sinceSeconds}`,  maxResults: maxPerLabel }),
   ]);
 
   const inboxIds = new Set((inboxRes.data.messages ?? []).map(m => m.id));
   const sentIds  = new Set((sentRes.data.messages  ?? []).map(m => m.id));
+  const allIds   = [...new Set([...inboxIds, ...sentIds])];
 
-  // Merge, dedupe stub IDs; remember which label each came from for direction
-  const allIds = [...new Set([...inboxIds, ...sentIds])];
-
-  // ── 2. Skip already-stored messages ───────────────────────────────────────
   const toFetch = allIds.filter(id =>
-    !db.prepare('SELECT id FROM emails WHERE gmail_message_id = ?').get(id)
+    !db.prepare('SELECT id FROM emails WHERE gmail_message_id = ? AND user_id = ?').get(id, userId)
   );
 
-  console.log(`[Backfill] ${allIds.length} msgs in window, ${toFetch.length} new to import`);
+  console.log(`[Backfill] user=${userId}: ${allIds.length} in window, ${toFetch.length} to import`);
 
-  // ── 3. Fetch metadata in parallel batches of 10 ───────────────────────────
   const BATCH_SIZE = 10;
   let imported = 0;
 
   for (let i = 0; i < toFetch.length; i += BATCH_SIZE) {
     const batch = toFetch.slice(i, i + BATCH_SIZE);
-
     await Promise.all(batch.map(async (messageId) => {
       try {
         const res = await gmail.users.messages.get({
-          userId:          'me',
-          id:              messageId,
-          format:          'metadata',
+          userId: 'me', id: messageId, format: 'metadata',
           metadataHeaders: ['From', 'To', 'Subject', 'Date'],
         });
         const msg      = res.data;
         const hdrs     = parseHeaders(msg.payload?.headers ?? []);
         const labelIds = msg.labelIds ?? [];
-
-        // Direction: outbound if From matches connected account, OR if SENT label present
-        const fromAddr  = (hdrs['from'] || '').toLowerCase();
-        const hasSent   = labelIds.includes('SENT');
+        const fromAddr = (hdrs['from'] || '').toLowerCase();
+        const hasSent  = labelIds.includes('SENT');
         const direction = (fromAddr.includes(connectedEmail) || hasSent) ? 'outbound' : 'inbound';
-
-        // is_read: 1 unless UNREAD label is present (and it's an inbound message)
         const is_read   = labelIds.includes('UNREAD') ? 0 : 1;
-
-        const dateMs      = parseInt(msg.internalDate, 10) || Date.now();
-        const preview     = (msg.snippet || '').slice(0, 300).replace(/\s+/g, ' ').trim();
-        const createdAt   = new Date(dateMs).toISOString();
-        const labelsJson  = JSON.stringify(labelIds);
-        const mailbox     = mailboxFromLabels(labelIds);
-        // status: 'sent' for outbound, 'received' for inbound
-        const status      = direction === 'outbound' ? 'sent' : 'received';
+        const dateMs    = parseInt(msg.internalDate, 10) || Date.now();
+        const preview   = (msg.snippet || '').slice(0, 300).replace(/\s+/g, ' ').trim();
+        const mailbox   = mailboxFromLabels(labelIds);
+        const status    = direction === 'outbound' ? 'sent' : 'received';
 
         db.prepare(`
           INSERT INTO emails
-            (direction, from_address, to_address, subject,
+            (user_id, direction, from_address, to_address, subject,
              body_preview, status, gmail_message_id, thread_id,
              created_at, is_read, labels_json, mailbox)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
+          userId,
           direction,
           hdrs['from']    || '',
           hdrs['to']      || '',
@@ -338,96 +312,88 @@ async function syncRecentEmails({ daysBack = 30, maxPerLabel = 100 } = {}) {
           status,
           messageId,
           msg.threadId ?? null,
-          createdAt,
+          new Date(dateMs).toISOString(),
           is_read,
-          labelsJson,
+          JSON.stringify(labelIds),
           mailbox,
         );
-
         imported++;
       } catch (err) {
-        console.error(`[Backfill] Failed on message ${messageId}:`, err.message);
+        console.error(`[Backfill] user=${userId} failed on message ${messageId}:`, err.message);
       }
     }));
   }
 
   const skipped = allIds.length - toFetch.length;
-  console.log(`[Backfill] Done — imported ${imported}, skipped ${skipped} already-stored`);
+  console.log(`[Backfill] user=${userId} done — imported ${imported}, skipped ${skipped}`);
   return { imported, skipped };
 }
 
 // ── Label backfill ────────────────────────────────────────────────────────────
 
 /**
- * Retroactively fetch and store Gmail label data for emails that were imported
- * before label storage was added (labels_json IS NULL but gmail_message_id IS NOT NULL).
+ * Retroactively fetch Gmail label data for emails that were imported before
+ * label storage was added. Scoped to a specific user.
  *
- * Runs at startup after OAuth tokens are available. Safe to call repeatedly —
- * it only touches rows that still have null labels_json.
- *
- * @returns {{ updated: number, failed: number }}
+ * @param {number} userId
  */
-async function backfillMissingLabels() {
-  if (!isConnected()) return { updated: 0, failed: 0 };
+async function backfillMissingLabels(userId) {
+  if (!userId) return { updated: 0, failed: 0 };
+  if (!isConnected(userId)) return { updated: 0, failed: 0 };
 
   const rows = db.prepare(
-    'SELECT id, gmail_message_id, direction FROM emails WHERE gmail_message_id IS NOT NULL AND labels_json IS NULL LIMIT 150'
-  ).all();
+    'SELECT id, gmail_message_id, direction FROM emails WHERE user_id = ? AND gmail_message_id IS NOT NULL AND labels_json IS NULL LIMIT 150'
+  ).all(userId);
 
   if (rows.length === 0) {
-    console.log('[Backfill] Labels already up to date — nothing to do.');
+    console.log(`[Backfill] user=${userId} labels already up to date`);
     return { updated: 0, failed: 0 };
   }
 
-  console.log(`[Backfill] Fetching labels for ${rows.length} emails…`);
+  console.log(`[Backfill] Fetching labels for ${rows.length} emails (user=${userId})`);
 
-  const gmailClient     = getClient();
-  const connectedEmail  = (getConnectedEmail() || '').toLowerCase();
-  const update          = db.prepare(
-    'UPDATE emails SET labels_json = ?, mailbox = ?, is_read = ?, direction = ? WHERE id = ?'
+  const result = loadCredentials(userId);
+  if (!result) return { updated: 0, failed: 0 };
+
+  const gmailClient = google.gmail({ version: 'v1', auth: result.client });
+  const update = db.prepare(
+    'UPDATE emails SET labels_json = ?, mailbox = ?, is_read = ?, direction = ? WHERE id = ? AND user_id = ?'
   );
 
-  let updated = 0;
-  let failed  = 0;
-
-  // Process in small batches to avoid hammering the Gmail API
+  let updated = 0, failed = 0;
   const BATCH = 10;
+
   for (let i = 0; i < rows.length; i += BATCH) {
     await Promise.all(
       rows.slice(i, i + BATCH).map(async (row) => {
         try {
           const res = await gmailClient.users.messages.get({
-            userId:          'me',
-            id:              row.gmail_message_id,
-            format:          'metadata',
+            userId: 'me', id: row.gmail_message_id, format: 'metadata',
             metadataHeaders: ['From'],
           });
-          const msg      = res.data;
-          const labelIds = msg.labelIds ?? [];
-          const fromAddr = '';  // already stored; just need labels
-          const hasSent  = labelIds.includes('SENT');
-
-          // Only correct direction if we can confirm from labels
-          const direction = hasSent
-            ? 'outbound'
-            : (row.direction ?? 'inbound');
-
-          const is_read     = labelIds.includes('UNREAD') ? 0 : 1;
-          const labelsJson  = JSON.stringify(labelIds);
-          const mailbox     = mailboxFromLabels(labelIds);
-
-          update.run(labelsJson, mailbox, is_read, direction, row.id);
+          const labelIds  = res.data.labelIds ?? [];
+          const hasSent   = labelIds.includes('SENT');
+          const direction = hasSent ? 'outbound' : (row.direction ?? 'inbound');
+          const is_read   = labelIds.includes('UNREAD') ? 0 : 1;
+          update.run(JSON.stringify(labelIds), mailboxFromLabels(labelIds), is_read, direction, row.id, userId);
           updated++;
         } catch (err) {
-          console.warn(`[Backfill] Skipped email id=${row.id}: ${err.message}`);
+          console.warn(`[Backfill] user=${userId} skipped email id=${row.id}: ${err.message}`);
           failed++;
         }
       })
     );
   }
 
-  console.log(`[Backfill] Labels done — updated ${updated}, failed ${failed}`);
+  console.log(`[Backfill] user=${userId} labels done — updated ${updated}, failed ${failed}`);
   return { updated, failed };
+}
+
+// ── All connected users ───────────────────────────────────────────────────────
+
+/** Returns all user_ids that currently have a gmail token. */
+function getAllConnectedUserIds() {
+  return db.prepare('SELECT user_id FROM gmail_tokens WHERE user_id IS NOT NULL').all().map(r => r.user_id);
 }
 
 module.exports = {
@@ -446,4 +412,5 @@ module.exports = {
   mailboxFromLabels,
   syncRecentEmails,
   backfillMissingLabels,
+  getAllConnectedUserIds,
 };

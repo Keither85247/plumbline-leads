@@ -1,7 +1,7 @@
 'use strict';
 const db    = require('../db');
 const gmail = require('../services/gmailService');
-const { isInvalidGrant, invalidateToken } = gmail;
+const { isInvalidGrant, invalidateToken, getAllConnectedUserIds } = gmail;
 
 // ── Durable lastPollTime ──────────────────────────────────────────────────────
 // Persisted in app_settings so server restarts don't lose our position.
@@ -39,10 +39,10 @@ function saveLastPollTime(ms) {
 let lastPollTime = loadLastPollTime();
 
 /**
- * Fetch new message stubs for a given Gmail query since lastPollTime.
- * Returns an array of message IDs that are not yet in the DB.
+ * Fetch new message IDs for a given Gmail query since lastPollTime.
+ * Filters out IDs already stored for this specific user.
  */
-async function fetchNewIds(gmailClient, query) {
+async function fetchNewIds(gmailClient, query, userId) {
   const sinceSeconds = Math.floor(lastPollTime / 1000);
   const res = await gmailClient.users.messages.list({
     userId:     'me',
@@ -52,100 +52,113 @@ async function fetchNewIds(gmailClient, query) {
   const stubs = res.data.messages ?? [];
   return stubs
     .map(s => s.id)
-    .filter(id => !db.prepare('SELECT id FROM emails WHERE gmail_message_id = ?').get(id));
+    .filter(id =>
+      !db.prepare('SELECT id FROM emails WHERE gmail_message_id = ? AND user_id = ?').get(id, userId)
+    );
+}
+
+/**
+ * Poll Gmail for a single user and store any new messages stamped with their user_id.
+ * Returns the number of messages stored.
+ */
+async function pollUser(userId) {
+  const connectedEmail = (gmail.getConnectedEmail(userId) || '').toLowerCase();
+  const gmailClient    = gmail.getClient(userId);
+
+  const [newInboxIds, newSentIds] = await Promise.all([
+    fetchNewIds(gmailClient, 'in:inbox', userId),
+    fetchNewIds(gmailClient, 'in:sent',  userId),
+  ]);
+
+  // Dedupe: a message might appear in both (e.g. sent to yourself)
+  const allNewIds = [...new Set([...newInboxIds, ...newSentIds])];
+  if (allNewIds.length === 0) return 0;
+
+  console.log(`[Poller] user=${userId}: ${allNewIds.length} new message(s) to store`);
+
+  let stored = 0;
+  for (const messageId of allNewIds) {
+    try {
+      const msg      = await gmail.getMessageDetails(userId, messageId);
+      const hdrs     = gmail.parseHeaders(msg.payload?.headers ?? []);
+      const labelIds = msg.labelIds ?? [];
+
+      const fromAddr  = (hdrs['from'] || '').toLowerCase();
+      const hasSent   = labelIds.includes('SENT');
+      const direction = (fromAddr.includes(connectedEmail) || hasSent) ? 'outbound' : 'inbound';
+      const is_read   = labelIds.includes('UNREAD') ? 0 : 1;
+
+      const preview = (msg.snippet || gmail.extractPlainText(msg.payload) || '')
+        .slice(0, 300)
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      const dateMs     = parseInt(msg.internalDate, 10) || Date.now();
+      const createdAt  = new Date(dateMs).toISOString();
+      const labelsJson = JSON.stringify(labelIds);
+      const mailbox    = gmail.mailboxFromLabels(labelIds);
+      const status     = direction === 'outbound' ? 'sent' : 'received';
+
+      db.prepare(`
+        INSERT INTO emails
+          (user_id, direction, from_address, to_address, subject,
+           body_preview, status, gmail_message_id, thread_id,
+           created_at, is_read, labels_json, mailbox)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        userId,
+        direction,
+        hdrs['from']    || '',
+        hdrs['to']      || '',
+        hdrs['subject'] || '',
+        preview,
+        status,
+        messageId,
+        msg.threadId ?? null,
+        createdAt,
+        is_read,
+        labelsJson,
+        mailbox,
+      );
+
+      stored++;
+      console.log(`[Poller] user=${userId} stored [${direction}]: "${hdrs['subject']}" ${direction === 'outbound' ? 'to' : 'from'} ${direction === 'outbound' ? hdrs['to'] : hdrs['from']}`);
+    } catch (msgErr) {
+      console.error(`[Poller] user=${userId} failed to fetch message ${messageId}:`, msgErr.message);
+    }
+  }
+  return stored;
 }
 
 async function poll() {
-  if (!gmail.isConnected()) return;
+  const userIds = getAllConnectedUserIds();
+  if (userIds.length === 0) return;
 
-  const pollStart      = Date.now();
-  const connectedEmail = (gmail.getConnectedEmail() || '').toLowerCase();
-  console.log('[Poller] Checking Gmail for new messages…');
+  const pollStart = Date.now();
+  console.log(`[Poller] Checking Gmail for ${userIds.length} connected user(s)…`);
 
-  try {
-    const gmailClient = gmail.getClient();
-
-    // ── Collect new IDs from both inbox and sent ───────────────────────────
-    const [newInboxIds, newSentIds] = await Promise.all([
-      fetchNewIds(gmailClient, 'in:inbox'),
-      fetchNewIds(gmailClient, 'in:sent'),
-    ]);
-
-    // Dedupe: a message might appear in both (e.g. sent to yourself)
-    const allNewIds = [...new Set([...newInboxIds, ...newSentIds])];
-
-    if (allNewIds.length === 0) {
-      console.log('[Poller] No new messages.');
-      lastPollTime = pollStart;
-      saveLastPollTime(pollStart);
-      return;
-    }
-
-    console.log(`[Poller] ${allNewIds.length} new message(s) to store.`);
-
-    // ── Fetch full details and store ───────────────────────────────────────
-    for (const messageId of allNewIds) {
-      try {
-        const msg      = await gmail.getMessageDetails(messageId);
-        const hdrs     = gmail.parseHeaders(msg.payload?.headers ?? []);
-        const labelIds = msg.labelIds ?? [];
-
-        const fromAddr  = (hdrs['from'] || '').toLowerCase();
-        const hasSent   = labelIds.includes('SENT');
-        const direction = (fromAddr.includes(connectedEmail) || hasSent) ? 'outbound' : 'inbound';
-
-        const is_read   = labelIds.includes('UNREAD') ? 0 : 1;
-
-        const preview = (msg.snippet || gmail.extractPlainText(msg.payload) || '')
-          .slice(0, 300)
-          .replace(/\s+/g, ' ')
-          .trim();
-
-        const dateMs      = parseInt(msg.internalDate, 10) || Date.now();
-        const createdAt   = new Date(dateMs).toISOString();
-        const labelsJson  = JSON.stringify(labelIds);
-        const mailbox     = gmail.mailboxFromLabels(labelIds);
-        const status      = direction === 'outbound' ? 'sent' : 'received';
-
-        db.prepare(`
-          INSERT INTO emails
-            (direction, from_address, to_address, subject,
-             body_preview, status, gmail_message_id, thread_id,
-             created_at, is_read, labels_json, mailbox)
-          VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          direction,
-          hdrs['from']    || '',
-          hdrs['to']      || '',
-          hdrs['subject'] || '',
-          preview,
-          status,
-          messageId,
-          msg.threadId ?? null,
-          createdAt,
-          is_read,
-          labelsJson,
-          mailbox,
-        );
-
-        console.log(`[Poller] Stored [${direction}]: "${hdrs['subject']}" ${direction === 'outbound' ? 'to' : 'from'} ${direction === 'outbound' ? hdrs['to'] : hdrs['from']}`);
-      } catch (msgErr) {
-        console.error(`[Poller] Failed to fetch message ${messageId}:`, msgErr.message);
+  let totalStored = 0;
+  for (const userId of userIds) {
+    try {
+      const stored = await pollUser(userId);
+      totalStored += stored;
+    } catch (err) {
+      if (isInvalidGrant(err)) {
+        console.error(`[Poller] invalid_grant for user ${userId} — Gmail token revoked. Clearing token; user must reconnect.`);
+        invalidateToken(userId);
+      } else {
+        console.error(`[Poller] Poll error for user ${userId}:`, err.message);
       }
+      // Do NOT update lastPollTime on error — next poll will retry the same window
     }
-
-    lastPollTime = pollStart;
-    saveLastPollTime(pollStart);
-  } catch (err) {
-    if (isInvalidGrant(err)) {
-      console.error('[Poller] invalid_grant — Gmail token revoked. Clearing token; user must reconnect.');
-      invalidateToken();
-    } else {
-      console.error('[Poller] Poll error:', err.message);
-    }
-    // Do NOT update lastPollTime on error — next poll will retry the same window
   }
+
+  if (totalStored === 0) {
+    console.log('[Poller] No new messages.');
+  }
+
+  lastPollTime = pollStart;
+  saveLastPollTime(pollStart);
 }
 
 /**

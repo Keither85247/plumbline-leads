@@ -295,9 +295,10 @@ router.post('/tester-bypass', requireAuth, (req, res) => {
 });
 
 // ── Gmail OAuth ───────────────────────────────────────────────────────────────
-// These routes require the user to be logged in (requireAuth applied in index.js
-// before the /auth router for non-login/logout/me paths).
-// In practice: the frontend only shows the "Connect Gmail" button when logged in.
+// /google and /gmail-status and /gmail-disconnect all use requireAuth inline
+// so they know WHICH user is connecting/querying/disconnecting.
+// /google/callback comes from Google's redirect (no cookie enforcement possible),
+// but the correct userId is recovered from pendingState that was set in /google.
 
 const GMAIL_SCOPES = [
   'https://www.googleapis.com/auth/gmail.send',
@@ -307,10 +308,12 @@ const GMAIL_SCOPES = [
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
-// In-memory pending state — single-tenant for now; will be keyed by userId in Phase 3
+// In-memory pending state — stores both the CSRF state token and the userId
+// so the callback can stamp the correct user when saving the token.
+// Shape: { state: string, userId: number } | null
 let pendingState = null;
 
-router.get('/google', (_req, res) => {
+router.get('/google', requireAuth, (req, res) => {
   // Feature flag: Gmail OAuth is disabled until Google verification is complete.
   // Set GMAIL_OAUTH_ENABLED=true in Render env vars to enable.
   if (process.env.GMAIL_OAUTH_ENABLED !== 'true') {
@@ -324,16 +327,17 @@ router.get('/google', (_req, res) => {
     return res.redirect(`${FRONTEND_URL}?gmail_error=not_configured`);
   }
 
-  pendingState = Math.random().toString(36).slice(2);
+  const state  = Math.random().toString(36).slice(2);
+  pendingState = { state, userId: req.userId };
 
   const url = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     scope:       GMAIL_SCOPES,
     prompt:      'consent',
-    state:       pendingState,
+    state,
   });
 
-  console.log('[Auth] Gmail OAuth redirect initiated');
+  console.log(`[Auth] Gmail OAuth redirect initiated for user ${req.userId}`);
   res.redirect(url);
 });
 
@@ -343,7 +347,7 @@ router.get('/google/callback', async (req, res) => {
   if (error) {
     const desc = req.query.error_description || '(no description)';
     // Log full detail server-side — never put raw Google error strings in the redirect URL.
-    console.error(`[Auth] Gmail OAuth callback error: ${error} — ${desc} | state_match=${state === pendingState}`);
+    console.error(`[Auth] Gmail OAuth callback error: ${error} — ${desc} | state_match=${state === pendingState?.state}`);
 
     // Map Google error codes to safe frontend codes:
     //   access_denied → user not in test-user list, or app verification required, or user clicked Deny
@@ -352,9 +356,12 @@ router.get('/google/callback', async (req, res) => {
     return res.redirect(`${FRONTEND_URL}?gmail_error=${frontendCode}`);
   }
 
-  if (!code || state !== pendingState) {
+  if (!code || !pendingState || state !== pendingState.state) {
     return res.status(400).send('Invalid or expired OAuth state. Please try connecting again.');
   }
+
+  // Capture and clear the pending state atomically
+  const { userId } = pendingState;
   pendingState = null;
 
   try {
@@ -365,7 +372,8 @@ router.get('/google/callback', async (req, res) => {
     const { data } = await oauth2.userinfo.get();
     const email    = data.email;
 
-    const existing = db.prepare('SELECT id FROM gmail_tokens LIMIT 1').get();
+    // Upsert token row scoped to this specific user
+    const existing = db.prepare('SELECT id FROM gmail_tokens WHERE user_id = ?').get(userId);
     if (existing) {
       db.prepare(`
         UPDATE gmail_tokens
@@ -374,30 +382,31 @@ router.get('/google/callback', async (req, res) => {
             refresh_token = COALESCE(?, refresh_token),
             expiry_date   = ?,
             updated_at    = CURRENT_TIMESTAMP
-        WHERE id = ?
+        WHERE user_id = ?
       `).run(
         email,
         tokens.access_token,
         tokens.refresh_token ?? null,
         tokens.expiry_date   ?? null,
-        existing.id,
+        userId,
       );
     } else {
       db.prepare(`
-        INSERT INTO gmail_tokens (email, access_token, refresh_token, expiry_date)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO gmail_tokens (email, access_token, refresh_token, expiry_date, user_id)
+        VALUES (?, ?, ?, ?, ?)
       `).run(
         email,
         tokens.access_token,
         tokens.refresh_token ?? null,
         tokens.expiry_date   ?? null,
+        userId,
       );
     }
 
-    console.log(`[Auth] Gmail connected: ${email}`);
+    console.log(`[Auth] Gmail connected: ${email} for user ${userId}`);
     res.redirect(`${FRONTEND_URL}?gmail_connected=1`);
 
-    syncRecentEmails({ daysBack: 30, maxPerLabel: 100 })
+    syncRecentEmails(userId, { daysBack: 30, maxPerLabel: 100 })
       .catch(err => console.error('[Auth] Backfill failed:', err.message));
   } catch (err) {
     console.error('[Auth] Callback failed:', err.message);
@@ -405,20 +414,20 @@ router.get('/google/callback', async (req, res) => {
   }
 });
 
-router.get('/gmail-status', (_req, res) => {
+router.get('/gmail-status', requireAuth, (req, res) => {
   // `enabled` tells the frontend whether the Connect button should be active.
   // False until Google OAuth verification is complete and GMAIL_OAUTH_ENABLED=true is set.
   const enabled = process.env.GMAIL_OAUTH_ENABLED === 'true';
-  const row = db.prepare('SELECT email FROM gmail_tokens LIMIT 1').get();
+  const row = db.prepare('SELECT email FROM gmail_tokens WHERE user_id = ?').get(req.userId);
   res.json(row
     ? { connected: true,  email: row.email, enabled }
     : { connected: false, email: null,      enabled }
   );
 });
 
-router.delete('/gmail-disconnect', (_req, res) => {
-  db.prepare('DELETE FROM gmail_tokens').run();
-  console.log('[Auth] Gmail disconnected');
+router.delete('/gmail-disconnect', requireAuth, (req, res) => {
+  db.prepare('DELETE FROM gmail_tokens WHERE user_id = ?').run(req.userId);
+  console.log(`[Auth] Gmail disconnected for user ${req.userId}`);
   res.json({ ok: true });
 });
 

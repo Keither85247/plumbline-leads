@@ -144,12 +144,12 @@ const { syncRecentEmails, isInvalidGrant, invalidateToken } = require('../servic
 router.post('/gmail-sync', requireOwner, express.json(), async (req, res) => {
   const daysBack = Math.min(parseInt(req.body?.days, 10) || 60, 180);
   try {
-    const result = await syncRecentEmails({ daysBack, maxPerLabel: 200 });
+    const result = await syncRecentEmails(req.userId, { daysBack, maxPerLabel: 200 });
     console.log(`[Admin] Manual Gmail sync by user ${req.userId}: imported ${result.imported}, skipped ${result.skipped}`);
     res.json(result);
   } catch (err) {
     if (isInvalidGrant(err)) {
-      invalidateToken();
+      invalidateToken(req.userId);
       return res.status(401).json({ error: 'Gmail token expired or revoked. Please reconnect Gmail in Settings.' });
     }
     console.error('[Admin] gmail-sync error:', err.message);
