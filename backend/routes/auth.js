@@ -118,6 +118,84 @@ router.post('/login', express.json(), async (req, res) => {
   return res.json({ id: user.id, email: user.email, display_name: user.display_name, is_owner: user.is_owner, token, assignedNumber: phoneRow || null });
 });
 
+// ── POST /auth/register ───────────────────────────────────────────────────────
+// Self-service account creation. Only enabled when ALLOW_PUBLIC_SIGNUP=true.
+// Always creates non-owner (tester) accounts — owner accounts cannot be created
+// through this endpoint regardless of what is in the request body.
+
+router.post('/register', express.json(), async (req, res) => {
+  if (process.env.ALLOW_PUBLIC_SIGNUP !== 'true') {
+    return res.status(403).json({ error: 'Public sign-up is not enabled' });
+  }
+
+  const { email, password, display_name, business_name } = req.body || {};
+  const origin = req.headers.origin || '(no origin)';
+
+  if (!email || !password || !display_name) {
+    return res.status(400).json({ error: 'email, password, and display_name are required' });
+  }
+  if (password.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+  console.log(`[Auth] Register attempt: "${normalizedEmail}" from ${origin}`);
+
+  const existing = db.prepare('SELECT id FROM users WHERE LOWER(email) = ?').get(normalizedEmail);
+  if (existing) {
+    console.warn(`[Auth] Register failed — email already exists: "${normalizedEmail}"`);
+    return res.status(409).json({ error: 'An account with that email already exists' });
+  }
+
+  let passwordHash;
+  try {
+    passwordHash = await bcrypt.hash(password, 12);
+  } catch (err) {
+    console.error('[Auth] bcrypt.hash failed during register:', err.message);
+    return res.status(500).json({ error: 'Server error during registration' });
+  }
+
+  const apiKey = crypto.randomBytes(24).toString('hex');
+  let newUserId;
+  try {
+    const result = db.prepare(
+      'INSERT INTO users (email, display_name, business_name, password_hash, api_key, is_owner) VALUES (?, ?, ?, ?, ?, 0)'
+    ).run(normalizedEmail, display_name.trim(), (business_name || '').trim(), passwordHash, apiKey);
+    newUserId = result.lastInsertRowid;
+  } catch (err) {
+    console.error('[Auth] User insert failed during register:', err.message);
+    return res.status(500).json({ error: 'Server error creating account' });
+  }
+
+  // Start a session immediately so the user is logged in after signup
+  let token;
+  try {
+    token           = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+    db.prepare(
+      'INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)'
+    ).run(token, newUserId, expiresAt);
+  } catch (err) {
+    console.error(`[Auth] Session save failed after register for user id=${newUserId}:`, err.message);
+    return res.status(500).json({ error: 'Account created but could not start session' });
+  }
+
+  const opts = cookieOptions();
+  res.cookie('plumbline_session', token, opts);
+
+  console.log(`[Auth] ✓ Register success: user id=${newUserId} (${normalizedEmail}) — SameSite=${opts.sameSite} Secure=${opts.secure}`);
+
+  // New accounts never have an assigned phone number yet
+  return res.status(201).json({
+    id:            newUserId,
+    email:         normalizedEmail,
+    display_name:  display_name.trim(),
+    is_owner:      0,
+    token,
+    assignedNumber: null,
+  });
+});
+
 // ── POST /auth/logout ─────────────────────────────────────────────────────────
 // Deletes the session row and clears the cookie.
 

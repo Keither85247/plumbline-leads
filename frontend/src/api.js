@@ -167,6 +167,36 @@ export async function login(email, password) {
 }
 
 /**
+ * Create a new (non-owner) account and start a session immediately.
+ * Only works when ALLOW_PUBLIC_SIGNUP=true is set on the backend.
+ * @returns {{ id, email, display_name, is_owner, token, assignedNumber }}
+ */
+export async function register({ email, password, displayName, businessName }) {
+  try {
+    const res = await apiFetch(`${AUTH_BASE}/register`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        email,
+        password,
+        display_name:  displayName,
+        business_name: businessName,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Sign up failed');
+    }
+    const user = await res.json();
+    if (user.token) localStorage.setItem('plumbline_token', user.token);
+    return user;
+  } catch (err) {
+    if (err instanceof AuthError) throw new Error('Sign up failed. Please try again.');
+    throw err;
+  }
+}
+
+/**
  * Log out — deletes the server-side session and clears the cookie.
  */
 export async function logout() {

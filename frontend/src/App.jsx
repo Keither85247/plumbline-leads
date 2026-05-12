@@ -12,6 +12,7 @@ import ContactHistoryModal from './components/ContactHistoryModal';
 import OutboundNoteModal from './components/OutboundNoteModal';
 import InboxLayout from './components/inbox/InboxLayout';
 import EmailPage from './components/EmailPage';
+import AdminPage from './components/AdminPage';
 import LoginPage from './components/LoginPage';
 import NumberPickerModal from './components/NumberPickerModal';
 import { getLeads, saveOutboundNote, getCounts, getMe, logout, updateProfile, API_BASE, AuthError } from './api';
@@ -502,6 +503,22 @@ export default function App() {
               {t[item.id]}
             </button>
           ))}
+          {/* Owner-only admin tab */}
+          {currentUser?.is_owner && (
+            <button
+              onClick={() => handleNavChange('admin')}
+              className={`flex items-center gap-3 px-5 py-2.5 text-sm font-medium transition-colors text-left mt-auto
+                ${activeNav === 'admin'
+                  ? 'text-indigo-600 bg-indigo-50 border-r-2 border-indigo-600'
+                  : 'text-gray-400 hover:text-gray-700 hover:bg-gray-50'
+                }`}
+            >
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2a4 4 0 014-4h0a4 4 0 014 4v2M12 11a4 4 0 100-8 4 4 0 000 8zM3 20a9 9 0 0118 0" />
+              </svg>
+              {t.admin}
+            </button>
+          )}
         </nav>
 
         {/* Main content */}
@@ -545,6 +562,10 @@ export default function App() {
 
           {activeNav === 'contacts' && (
             <ContactsPage leads={leads} voiceDevice={voiceDevice} />
+          )}
+
+          {activeNav === 'admin' && currentUser?.is_owner && (
+            <AdminPage />
           )}
         </main>
       </div>
@@ -672,7 +693,18 @@ export default function App() {
       <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex justify-center"
            style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 4px)', paddingLeft: '16px', paddingRight: '16px', paddingTop: '6px' }}>
         <nav className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-gray-100 flex items-stretch px-2 py-1">
-          {BOTTOM_NAV_ICONS.map(item => {
+          {[
+            ...BOTTOM_NAV_ICONS,
+            // Owner-only admin tab appended at runtime
+            ...(currentUser?.is_owner ? [{
+              id: 'admin',
+              icon: (active) => (
+                <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2a4 4 0 014-4h0a4 4 0 014 4v2M12 11a4 4 0 100-8 4 4 0 000 8zM3 20a9 9 0 0118 0" />
+                </svg>
+              ),
+            }] : []),
+          ].map(item => {
             const isActive = item.id === 'leads'
               ? activeNav === 'leads' || activeNav === 'overview'
               : activeNav === item.id;
@@ -680,11 +712,14 @@ export default function App() {
             // Badge count per tab — only first 4 get badges
             const newLeads = leads.filter(l => l.status === 'New').length;
             const badgeCount =
-              item.id === 'calls'  ? callsBadge  :
-              item.id === 'leads'  ? newLeads            :
-              item.id === 'text'   ? remoteCounts.texts  :
-              item.id === 'email'  ? remoteCounts.emails :
+              item.id === 'calls'  ? callsBadge           :
+              item.id === 'leads'  ? newLeads              :
+              item.id === 'text'   ? remoteCounts.texts   :
+              item.id === 'email'  ? remoteCounts.emails  :
               0;
+
+            const activeColor = item.id === 'admin' ? 'text-indigo-600 bg-indigo-50' : 'text-blue-600 bg-blue-50';
+            const activeLabelColor = item.id === 'admin' ? 'text-indigo-600' : 'text-blue-600';
 
             return (
               <button
@@ -692,7 +727,7 @@ export default function App() {
                 onClick={() => handleNavChange(item.id)}
                 className={`flex-1 flex flex-col items-center justify-center gap-1 py-2.5 rounded-xl transition-all duration-150
                   ${isActive
-                    ? 'text-blue-600 bg-blue-50'
+                    ? activeColor
                     : 'text-gray-400 hover:text-gray-600'
                   }`}
               >
@@ -705,7 +740,7 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                <span className={`text-[10px] leading-none font-semibold tracking-wide ${isActive ? 'text-blue-600' : 'text-gray-400'}`}>
+                <span className={`text-[10px] leading-none font-semibold tracking-wide ${isActive ? activeLabelColor : 'text-gray-400'}`}>
                   {(t[item.id] || item.id).toUpperCase()}
                 </span>
               </button>
