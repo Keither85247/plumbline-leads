@@ -76,6 +76,7 @@ export default function MessageBubble({
   message,
   isFirst,   // first in its sender-group → show timestamp above
   isLast,    // last in its sender-group → sharp corner on the "tail" side
+  onOpenMediaPreview,  // (resolvedUrl) => void — opens the in-app preview overlay
 }) {
   const { body, direction, status, errorMessage } = message;
   const ts = message.ts || message.created_at || null;
@@ -109,23 +110,26 @@ export default function MessageBubble({
       )}
 
       {/* Media images — rendered above the text bubble.
+          Tapping a thumbnail opens an in-app preview (handled by
+          MessageThread). Previously this was an <a target="_blank">
+          which opened a new external browser tab — that tab has no
+          session cookie for /api/messages/media/... so it landed on
+          "Not Authenticated". A real <button> keeps the user inside
+          the authenticated webview where the media route works.
           Keyed by URL (not index) so when an optimistic message is
           replaced by the server version the old blob: <img> unmounts
-          cleanly and the new /api/messages/media/… <img> mounts fresh —
-          no half-loaded image staying in the DOM with a new src. The
-          bg-gray-100 on each anchor is what shows through as a skeleton
-          while SafeImage holds opacity-0 until decode completes. */}
+          cleanly and the new /api/messages/media/... <img> mounts fresh. */}
       {hasMedia && (
         <div className={`flex flex-wrap gap-1.5 mb-1 max-w-[72%] sm:max-w-xs lg:max-w-sm xl:max-w-md ${isOut ? 'justify-end' : 'justify-start'}`}>
           {mediaUrls.map(url => {
             const resolved = resolveMediaUrl(url);
             return (
-              <a
+              <button
                 key={resolved}
-                href={resolved}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block rounded-xl overflow-hidden border border-white/20 shadow-sm bg-gray-100"
+                type="button"
+                onClick={() => onOpenMediaPreview?.(resolved)}
+                aria-label="View attachment"
+                className="block rounded-xl overflow-hidden border border-white/20 shadow-sm bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
               >
                 <SafeImage
                   src={resolved}
@@ -133,7 +137,7 @@ export default function MessageBubble({
                   className="max-w-[200px] max-h-[200px] object-cover block"
                   loading="lazy"
                 />
-              </a>
+              </button>
             );
           })}
         </div>

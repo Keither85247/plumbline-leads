@@ -1,7 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import MessageBubble, { DaySeparator } from './MessageBubble';
 import MessageInput from './MessageInput';
+import SafeImage from './SafeImage';
 import { parseTimestamp } from '../../utils/phone';
+import { translations } from '../../i18n';
 
 // Normalize message: real API rows have `created_at`; legacy/mock used `ts`
 function msgTs(msg) {
@@ -76,7 +78,23 @@ export default function MessageThread({
   onToggleDetails,
   loading = false,
 }) {
+  const lang = localStorage.getItem('language') || 'en';
+  const t = translations[lang] || translations.en;
+
   const bottomRef = useRef(null);
+
+  // Single-state full-screen preview owned at the thread level (not per-bubble)
+  // so multiple bubbles never produce stacked overlays and the close handler
+  // has one source of truth. null = closed, otherwise the URL to display.
+  const [previewUrl, setPreviewUrl] = useState(null);
+
+  // Escape closes the preview — desktop keyboard accessibility.
+  useEffect(() => {
+    if (!previewUrl) return;
+    const onKey = e => { if (e.key === 'Escape') setPreviewUrl(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [previewUrl]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -100,7 +118,7 @@ export default function MessageThread({
           <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
           </svg>
-          <span className="text-sm font-medium">Inbox</span>
+          <span className="text-sm font-medium">{t.inboxTitle}</span>
         </button>
 
         {/* Avatar + name */}
@@ -156,8 +174,8 @@ export default function MessageThread({
           <MessageSkeleton />
         ) : messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center">
-            <p className="text-xs text-gray-400">No messages yet.</p>
-            <p className="text-xs text-gray-400 mt-0.5">Send one below to start the conversation.</p>
+            <p className="text-xs text-gray-400">{t.inboxNoMessages}</p>
+            <p className="text-xs text-gray-400 mt-0.5">{t.inboxSendFirst}</p>
           </div>
         ) : (
           <>
@@ -171,6 +189,7 @@ export default function MessageThread({
                     message={msg}
                     isFirst={j === 0}
                     isLast={j === item.messages.length - 1}
+                    onOpenMediaPreview={setPreviewUrl}
                   />
                 ))
               )
@@ -186,6 +205,43 @@ export default function MessageThread({
         onSend={onSend}
         placeholder={`Message ${conversation.name?.split(' ')[0] || ''}…`}
       />
+
+      {/* ── In-app full-screen attachment preview ───────────────────────────
+          Replaces the previous <a target="_blank"> behaviour. Opening the
+          image inside the app's authenticated webview means /api/messages/
+          media/... is fetched WITH the session cookie — no more "Not
+          Authenticated" redirect. SafeImage handles loading/error states
+          internally. Tap backdrop or X (or press Escape) to close. */}
+      {previewUrl && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Attachment preview"
+          className="fixed inset-0 z-[60] bg-black/85 flex items-center justify-center p-4"
+          onClick={() => setPreviewUrl(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setPreviewUrl(null)}
+            aria-label="Close preview"
+            className="absolute right-4 w-10 h-10 rounded-full bg-white/10 text-white flex items-center justify-center hover:bg-white/20 transition-colors focus:outline-none focus:ring-2 focus:ring-white/40"
+            style={{ top: 'calc(env(safe-area-inset-top) + 1rem)' }}
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+          <SafeImage
+            // Keyed on url so swapping previewed images cleanly remounts.
+            key={previewUrl}
+            src={previewUrl}
+            alt="Attachment"
+            onClick={e => e.stopPropagation()}
+            className="max-w-full max-h-full object-contain rounded-lg shadow-2xl select-none"
+            draggable={false}
+          />
+        </div>
+      )}
     </div>
   );
 }
