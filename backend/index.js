@@ -187,6 +187,15 @@ app.use(express.json({ limit: '2mb' }));
 // Health check — used by the frontend status indicator
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+// Env-var diagnostic — safe to leave in: only reveals whether flags are set, not their values
+app.get('/api/health/env', (_req, res) => {
+  res.json({
+    ALLOW_PUBLIC_SIGNUP:  process.env.ALLOW_PUBLIC_SIGNUP  || '(not set)',
+    ENABLE_TESTER_BYPASS: process.env.ENABLE_TESTER_BYPASS || '(not set)',
+    NODE_ENV:             process.env.NODE_ENV             || '(not set)',
+  });
+});
+
 // Owner account diagnostic — confirms the account exists and has a password,
 // without exposing any sensitive data. Used to verify reset worked on Render.
 // Safe to leave in production: reveals nothing beyond "account exists / not".
