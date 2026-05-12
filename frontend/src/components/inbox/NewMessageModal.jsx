@@ -5,6 +5,14 @@ import { normalizePhone } from '../../utils/phone';
 const ACCEPTED_MIME = 'image/jpeg,image/jpg,image/png,image/gif,image/webp';
 const MAX_FILES = 5;
 
+// Stable id per attachment so React keys + preview lookups don't depend on
+// array index. crypto.randomUUID is available in all modern browsers and on
+// recent Capacitor webviews; Date+Math is a safe fallback.
+function makeAttachmentId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  return `att-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function formatPhoneDisplay(num) {
   if (!num) return '';
   const d = num.replace(/\D/g, '');
@@ -27,8 +35,17 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
 
   const [phone,           setPhone]           = useState('');
   const [message,         setMessage]         = useState('');
-  const [attachments,     setAttachments]     = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Each attachment is { id, file, url } where `url` is a blob URL created
+  // ONCE when the file is attached (in handleFileChange) and revoked only
+  // when that attachment is explicitly removed or the modal unmounts. This
+  // decouples URL lifecycle from React's render cycle — typing in the phone
+  // or message fields cannot regenerate URLs or remount thumbnails. The
+  // previous shape (parallel File[] + string[] derived in a useEffect) caused
+  // visible flicker because adding a second file revoked-and-recreated the
+  // first file's URL through the effect.
+  const [attachments,     setAttachments]     = useState([]);
 
   // Picked from the autocomplete dropdown. Cleared the moment the user edits
   // the field so we never claim a contact selection that doesn't match what's
@@ -38,15 +55,10 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
   // when the inline validation error is shown so it doesn't flash on the
   // very first keystroke.
   const [recipientTouched, setRecipientTouched] = useState(false);
-  // Index of the attachment currently shown in the full-size preview overlay;
-  // null when no preview is open.
-  const [previewIdx,       setPreviewIdx]       = useState(null);
-  // Stable per-file blob URLs. Created in an effect so each File has exactly
-  // one URL for its lifetime in this modal, and so URLs are revoked when the
-  // attachment list changes (or the modal unmounts). Render-time
-  // createObjectURL + onLoad revoke is unsafe — re-renders create new URLs
-  // and break the preview overlay that needs the URL to stay alive.
-  const [attachmentUrls,   setAttachmentUrls]   = useState([]);
+  // Id of the attachment currently shown in the preview overlay; null when
+  // no preview is open. Id-keyed instead of index so removing one attachment
+  // never re-aims the preview at the wrong image.
+  const [previewId,        setPreviewId]        = useState(null);
 
   const phoneRef       = useRef(null);
   const messageRef     = useRef(null);
@@ -56,13 +68,14 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
   // Auto-focus the To field on open
   useEffect(() => { phoneRef.current?.focus(); }, []);
 
-  // Create one stable blob URL per attached File. Revoke on cleanup so we
-  // don't leak object URLs when attachments change or the modal closes.
-  useEffect(() => {
-    const urls = attachments.map(file => URL.createObjectURL(file));
-    setAttachmentUrls(urls);
-    return () => { urls.forEach(u => URL.revokeObjectURL(u)); };
-  }, [attachments]);
+  // Mirror current attachments into a ref so the unmount cleanup can revoke
+  // every blob URL that's still alive without taking a dep on `attachments`
+  // (which would defeat the whole stability guarantee).
+  const attachmentsRef = useRef(attachments);
+  useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
+  useEffect(() => () => {
+    attachmentsRef.current.forEach(a => URL.revokeObjectURL(a.url));
+  }, []);
 
   // Close suggestion dropdown when clicking outside
   useEffect(() => {
@@ -117,7 +130,9 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
     }
     const m = message.trim();
     if (!m && attachments.length === 0) return;
-    onSend(resolvedPhone, m, attachments);
+    // Parent expects File[] for FormData uploading. Strip our wrapper objects.
+    // URLs are revoked by the unmount cleanup; onClose triggers unmount.
+    onSend(resolvedPhone, m, attachments.map(a => a.file));
     onClose();
   }
 
@@ -146,24 +161,32 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
 
   function handleFileChange(e) {
     const picked = Array.from(e.target.files || []);
-    setAttachments(prev => [...prev, ...picked].slice(0, MAX_FILES));
     e.target.value = '';
+    if (picked.length === 0) return;
+    setAttachments(prev => {
+      const room     = Math.max(0, MAX_FILES - prev.length);
+      const accepted = picked.slice(0, room);
+      // URL is created once, here. It lives on the attachment object for the
+      // rest of its lifecycle. No effect will ever regenerate it.
+      const newOnes  = accepted.map(file => ({
+        id:   makeAttachmentId(),
+        file,
+        url:  URL.createObjectURL(file),
+      }));
+      return [...prev, ...newOnes];
+    });
   }
 
-  function removeAttachment(i, e) {
+  function removeAttachment(id, e) {
     // Always called from the explicit X badge — stopPropagation prevents the
-    // thumbnail click handler (which opens the preview) from also firing.
+    // thumbnail's tap-to-preview handler from also firing.
     if (e) e.stopPropagation();
-    setAttachments(prev => prev.filter((_, idx) => idx !== i));
-    // Keep the open preview aligned with the new attachment list:
-    //   • removed the one being previewed → close preview
-    //   • removed one before it → shift the index down so the same image stays open
-    setPreviewIdx(prev => {
-      if (prev === null) return null;
-      if (prev === i)   return null;
-      if (prev > i)     return prev - 1;
-      return prev;
+    setAttachments(prev => {
+      const target = prev.find(a => a.id === id);
+      if (target) URL.revokeObjectURL(target.url); // revoke ONLY this URL
+      return prev.filter(a => a.id !== id);
     });
+    setPreviewId(prev => (prev === id ? null : prev));
   }
 
   const canSend = hasValidRecipient && (message.trim().length > 0 || attachments.length > 0);
@@ -275,28 +298,29 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
             intended to look at. */}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-3 pt-1">
-            {attachments.map((file, i) => (
-              <div key={i} className="relative w-16 h-16 shrink-0">
+            {attachments.map(att => (
+              // Key by stable id, not index — index keys would cause React to
+              // re-associate <img> elements when an attachment is removed,
+              // possibly remounting and reloading sibling thumbnails.
+              <div key={att.id} className="relative w-16 h-16 shrink-0">
                 {/* Image, tap-to-preview */}
                 <button
                   type="button"
-                  onClick={() => setPreviewIdx(i)}
-                  aria-label={`Preview ${file.name}`}
+                  onClick={() => setPreviewId(att.id)}
+                  aria-label={`Preview ${att.file.name}`}
                   className="block w-full h-full rounded-lg overflow-hidden border border-gray-200 bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
                 >
-                  {attachmentUrls[i] && (
-                    <img
-                      src={attachmentUrls[i]}
-                      alt={file.name}
-                      className="w-full h-full object-cover"
-                    />
-                  )}
+                  <img
+                    src={att.url}
+                    alt={att.file.name}
+                    className="w-full h-full object-cover"
+                  />
                 </button>
                 {/* Remove badge — always visible, top-right, explicit only */}
                 <button
                   type="button"
-                  onClick={e => removeAttachment(i, e)}
-                  aria-label={`Remove ${file.name}`}
+                  onClick={e => removeAttachment(att.id, e)}
+                  aria-label={`Remove ${att.file.name}`}
                   className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-gray-900 text-white shadow-md flex items-center justify-center hover:bg-black focus:outline-none focus:ring-2 focus:ring-blue-400 transition-colors"
                 >
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -371,40 +395,46 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
         </div>
 
         {/* ── Full-size attachment preview overlay ─────────────────────────────
-            Rendered INSIDE the inner modal div so the surrounding
+            Looked up by stable id (not array index) so removing an
+            attachment can never silently re-aim the preview at the wrong
+            image. Rendered INSIDE the inner modal div so the surrounding
             stopPropagation prevents backdrop taps from also dismissing the
-            New Message modal. Tap the backdrop or the X to close. Tap the
-            image itself does nothing — stopPropagation on the <img> click
-            keeps the preview open while the user looks. */}
-        {previewIdx !== null && attachmentUrls[previewIdx] && (
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Attachment preview"
-            className="fixed inset-0 z-[60] bg-black/85 flex items-center justify-center p-4"
-            onClick={() => setPreviewIdx(null)}
-            onKeyDown={e => { if (e.key === 'Escape') setPreviewIdx(null); }}
-          >
-            <button
-              type="button"
-              onClick={() => setPreviewIdx(null)}
-              aria-label="Close preview"
-              className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white/10 text-white flex items-center justify-center hover:bg-white/20 transition-colors focus:outline-none focus:ring-2 focus:ring-white/40"
-              style={{ top: 'calc(env(safe-area-inset-top) + 1rem)' }}
+            New Message modal. */}
+        {(() => {
+          const previewAtt = previewId
+            ? attachments.find(a => a.id === previewId)
+            : null;
+          if (!previewAtt) return null;
+          return (
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Attachment preview"
+              className="fixed inset-0 z-[60] bg-black/85 flex items-center justify-center p-4"
+              onClick={() => setPreviewId(null)}
+              onKeyDown={e => { if (e.key === 'Escape') setPreviewId(null); }}
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-            <img
-              src={attachmentUrls[previewIdx]}
-              alt={attachments[previewIdx]?.name || 'Attachment'}
-              onClick={e => e.stopPropagation()}
-              className="max-w-full max-h-full object-contain rounded-lg shadow-2xl select-none"
-              draggable={false}
-            />
-          </div>
-        )}
+              <button
+                type="button"
+                onClick={() => setPreviewId(null)}
+                aria-label="Close preview"
+                className="absolute right-4 w-10 h-10 rounded-full bg-white/10 text-white flex items-center justify-center hover:bg-white/20 transition-colors focus:outline-none focus:ring-2 focus:ring-white/40"
+                style={{ top: 'calc(env(safe-area-inset-top) + 1rem)' }}
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+              <img
+                src={previewAtt.url}
+                alt={previewAtt.file.name}
+                onClick={e => e.stopPropagation()}
+                className="max-w-full max-h-full object-contain rounded-lg shadow-2xl select-none"
+                draggable={false}
+              />
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
