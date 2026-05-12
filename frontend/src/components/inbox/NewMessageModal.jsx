@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { translations } from '../../i18n';
+import { normalizePhone } from '../../utils/phone';
 
 const ACCEPTED_MIME = 'image/jpeg,image/jpg,image/png,image/gif,image/webp';
 const MAX_FILES = 5;
@@ -28,6 +29,15 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
   const [message,         setMessage]         = useState('');
   const [attachments,     setAttachments]     = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Picked from the autocomplete dropdown. Cleared the moment the user edits
+  // the field so we never claim a contact selection that doesn't match what's
+  // currently in the input.
+  const [selectedContact,  setSelectedContact]  = useState(null);
+  // `true` after the field loses focus or the user attempts to send — gates
+  // when the inline validation error is shown so it doesn't flash on the
+  // very first keystroke.
+  const [recipientTouched, setRecipientTouched] = useState(false);
 
   const phoneRef       = useRef(null);
   const messageRef     = useRef(null);
@@ -65,12 +75,32 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
       .slice(0, 8);
   })();
 
+  // ── Recipient resolution + validation ──────────────────────────────────────
+  // A recipient is valid if EITHER the user selected a contact from the
+  // dropdown OR their typed text normalizes to a 10-digit US number.
+  // normalizePhone() already accepts formatted variants like "(203) 555-1212"
+  // and 11-digit "+1..." input — both collapse to the same 10-digit string.
+  const typedDigits = normalizePhone(phone);
+  const isValidTypedPhone = typedDigits.length === 10;
+  const resolvedPhone = selectedContact?.phone || (isValidTypedPhone ? typedDigits : null);
+  const hasValidRecipient = !!resolvedPhone;
+
+  // Inline error: shown only after the user has interacted past the field
+  // (blurred it or attempted to send) so it doesn't fire mid-keystroke.
+  const showRecipientError = recipientTouched && phone.trim().length > 0 && !hasValidRecipient;
+
   // ── Actions ────────────────────────────────────────────────────────────────
   function handleSend() {
-    const p = phone.trim();
+    if (!hasValidRecipient) {
+      // Surface the validation error if the user clicks Send without a valid
+      // recipient. Send button is disabled in this case, but the keyboard
+      // shortcut (Cmd/Ctrl+Enter) can still trigger this path.
+      setRecipientTouched(true);
+      return;
+    }
     const m = message.trim();
-    if (!p || (!m && attachments.length === 0)) return;
-    onSend(p, m, attachments);
+    if (!m && attachments.length === 0) return;
+    onSend(resolvedPhone, m, attachments);
     onClose();
   }
 
@@ -79,9 +109,20 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { handleSend(); }
   }
 
+  function handleRecipientChange(e) {
+    setPhone(e.target.value);
+    setShowSuggestions(true);
+    // The instant the user edits the field, any prior contact selection is
+    // no longer trustworthy — clear it so validation goes back to "is this a
+    // valid raw phone number?" rather than honouring a stale selection.
+    if (selectedContact) setSelectedContact(null);
+  }
+
   function handleSelectSuggestion(conv) {
     setPhone(conv.phone);
+    setSelectedContact(conv);
     setShowSuggestions(false);
+    setRecipientTouched(true);
     // Move focus to message field after selection
     setTimeout(() => messageRef.current?.focus(), 0);
   }
@@ -96,7 +137,7 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
     setAttachments(prev => prev.filter((_, idx) => idx !== i));
   }
 
-  const canSend = phone.trim().length > 0 && (message.trim().length > 0 || attachments.length > 0);
+  const canSend = hasValidRecipient && (message.trim().length > 0 || attachments.length > 0);
 
   return (
     <div
@@ -138,11 +179,24 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
             autoCapitalize="words"
             spellCheck={false}
             value={phone}
-            onChange={e => { setPhone(e.target.value); setShowSuggestions(true); }}
+            onChange={handleRecipientChange}
             onFocus={() => setShowSuggestions(true)}
+            onBlur={() => setRecipientTouched(true)}
             placeholder={t.inboxToNamePH}
-            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400 placeholder:text-gray-400"
+            className={`w-full text-sm border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 placeholder:text-gray-400 ${
+              showRecipientError
+                ? 'border-red-300 focus:ring-red-400'
+                : 'border-gray-200 focus:ring-blue-400'
+            }`}
           />
+
+          {/* Inline validation error — shown only after the user has finished
+              interacting with the field, never mid-keystroke. */}
+          {showRecipientError && (
+            <p className="mt-1 text-[11px] text-red-500 leading-snug">
+              {t.inboxRecipientInvalid || 'Select a contact or enter a valid phone number.'}
+            </p>
+          )}
 
           {/* Suggestions dropdown */}
           {showSuggestions && suggestions.length > 0 && (
