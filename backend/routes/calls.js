@@ -179,55 +179,90 @@ router.get('/:id/recording', (req, res) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/calls/outbound-note
+//
+// Persists the contractor's post-call note + outcome for ONE specific call.
+//
+// Critical invariant — each call interaction is its own historical row.
+// A repeat call to the same contact must NEVER mutate a previous call's
+// contractor_note / outcome. We rely on the Twilio CallSid (sent from the
+// frontend) to pinpoint the exact row; phone-based matching is only used as
+// a legacy fallback and is constrained to rows that have not been annotated.
 // ---------------------------------------------------------------------------
 router.post('/outbound-note', express.json(), (req, res) => {
-  const { phone, note, outcome } = req.body;
+  const { phone, note, outcome, callSid } = req.body;
 
-  if (!phone) return res.status(400).json({ error: 'phone is required' });
+  if (!phone && !callSid) {
+    return res.status(400).json({ error: 'phone or callSid is required' });
+  }
 
-  const normalized     = normalizePhone(phone);
+  const normalized     = phone ? normalizePhone(phone) : null;
   const trimmedNote    = (note || '').trim() || null;
   const trimmedOutcome = outcome || null;
 
   try {
-    // ── Match the most recent outbound call row for this phone + user ─────────
-    //
-    // Phone-matching challenge: Twilio sends E.164 (+15551234567 → 11 digits
-    // after symbol-strip) while our normalizePhone() returns 10 digits.
-    // The WHERE clause handles both:
-    //   • Exact 10-digit match  (from_number was stored as '5551234567')
-    //   • 11-digit E.164 match  (SUBSTR of digits after removing '+' etc.)
-    //
-    // We also claim any matching row where user_id IS NULL (logged by
-    // /voice-client before the userId fix was deployed).
-    const result = db.prepare(`
-      UPDATE calls
-      SET contractor_note = ?,
-          outcome         = ?,
-          user_id         = COALESCE(user_id, ?)
-      WHERE id = (
-        SELECT id FROM calls
-        WHERE classification = 'Outbound'
-          AND (user_id = ? OR user_id IS NULL)
-          AND (
-            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(from_number,'+',''),'-',''),' ',''),'(',''),')','') = ?
-            OR
-            SUBSTR(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(from_number,'+',''),'-',''),' ',''),'(',''),')',''), 2) = ?
-          )
-        ORDER BY created_at DESC
-        LIMIT 1
-      )
-    `).run(trimmedNote, trimmedOutcome, req.userId, req.userId, normalized, normalized);
+    let updated = false;
 
-    if (result.changes === 0) {
-      // No voice-client row exists (e.g. legacy flow, test call, browser SDK not
-      // used). Insert a standalone record so the interaction is still tracked.
-      console.warn(`[Calls] No outbound call row found for ${phone} (user ${req.userId}) — inserting standalone record`);
-      db.prepare(
-        'INSERT INTO calls (from_number, classification, contractor_note, outcome, user_id) VALUES (?, ?, ?, ?, ?)'
-      ).run(normalized || phone, 'Outbound', trimmedNote, trimmedOutcome, req.userId);
-    } else {
-      console.log(`[Calls] Outbound record updated for ${phone} (user ${req.userId}) — outcome: ${trimmedOutcome || 'none'}`);
+    // ── Path 1 (preferred): match the EXACT call by Twilio CallSid ──────────
+    // CallSid is globally unique per Twilio call. This path is race-free —
+    // even if the /voice-client webhook hasn't landed yet, we know which call
+    // the user just finished because the SDK gave us its CallSid.
+    if (callSid) {
+      const r = db.prepare(`
+        UPDATE calls
+        SET contractor_note = ?,
+            outcome         = ?,
+            user_id         = COALESCE(user_id, ?)
+        WHERE call_sid = ?
+          AND (user_id = ? OR user_id IS NULL)
+      `).run(trimmedNote, trimmedOutcome, req.userId, callSid, req.userId);
+      updated = r.changes > 0;
+      if (updated) {
+        console.log(`[Calls] Outbound note attached to call_sid=${callSid} (user ${req.userId})`);
+      }
+    }
+
+    // ── Path 2 (legacy fallback): no callSid — phone-match, but ONLY
+    // unannotated rows from the last 15 minutes. The contractor_note /
+    // outcome IS NULL filter is what protects historical entries from being
+    // overwritten when a repeat call's webhook is slow.
+    if (!updated && phone) {
+      const r = db.prepare(`
+        UPDATE calls
+        SET contractor_note = ?,
+            outcome         = ?,
+            user_id         = COALESCE(user_id, ?)
+        WHERE id = (
+          SELECT id FROM calls
+          WHERE classification = 'Outbound'
+            AND (user_id = ? OR user_id IS NULL)
+            AND contractor_note IS NULL
+            AND outcome         IS NULL
+            AND created_at > datetime('now', '-15 minutes')
+            AND (
+              REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(from_number,'+',''),'-',''),' ',''),'(',''),')','') = ?
+              OR
+              SUBSTR(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(from_number,'+',''),'-',''),' ',''),'(',''),')',''), 2) = ?
+            )
+          ORDER BY created_at DESC
+          LIMIT 1
+        )
+      `).run(trimmedNote, trimmedOutcome, req.userId, req.userId, normalized, normalized);
+      updated = r.changes > 0;
+      if (updated) {
+        console.log(`[Calls] Outbound note attached via phone fallback for ${phone} (user ${req.userId})`);
+      }
+    }
+
+    // ── Path 3 (last resort): no row to attach to — create a NEW historical
+    // record. This is an APPEND, never a mutation. The partial UNIQUE INDEX
+    // on call_sid prevents the late-arriving /voice-client webhook from
+    // creating a duplicate.
+    if (!updated) {
+      console.warn(`[Calls] No matching row for phone=${phone} callSid=${callSid || 'none'} (user ${req.userId}) — inserting new historical record`);
+      db.prepare(`
+        INSERT INTO calls (from_number, call_sid, classification, contractor_note, outcome, user_id)
+        VALUES (?, ?, 'Outbound', ?, ?, ?)
+      `).run(normalized || phone || null, callSid || null, trimmedNote, trimmedOutcome, req.userId);
     }
 
     return res.json({ ok: true });

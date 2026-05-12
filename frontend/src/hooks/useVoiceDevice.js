@@ -104,8 +104,14 @@ export function useVoiceDevice() {
 
       // Trigger post-call note prompt for outbound calls only.
       // Inbound calls are already recorded + summarised by the backend pipeline.
+      //
+      // Capturing CallSid here is critical: the backend uses it to UPDATE the
+      // EXACT call row when the user saves a note. Without it, repeat calls
+      // to the same contact can have their notes overwritten because the
+      // phone-based fallback matches "most recent outbound to this phone".
       if (!isInbound && phone) {
-        setPendingPostCallNote({ phone });
+        const callSid = call.parameters?.CallSid || call.customParameters?.get('CallSid') || null;
+        setPendingPostCallNote({ phone, callSid });
       }
 
       // Brief "ended" display, then back to ready

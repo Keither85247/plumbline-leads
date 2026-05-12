@@ -58,6 +58,22 @@ try { db.exec('ALTER TABLE calls ADD COLUMN contractor_note TEXT'); } catch {}
 // Values: 'answered' | 'voicemail' | 'no-answer' | null (null = unknown/not yet set)
 try { db.exec('ALTER TABLE calls ADD COLUMN outcome TEXT'); } catch {}
 
+// Partial UNIQUE index on call_sid — prevents two rows from sharing the same
+// Twilio CallSid, which would otherwise be possible when the note-save fallback
+// INSERT races ahead of the /voice-client webhook. Critical for the
+// "each call = its own historical row" invariant. NULL call_sid is allowed
+// (legacy rows pre-dating this column have no CallSid).
+try {
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_calls_call_sid_unique
+    ON calls(call_sid) WHERE call_sid IS NOT NULL
+  `);
+} catch (err) {
+  // If duplicates already exist, leave them be — application logic still
+  // prevents new ones via logCall's existence check. Log so we know.
+  console.warn('[DB] call_sid unique index not created (likely pre-existing duplicates):', err.message);
+}
+
 // Add columns to existing databases that predate these fields
 try { db.exec('ALTER TABLE leads ADD COLUMN raw_text TEXT'); } catch {}
 try { db.exec('ALTER TABLE leads ADD COLUMN follow_up_text TEXT'); } catch {}

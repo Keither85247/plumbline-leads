@@ -70,9 +70,26 @@ function getAssignedUserForNumber(toNumber) {
   return getOwnerUserId();
 }
 
-// Log an inbound call to the calls table
+// Log an inbound or outbound call to the calls table.
+// Idempotent on call_sid: if a row already exists for this Twilio CallSid
+// (e.g. the user's POST /outbound-note raced ahead of this webhook and
+// inserted a fallback row), enrich the existing row's NULL fields instead of
+// creating a duplicate. The partial UNIQUE INDEX on call_sid is the safety net.
 function logCall(fromNumber, callSid, classification, userId) {
   try {
+    if (callSid) {
+      const existing = db.prepare('SELECT id FROM calls WHERE call_sid = ?').get(callSid);
+      if (existing) {
+        db.prepare(`
+          UPDATE calls SET
+            from_number    = COALESCE(from_number, ?),
+            classification = CASE WHEN classification = 'Unknown' THEN ? ELSE classification END,
+            user_id        = COALESCE(user_id, ?)
+          WHERE id = ?
+        `).run(fromNumber || null, classification, userId || null, existing.id);
+        return;
+      }
+    }
     db.prepare(
       'INSERT INTO calls (from_number, call_sid, classification, user_id) VALUES (?, ?, ?, ?)'
     ).run(fromNumber || null, callSid || null, classification, userId || null);

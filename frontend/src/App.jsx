@@ -751,10 +751,16 @@ export default function App() {
         <OutboundNoteModal
           phone={voiceDevice.pendingPostCallNote.phone}
           onSave={async (note, outcome) => {
-            // Persist the note/outcome, then bump the shared refresh key so
-            // every calls-rendering surface picks up the updated row.
+            // Persist the note/outcome on the EXACT call row identified by
+            // callSid (captured from the Twilio SDK at disconnect time). The
+            // backend uses callSid to avoid mutating a previous call's row.
             try {
-              await saveOutboundNote(voiceDevice.pendingPostCallNote.phone, note, outcome);
+              await saveOutboundNote(
+                voiceDevice.pendingPostCallNote.phone,
+                note,
+                outcome,
+                voiceDevice.pendingPostCallNote.callSid || null,
+              );
             } finally {
               bumpCallsRefreshKey();
             }

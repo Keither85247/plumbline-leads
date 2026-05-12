@@ -340,13 +340,16 @@ export async function translateText(text, targetLang) {
 }
 
 // Save a contractor-written note for a just-completed outbound call.
-// Associates the note with the most recent outbound call to `phone`.
+// Pass `callSid` (from the Twilio SDK call object) so the backend can target
+// the EXACT row — required to preserve history when the same contact is
+// called multiple times. Phone fallback exists for legacy clients but is
+// constrained server-side to unannotated rows only.
 // outcome: 'answered' | 'voicemail' | 'no-answer' | null
-export async function saveOutboundNote(phone, note, outcome) {
+export async function saveOutboundNote(phone, note, outcome, callSid = null) {
   const res = await apiFetch(`${API_BASE}/calls/outbound-note`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ phone, note, outcome }),
+    body: JSON.stringify({ phone, note, outcome, callSid }),
   });
   if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Failed to save note'); }
   return res.json();
