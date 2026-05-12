@@ -95,14 +95,25 @@ export default function VoicemailGreetingEditor({ t = {} }) {
   const timerRef     = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Derive a cache-busted URL for the current saved audio greeting
-  const [savedAudioKey, setSavedAudioKey] = useState(Date.now());
-  const savedAudioUrl = `${API_BASE}/twilio/voicemail-audio?t=${savedAudioKey}`;
+  // The backend returns a per-user tokenised audio URL. We never construct it
+  // on the client — the token is the only credential that authorises playback,
+  // and it is bound to the logged-in user's voicemail row server-side.
+  const [savedAudioUrl, setSavedAudioUrl] = useState(null);
+  // Bump on every save so the <audio> element reloads even if the URL is unchanged
+  const [audioReloadKey, setAudioReloadKey] = useState(0);
+
+  // Build the full URL with an additional cache-buster query param the server ignores
+  const audioSrc = savedAudioUrl
+    ? `${API_BASE}${savedAudioUrl}${savedAudioUrl.includes('?') ? '&' : '?'}_cb=${audioReloadKey}`
+    : null;
 
   // ── Load current state ──────────────────────────────────────────────────────
   useEffect(() => {
     getAppSettings()
-      .then(s => setGreetingType(s.voicemail_greeting_type ?? 'tts'))
+      .then(s => {
+        setGreetingType(s.voicemail_greeting_type ?? 'tts');
+        setSavedAudioUrl(s.voicemail_audio_url ?? null);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
@@ -172,9 +183,11 @@ export default function VoicemailGreetingEditor({ t = {} }) {
     setPhase('uploading');
     setError(null);
     try {
-      await uploadVoicemailGreeting(previewBlob);
+      const result = await uploadVoicemailGreeting(previewBlob);
       setGreetingType('audio');
-      setSavedAudioKey(Date.now()); // bust cache so audio element reloads
+      // Server returns the new tokenised URL — never build it on the client
+      setSavedAudioUrl(result?.voicemail_audio_url ?? null);
+      setAudioReloadKey(k => k + 1);
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       setPreviewBlob(null);
       setPreviewUrl(null);
@@ -199,6 +212,7 @@ export default function VoicemailGreetingEditor({ t = {} }) {
     try {
       await deleteVoicemailGreeting();
       setGreetingType('tts');
+      setSavedAudioUrl(null);
       setPhase('idle');
     } catch (e) {
       setError(t.vmErrReset || 'Failed to reset greeting.');
@@ -233,11 +247,11 @@ export default function VoicemailGreetingEditor({ t = {} }) {
         </div>
 
         {/* Saved greeting playback */}
-        {greetingType === 'audio' && phase !== 'preview' && phase !== 'uploading' && (
+        {greetingType === 'audio' && audioSrc && phase !== 'preview' && phase !== 'uploading' && (
           <audio
-            key={savedAudioKey}
+            key={audioReloadKey}
             controls
-            src={savedAudioUrl}
+            src={audioSrc}
             className="w-full h-9"
           />
         )}
@@ -330,7 +344,7 @@ export default function VoicemailGreetingEditor({ t = {} }) {
         )}
 
         <p className="text-xs text-gray-400">
-          {t.vmFooter || 'Shared greeting — heard by all callers when a call is missed. Supports mp3, wav, m4a, ogg up to 10 MB.'}
+          {t.vmFooter || 'Your greeting — played to callers on your number when a call goes to voicemail. Supports mp3, wav, m4a, ogg up to 10 MB.'}
         </p>
       </div>
     </div>

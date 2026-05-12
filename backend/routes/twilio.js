@@ -12,7 +12,7 @@ const VoiceResponse = twilio.twiml.VoiceResponse;
 const db = require('../db');
 const { createLeadFromTranscript, isDuplicate, hasLeadToday } = require('./leads');
 const { sendPush } = require('../services/pushService');
-const { DEFAULT_GREETING } = require('./settings');
+const { DEFAULT_GREETING, userGreetingDir, getGreetingRow } = require('./settings');
 const { getDataDir } = require('../utils/dataDir');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -144,19 +144,40 @@ async function downloadToTemp(url, destPath) {
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/twilio/voicemail-audio
-// Serves the custom voicemail greeting audio file publicly so Twilio's
-// <Play> verb can fetch it during call handling (no auth required).
-// Handles Range requests — Twilio probes files with range headers before
-// full playback, and will abort silently if range requests aren't honoured.
+// GET /api/twilio/voicemail-audio?t=TOKEN
+// Public endpoint used by Twilio's <Play> verb during call handling. The token
+// is a per-user random hex string stored in voicemail_greetings.public_token —
+// it is the ONLY way to access a greeting file. No user_id appears in the URL.
+// Tokens rotate on every upload so leaked URLs die when the user re-records.
+// Handles Range requests — Twilio probes files with range headers before full
+// playback, and will abort silently if range requests aren't honoured.
 // ---------------------------------------------------------------------------
 const AUDIO_MIME = { '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg' };
 
 router.get('/voicemail-audio', (req, res) => {
-  const filename = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting_file'").get()?.value;
-  if (!filename) return res.status(404).json({ error: 'No custom greeting on file' });
+  const token = req.query.t;
+  if (!token || typeof token !== 'string' || !/^[a-f0-9]{32,128}$/i.test(token)) {
+    return res.status(404).json({ error: 'Not found' });
+  }
 
-  const filepath = path.join(getDataDir(), filename);
+  const row = db.prepare(`
+    SELECT user_id, audio_file
+    FROM voicemail_greetings
+    WHERE public_token = ? AND type = 'audio' AND audio_file IS NOT NULL
+  `).get(token);
+
+  if (!row) return res.status(404).json({ error: 'Not found' });
+
+  // Resolve the file path strictly inside the owning user's directory and
+  // verify the resolved path is still inside that directory — defence in depth
+  // against any future filename ever containing path-traversal characters.
+  const userDir  = path.resolve(userGreetingDir(row.user_id));
+  const filepath = path.resolve(userDir, row.audio_file);
+  if (!filepath.startsWith(userDir + path.sep)) {
+    log.warn('Voicemail audio request rejected — path escaped user dir', { tokenPrefix: token.slice(0, 8) });
+    return res.status(404).json({ error: 'Not found' });
+  }
+
   let stat;
   try {
     stat = fs.statSync(filepath);
@@ -165,13 +186,14 @@ router.get('/voicemail-audio', (req, res) => {
     throw e;
   }
 
-  const ext         = path.extname(filename).toLowerCase();
+  const ext         = path.extname(row.audio_file).toLowerCase();
   const contentType = AUDIO_MIME[ext] || 'audio/mpeg';
   const total       = stat.size;
 
   res.setHeader('Content-Type', contentType);
   res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Cache-Control', 'public, max-age=300');
+  // Private cache only — tokens rotate, never let an intermediary share them
+  res.setHeader('Cache-Control', 'private, max-age=300');
 
   const rangeHeader = req.headers['range'];
   if (rangeHeader) {
@@ -191,25 +213,30 @@ router.get('/voicemail-audio', (req, res) => {
 // ---------------------------------------------------------------------------
 // Voicemail TwiML helper — appends voicemail verbs onto an existing
 // VoiceResponse object. Reused by /voice (no contractor) and /missed-call.
-// Plays a custom audio greeting if one has been uploaded; falls back to TTS.
+// Plays the ASSIGNED USER's custom audio greeting if one is uploaded; falls
+// back to the assigned user's TTS text; falls back to a generic default. Never
+// reads from any other user's greeting under any condition.
 // ---------------------------------------------------------------------------
 function buildVoicemailTwiml(twiml, baseUrl, userId) {
-  const type     = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting_type'").get()?.value;
-  const filename = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting_file'").get()?.value;
+  const row = userId ? getGreetingRow(userId) : null;
 
   let usedAudio = false;
-  if (type === 'audio' && filename) {
-    const filepath = path.join(getDataDir(), filename);
-    try {
-      fs.statSync(filepath); // throws ENOENT if missing
-      twiml.play(`${baseUrl}/api/twilio/voicemail-audio`);
-      usedAudio = true;
-    } catch {}
+  if (row && row.type === 'audio' && row.audio_file && row.public_token) {
+    const userDir  = path.resolve(userGreetingDir(userId));
+    const filepath = path.resolve(userDir, row.audio_file);
+    if (filepath.startsWith(userDir + path.sep)) {
+      try {
+        fs.statSync(filepath); // throws ENOENT if missing
+        twiml.play(`${baseUrl}/api/twilio/voicemail-audio?t=${row.public_token}`);
+        usedAudio = true;
+      } catch (err) {
+        log.warn('Voicemail audio file missing for user', { userId, err: err.message });
+      }
+    }
   }
 
   if (!usedAudio) {
-    const row = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting'").get();
-    twiml.say(row?.value || DEFAULT_GREETING);
+    twiml.say((row?.tts_text || '').trim() || DEFAULT_GREETING);
   }
 
   const vmAction = userId

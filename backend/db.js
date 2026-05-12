@@ -357,14 +357,94 @@ try { db.exec('ALTER TABLE contacts ADD COLUMN company TEXT'); } catch {}
 try { db.exec("ALTER TABLE contacts ADD COLUMN contact_type TEXT NOT NULL DEFAULT 'Lead'"); } catch {}
 
 // ── App-wide settings ─────────────────────────────────────────────────────────
-// Simple key/value store for global configuration (e.g. voicemail greeting).
-// Not per-user — one shared value for the whole account.
+// Simple key/value store for non-tenant data only (e.g. gmail_last_poll_time).
+// MUST NOT be used for anything user-facing — see voicemail_greetings below.
 db.exec(`
   CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT
   )
 `);
+
+// ── Per-user voicemail greetings ──────────────────────────────────────────────
+// Strictly per-tenant. One row per user; missing row = fall back to default TTS.
+// public_token is a random hex string that authorizes Twilio's <Play> verb to
+// fetch the audio without a session cookie. Token rotates on every upload so a
+// leaked URL is invalidated immediately when the user re-records.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS voicemail_greetings (
+    user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    type         TEXT NOT NULL DEFAULT 'tts',
+    tts_text     TEXT,
+    audio_file   TEXT,
+    public_token TEXT UNIQUE,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+// ── Migration: legacy global voicemail greeting → owner's per-user row ────────
+// Pre-fix the greeting lived in app_settings (global). We attribute the existing
+// data to the owner account and move the audio file into the owner's per-user
+// directory. After migration the legacy app_settings keys are deleted so no
+// other user can ever read them.
+try {
+  const legacyType = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting_type'").get()?.value;
+  const legacyFile = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting_file'").get()?.value;
+  const legacyText = db.prepare("SELECT value FROM app_settings WHERE key = 'voicemail_greeting'").get()?.value;
+
+  if (legacyType || legacyFile || legacyText) {
+    const owner = db.prepare('SELECT id FROM users WHERE is_owner = 1 ORDER BY id LIMIT 1').get()
+                ?? db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
+
+    if (owner) {
+      const existing = db.prepare('SELECT user_id FROM voicemail_greetings WHERE user_id = ?').get(owner.id);
+      if (!existing) {
+        const fs    = require('fs');
+        const path  = require('path');
+        const crypto = require('crypto');
+        const { getDataDir } = require('./utils/dataDir');
+
+        const dataDir = getDataDir();
+        let newAudioFile = null;
+
+        if (legacyFile) {
+          const oldPath = path.join(dataDir, legacyFile);
+          if (fs.existsSync(oldPath)) {
+            const ext         = path.extname(legacyFile).toLowerCase();
+            const userDir     = path.join(dataDir, 'voicemail_greetings', `user_${owner.id}`);
+            const uuid        = crypto.randomBytes(16).toString('hex');
+            const newFilename = `greeting_${uuid}${ext}`;
+            const newPath     = path.join(userDir, newFilename);
+
+            fs.mkdirSync(userDir, { recursive: true });
+            fs.renameSync(oldPath, newPath);
+            newAudioFile = newFilename;
+            console.log(`[DB] Migrated legacy voicemail greeting → ${newPath}`);
+          }
+        }
+
+        db.prepare(`
+          INSERT INTO voicemail_greetings (user_id, type, tts_text, audio_file, public_token)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(
+          owner.id,
+          (legacyType === 'audio' && newAudioFile) ? 'audio' : 'tts',
+          legacyText || null,
+          newAudioFile,
+          crypto.randomBytes(32).toString('hex')
+        );
+
+        console.log(`[DB] Legacy voicemail greeting attributed to owner user_id=${owner.id}`);
+      }
+    }
+
+    // Always remove legacy keys so no future read can leak them across tenants
+    db.prepare("DELETE FROM app_settings WHERE key IN ('voicemail_greeting','voicemail_greeting_type','voicemail_greeting_file')").run();
+    console.log('[DB] Legacy global voicemail keys removed from app_settings');
+  }
+} catch (err) {
+  console.error('[DB] Voicemail greeting migration error:', err.message);
+}
 
 // ── Per-user Twilio phone numbers ─────────────────────────────────────────────
 // One row per purchased Twilio number. assigned_user_id is nullable (unassigned).
