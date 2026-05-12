@@ -221,11 +221,19 @@ router.post('/outbound-note', express.json(), (req, res) => {
       }
     }
 
-    // ── Path 2 (legacy fallback): no callSid — phone-match, but ONLY
-    // unannotated rows from the last 15 minutes. The contractor_note /
-    // outcome IS NULL filter is what protects historical entries from being
-    // overwritten when a repeat call's webhook is slow.
-    if (!updated && phone) {
+    // ── Path 2 (legacy fallback): ONLY runs when no callSid was provided.
+    //
+    // CRITICAL: the `!callSid` guard is what prevents the overwrite bug.
+    // Without it, a client that DID provide callSid would still fall through
+    // here when Path 1 missed (e.g. /voice-client webhook hasn't landed yet),
+    // and the phone match could clobber a PREVIOUS unannotated call to the
+    // same number — preserving the first call's timestamp while replacing
+    // its note + outcome. Modern clients always send callSid, so they go
+    // straight from Path 1 to Path 3 (INSERT a new historical row) instead.
+    //
+    // The contractor_note / outcome IS NULL filter is a secondary defence:
+    // even for true-legacy clients, we'll never overwrite an annotated row.
+    if (!updated && !callSid && phone) {
       const r = db.prepare(`
         UPDATE calls
         SET contractor_note = ?,
