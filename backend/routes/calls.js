@@ -14,7 +14,7 @@ function normalizePhone(num) {
 router.get('/', (req, res) => {
   try {
     const calls = db.prepare(
-      'SELECT * FROM calls WHERE user_id = ? ORDER BY created_at DESC LIMIT 50'
+      'SELECT * FROM calls WHERE user_id = ? ORDER BY created_at DESC LIMIT 200'
     ).all(req.userId);
 
     return res.json(calls.map(c => {
@@ -185,32 +185,51 @@ router.post('/outbound-note', express.json(), (req, res) => {
 
   if (!phone) return res.status(400).json({ error: 'phone is required' });
 
-  const normalized    = normalizePhone(phone);
-  const trimmedNote   = (note || '').trim() || null;
+  const normalized     = normalizePhone(phone);
+  const trimmedNote    = (note || '').trim() || null;
   const trimmedOutcome = outcome || null;
 
   try {
+    // ── Match the most recent outbound call row for this phone + user ─────────
+    //
+    // Phone-matching challenge: Twilio sends E.164 (+15551234567 → 11 digits
+    // after symbol-strip) while our normalizePhone() returns 10 digits.
+    // The WHERE clause handles both:
+    //   • Exact 10-digit match  (from_number was stored as '5551234567')
+    //   • 11-digit E.164 match  (SUBSTR of digits after removing '+' etc.)
+    //
+    // We also claim any matching row where user_id IS NULL (logged by
+    // /voice-client before the userId fix was deployed).
     const result = db.prepare(`
       UPDATE calls
-      SET contractor_note = ?, outcome = ?
+      SET contractor_note = ?,
+          outcome         = ?,
+          user_id         = COALESCE(user_id, ?)
       WHERE id = (
         SELECT id FROM calls
         WHERE classification = 'Outbound'
-          AND user_id = ?
-          AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(from_number,'+',''),'-',''),' ',''),'(',''),')','') = ?
+          AND (user_id = ? OR user_id IS NULL)
+          AND (
+            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(from_number,'+',''),'-',''),' ',''),'(',''),')','') = ?
+            OR
+            SUBSTR(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(from_number,'+',''),'-',''),' ',''),'(',''),')',''), 2) = ?
+          )
         ORDER BY created_at DESC
         LIMIT 1
       )
-    `).run(trimmedNote, trimmedOutcome, req.userId, normalized);
+    `).run(trimmedNote, trimmedOutcome, req.userId, req.userId, normalized, normalized);
 
     if (result.changes === 0) {
-      console.warn(`[Calls] No outbound call row found for ${phone} — inserting standalone record`);
+      // No voice-client row exists (e.g. legacy flow, test call, browser SDK not
+      // used). Insert a standalone record so the interaction is still tracked.
+      console.warn(`[Calls] No outbound call row found for ${phone} (user ${req.userId}) — inserting standalone record`);
       db.prepare(
         'INSERT INTO calls (from_number, classification, contractor_note, outcome, user_id) VALUES (?, ?, ?, ?, ?)'
-      ).run(phone, 'Outbound', trimmedNote, trimmedOutcome, req.userId);
+      ).run(normalized || phone, 'Outbound', trimmedNote, trimmedOutcome, req.userId);
+    } else {
+      console.log(`[Calls] Outbound record updated for ${phone} (user ${req.userId}) — outcome: ${trimmedOutcome || 'none'}`);
     }
 
-    console.log(`[Calls] Outbound record saved for ${phone} — outcome: ${trimmedOutcome || 'none'}`);
     return res.json({ ok: true });
   } catch (err) {
     console.error('[Calls] Failed to save outbound note:', err.message);

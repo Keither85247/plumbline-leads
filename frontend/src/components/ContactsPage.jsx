@@ -118,6 +118,15 @@ export default function ContactsPage({ leads, voiceDevice = {} }) {
       .catch(() => {});
   }, []);
 
+  // Refresh call data when a call ends so interaction counts stay current
+  useEffect(() => {
+    if (deviceStatus === 'ended' || deviceStatus === 'ready') {
+      getCalls()
+        .then(setCalls)
+        .catch(() => {});
+    }
+  }, [deviceStatus]);
+
   // Update profile name/data in list when ContactHistoryModal saves
   const handleProfileSaved = useCallback((phone, profile) => {
     if (!phone || !profile) return;

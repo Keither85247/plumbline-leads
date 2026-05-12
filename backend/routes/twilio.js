@@ -654,13 +654,18 @@ router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) 
   const twiml = new VoiceResponse();
   const baseUrl = process.env.TWILIO_BASE_URL;
 
-  // Derive callerId from the calling user's assigned phone number.
-  // From is the Twilio Client identity, e.g. 'client:user_5'.
-  // Fall back to the env TWILIO_PHONE_NUMBER for legacy / single-number setups.
-  let callerId = process.env.TWILIO_PHONE_NUMBER;
+  // Derive callerId and userId from the Twilio Voice SDK client identity.
+  // From is set by the SDK as 'client:user_<id>' — e.g. 'client:user_5'.
+  // Extract both so we can (a) pick the right caller-ID number and
+  // (b) stamp the call row with the correct user_id so it appears in
+  // user-scoped queries (interaction counts, contact history, etc.).
+  let callerId    = process.env.TWILIO_PHONE_NUMBER;
+  let callerUserId = null;
+
   if (From && From.startsWith('client:user_')) {
     const uid = parseInt(From.replace('client:user_', ''), 10);
     if (!isNaN(uid)) {
+      callerUserId = uid;
       const numRow = db.prepare(
         'SELECT phone_number FROM phone_numbers WHERE assigned_user_id = ? ORDER BY id LIMIT 1'
       ).get(uid);
@@ -684,7 +689,10 @@ router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) 
       log.info('/voice-client dialing PSTN', { to: To, callSid: CallSid });
     }
 
-    logCall(To, CallSid, 'Outbound');
+    // Log with the correct user_id so the call is visible in user-scoped queries
+    // (contact history, interaction counts, etc.).
+    logCall(To, CallSid, 'Outbound', callerUserId);
+    log.info('/voice-client: outbound call logged', { to: To, callSid: CallSid, userId: callerUserId });
 
     const dial = twiml.dial({
       ...(callerId && !isClient && { callerId }),
