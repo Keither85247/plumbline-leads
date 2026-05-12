@@ -486,11 +486,11 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
                     <div className="flex items-center justify-between gap-2 mb-2">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs text-gray-400">
-                          {new Date(vm.created_at).toLocaleDateString('en-US', {
+                          {parseTimestamp(vm.created_at).toLocaleDateString('en-US', {
                             month: 'short', day: 'numeric', year: 'numeric'
                           })}
                           {' · '}
-                          {new Date(vm.created_at).toLocaleTimeString('en-US', {
+                          {parseTimestamp(vm.created_at).toLocaleTimeString('en-US', {
                             hour: 'numeric', minute: '2-digit'
                           })}
                         </span>

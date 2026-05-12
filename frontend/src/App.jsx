@@ -17,6 +17,7 @@ import PaywallGate from './components/PaywallGate';
 import LoginPage from './components/LoginPage';
 import NumberPickerModal from './components/NumberPickerModal';
 import { getLeads, saveOutboundNote, getCounts, getMe, logout, updateProfile, API_BASE, AuthError } from './api';
+import { parseTimestamp } from './utils/phone';
 import { translations } from './i18n';
 import { useVoiceDevice } from './hooks/useVoiceDevice';
 import { usePushNotifications } from './hooks/usePushNotifications';
@@ -149,7 +150,7 @@ function sortLeads(leads) {
   return [...leads].sort((a, b) => {
     const statusDiff = (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99);
     if (statusDiff !== 0) return statusDiff;
-    return new Date(b.created_at) - new Date(a.created_at);
+    return parseTimestamp(b.created_at) - parseTimestamp(a.created_at);
   });
 }
 

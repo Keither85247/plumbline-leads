@@ -370,7 +370,7 @@ export default function ContactHistoryModal({ phone, leads, onClose, onProfileSa
       // SMS-sourced leads are already represented by the TextThreadItem — skip them
       return l.source !== 'sms';
     })
-    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    .sort((a, b) => parseTimestamp(b.created_at) - parseTimestamp(a.created_at));
 
   const contact    = history[0] || {};
   const primaryPhone = contact.callback_number || contact.phone_number || phone;

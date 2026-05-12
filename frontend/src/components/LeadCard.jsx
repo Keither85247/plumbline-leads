@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { updateLeadStatus, archiveLead, unarchiveLead, deleteLead, translateText, sendMessage } from '../api';
-import { normalizePhone } from '../utils/phone';
+import { normalizePhone, parseTimestamp } from '../utils/phone';
 import PhoneActionSheet from './PhoneActionSheet';
 import { translations } from '../i18n';
 
@@ -296,7 +296,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
     }
   };
 
-  const formattedDate = new Date(lead.created_at).toLocaleDateString('en-US', {
+  const formattedDate = parseTimestamp(lead.created_at).toLocaleDateString('en-US', {
     month: 'short', day: 'numeric', year: 'numeric'
   });
 

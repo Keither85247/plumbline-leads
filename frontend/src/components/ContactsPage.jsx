@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { getCalls, getAllContactProfiles } from '../api';
-import { normalizePhone } from '../utils/phone';
+import { normalizePhone, parseTimestamp } from '../utils/phone';
 import ContactHistoryModal from './ContactHistoryModal';
 import PhoneActionSheet    from './PhoneActionSheet';
 import AddContactModal     from './AddContactModal';
@@ -169,7 +169,11 @@ export default function ContactsPage({ leads, voiceDevice = {}, callsRefreshKey 
       if (!raw) continue;
       const norm = normalizePhone(raw);
       if (!norm) continue;
-      const ts  = new Date(lead.created_at).getTime();
+      // parseTimestamp handles SQLite's UTC "YYYY-MM-DD HH:MM:SS" format
+      // (no 'Z'). Using new Date() directly would interpret it as local time
+      // and offset the result by the user's UTC offset — which would make
+      // Contacts disagree with CallsPage / ContactHistoryModal / TimelinePage.
+      const ts  = parseTimestamp(lead.created_at).getTime();
       const ex  = map.get(norm);
       if (!ex) {
         map.set(norm, {
@@ -198,7 +202,7 @@ export default function ContactsPage({ leads, voiceDevice = {}, callsRefreshKey 
       if (!call.from_number) continue;
       const norm = normalizePhone(call.from_number);
       if (!norm) continue;
-      const ts = new Date(call.created_at).getTime();
+      const ts = parseTimestamp(call.created_at).getTime();
       const ex = map.get(norm);
       if (!ex) {
         map.set(norm, {
@@ -230,7 +234,12 @@ export default function ContactsPage({ leads, voiceDevice = {}, callsRefreshKey 
             key: norm, normalized: norm, displayPhone: profile.phone,
             name: profile.name || null, company: profile.company || null,
             category: profile.contact_type || 'Lead',
-            lastActivity: new Date(profile.updated_at || Date.now()).getTime(),
+            // Same parseTimestamp rationale as the calls/leads branches above.
+            // Date.now() fallback covers freshly-inserted profile rows whose
+            // updated_at hasn't been read back from the server yet.
+            lastActivity: profile.updated_at
+              ? parseTimestamp(profile.updated_at).getTime()
+              : Date.now(),
             context: profile.notes ? profile.notes.slice(0, 100) : null,
             count: 0, isManual: true, profileId: profile.id,
           });
@@ -245,7 +254,12 @@ export default function ContactsPage({ leads, voiceDevice = {}, callsRefreshKey 
             name: profile.name || profile.email || null,
             company: profile.company || null,
             category: profile.contact_type || 'Lead',
-            lastActivity: new Date(profile.updated_at || Date.now()).getTime(),
+            // Same parseTimestamp rationale as the calls/leads branches above.
+            // Date.now() fallback covers freshly-inserted profile rows whose
+            // updated_at hasn't been read back from the server yet.
+            lastActivity: profile.updated_at
+              ? parseTimestamp(profile.updated_at).getTime()
+              : Date.now(),
             context: profile.notes ? profile.notes.slice(0, 100) : null,
             count: 0, isManual: true, profileId: profile.id,
             profileEmail: profile.email,
