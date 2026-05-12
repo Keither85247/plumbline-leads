@@ -26,6 +26,31 @@ function normalizePhone(num) {
   return num.trim();
 }
 
+/**
+ * Per-user media ownership check.
+ *
+ * `fragment` is either a filename (for /media/:filename) or a full URL (for
+ * /media-proxy?url=...). In both cases the value will appear verbatim inside
+ * the message row's `media_urls` JSON column (stored as a JSON-encoded array
+ * of strings). A `LIKE %fragment%` match scoped to `user_id = ?` is enough
+ * to prove ownership.
+ *
+ * Returns true if at least one message belonging to userId references the
+ * fragment in its media_urls column. Returns false if no row matches.
+ *
+ * Returning false → caller responds 404 (we deliberately avoid 403 / leaking
+ * existence so a probing user can't distinguish "not yours" from "not real").
+ */
+function userOwnsMedia(userId, fragment) {
+  if (!userId || !fragment) return false;
+  const row = db.prepare(`
+    SELECT 1 FROM messages
+    WHERE user_id = ? AND media_urls LIKE ?
+    LIMIT 1
+  `).get(userId, `%${fragment}%`);
+  return !!row;
+}
+
 // ---------------------------------------------------------------------------
 // MMS temp file storage
 // ---------------------------------------------------------------------------
@@ -43,13 +68,41 @@ const upload = multer({
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/messages/media/:filename  — serve temp MMS file to Twilio / browser
+// GET /api/messages/media/:filename
+//
+// Browser-facing route — auth-required (mounted under requireAuth in
+// index.js) AND per-user ownership-checked. Tester A cannot fetch Tester
+// B's media by guessing or harvesting a filename.
+//
+// Twilio's servers do NOT use this route — they fetch via the public
+// /api/mms-delivery/:token route which is bound to a single filename per
+// token.
 // ---------------------------------------------------------------------------
 router.get('/media/:filename', (req, res) => {
   const filename = path.basename(req.params.filename);
+
+  if (!userOwnsMedia(req.userId, filename)) {
+    log.warn('Media access denied — not owned by user', {
+      userId: req.userId,
+      filename, // safe to log: filename has no PII beyond timestamp+random
+    });
+    // 404 — never 403. We don't want to leak whether the file exists for
+    // another user vs not at all.
+    return res.status(404).send('Not found');
+  }
+
   const filePath = path.join(MMS_TMP_DIR, filename);
-  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
-  res.sendFile(filePath);
+  // Defence in depth: confirm the resolved path is still inside MMS_TMP_DIR
+  // before serving. path.basename already strips slashes; this catches any
+  // future regression that lets ../ slip through.
+  const resolved = path.resolve(filePath);
+  const tmpRoot  = path.resolve(MMS_TMP_DIR);
+  if (!resolved.startsWith(tmpRoot + path.sep)) {
+    log.error('Media path escaped MMS_TMP_DIR', { userId: req.userId, filename });
+    return res.status(404).send('Not found');
+  }
+  if (!fs.existsSync(resolved)) return res.status(404).send('Not found');
+  res.sendFile(resolved);
 });
 
 // ---------------------------------------------------------------------------
@@ -58,6 +111,19 @@ router.get('/media/:filename', (req, res) => {
 router.get('/media-proxy', (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).send('url param required');
+
+  // Per-user ownership check — the requested Twilio CDN URL must appear in
+  // a message belonging to req.userId. Without this, any authenticated user
+  // could ask the server to fetch ANY Twilio media URL using this app's
+  // credentials, which would reveal every inbound MMS across all tenants
+  // on this Twilio account.
+  if (!userOwnsMedia(req.userId, url)) {
+    log.warn('Media proxy denied — URL not owned by user', {
+      userId: req.userId,
+      urlHost: (() => { try { return new URL(url).host; } catch { return 'unparseable'; } })(),
+    });
+    return res.status(404).send('Not found');
+  }
 
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken  = process.env.TWILIO_AUTH_TOKEN;
@@ -262,8 +328,15 @@ router.post('/send', upload.array('media', 5), smsGuards, async (req, res) => {
   const client = getTwilioClient();
   if (!client) return res.status(500).json({ error: 'Twilio credentials are not configured' });
 
-  const mediaUrls = [];
-  const tempPaths = [];
+  // We track two URL sets per file:
+  //  • storedUrls — auth-required browser URLs, written into messages.media_urls.
+  //    Only the owning user can fetch via this URL (ownership-checked).
+  //  • twilioUrls — public token URLs, given to Twilio for delivery only.
+  //    They never enter the messages table or any other browser-visible API,
+  //    auto-expire after 1 hour, and serve only the specific bound filename.
+  const storedUrls = [];
+  const twilioUrls = [];
+  const tempPaths  = [];
 
   try {
     for (const file of files) {
@@ -272,19 +345,29 @@ router.post('/send', upload.array('media', 5), smsGuards, async (req, res) => {
       const filePath = path.join(MMS_TMP_DIR, name);
       fs.writeFileSync(filePath, file.buffer);
       tempPaths.push(filePath);
-      const publicUrl = `${baseUrl}/api/messages/media/${name}`;
-      mediaUrls.push(publicUrl);
-      log.info('MMS temp file written', { publicUrl });
+
+      storedUrls.push(`${baseUrl}/api/messages/media/${name}`);
+
+      // 256-bit token bound to this filename for Twilio's outbound fetch.
+      const token = crypto.randomBytes(32).toString('hex');
+      db.prepare(
+        'INSERT INTO mms_outbound_tokens (token, filename) VALUES (?, ?)'
+      ).run(token, name);
+      twilioUrls.push(`${baseUrl}/api/mms-delivery/${token}`);
+
+      log.info('MMS temp file written', { filename: name, tokenPrefix: token.slice(0, 8) });
     }
 
     const params = { body: (body || '').trim(), from: fromNumber, to: toE164 };
-    if (mediaUrls.length > 0) params.mediaUrl = mediaUrls;
+    if (twilioUrls.length > 0) params.mediaUrl = twilioUrls;
 
-    log.info('Calling Twilio messages.create', { to: toE164, bodyLen: params.body?.length, mediaCount: mediaUrls.length });
+    log.info('Calling Twilio messages.create', { to: toE164, bodyLen: params.body?.length, mediaCount: twilioUrls.length });
 
     const message = await client.messages.create(params);
 
-    const storedMedia = mediaUrls.length > 0 ? JSON.stringify(mediaUrls) : null;
+    // Persist the auth-required URLs (NOT the public token URLs) so the
+    // browser's MessageBubble fetches via the ownership-checked route.
+    const storedMedia = storedUrls.length > 0 ? JSON.stringify(storedUrls) : null;
     const row = db.prepare(`
       INSERT INTO messages (phone, direction, body, twilio_sid, status, media_urls, user_id)
       VALUES (?, 'outbound', ?, ?, ?, ?, ?)
@@ -301,7 +384,7 @@ router.post('/send', upload.array('media', 5), smsGuards, async (req, res) => {
       }, 30 * 60 * 1000);
     }
 
-    log.info(`${mediaUrls.length > 0 ? 'MMS' : 'SMS'} sent`, { to: toE164, sid: message.sid, status: message.status });
+    log.info(`${storedUrls.length > 0 ? 'MMS' : 'SMS'} sent`, { to: toE164, sid: message.sid, status: message.status });
     return res.json({ ok: true, id: row.lastInsertRowid, sid: message.sid });
   } catch (err) {
     tempPaths.forEach(p => { try { fs.unlinkSync(p); } catch {} });

@@ -462,6 +462,21 @@ try {
   console.error('[DB] Voicemail greeting migration error:', err.message);
 }
 
+// ── Outbound MMS delivery tokens ──────────────────────────────────────────────
+// Single-purpose token table for the unauthenticated route that Twilio's
+// servers hit to fetch outbound MMS attachments. Tokens are 32-byte random
+// hex strings — unguessable in any realistic timeframe — and auto-expire
+// after 1 hour (Twilio almost always fetches within seconds, but a retry
+// budget is nice). The token route is public; the browser-facing media
+// route stays auth-required with a per-user ownership check.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mms_outbound_tokens (
+    token       TEXT PRIMARY KEY,
+    filename    TEXT NOT NULL,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
 // ── Per-user soft-deleted conversations ───────────────────────────────────────
 // One row per (user, phone) pair the user has chosen to remove from their
 // inbox. Hides are PER-USER — Tester A's deletions never affect Tester B.

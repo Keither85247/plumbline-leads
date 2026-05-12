@@ -24,6 +24,7 @@ const tokenRouter      = require('./routes/token');
 const contactsRouter   = require('./routes/contacts');
 const emailsRouter     = require('./routes/emails');
 const messagesRouter   = require('./routes/messages');
+const mmsDeliveryRouter = require('./routes/mmsDelivery');
 const countsRouter     = require('./routes/counts');
 const authRouter       = require('./routes/auth');
 const adminRouter      = require('./routes/admin');
@@ -235,6 +236,13 @@ app.use('/api/twilio/token', tokenRouter);
 // Transcribe — accepts audio uploads from the browser (also used in onboarding
 // before auth was added). Kept public for now; add requireAuth in a later pass.
 app.use('/api/transcribe', transcribeRouter);
+
+// MMS delivery — Twilio's servers fetch outbound MMS media from here.
+// MUST stay public (Twilio has no session cookie). Routes use a one-time
+// random token bound to a specific filename + short TTL; the auth-required
+// browser viewing route /api/messages/media/:filename serves the same files
+// but enforces per-user ownership.
+app.use('/api/mms-delivery', mmsDeliveryRouter);
 
 // ── Protected routes (session cookie required) ────────────────────────────────
 // requireAuth reads req.cookies.plumbline_session, looks it up in the sessions
