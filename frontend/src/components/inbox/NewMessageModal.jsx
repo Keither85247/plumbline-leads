@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { translations } from '../../i18n';
-import { normalizePhone } from '../../utils/phone';
+import { normalizePhone, isUsCaPhone } from '../../utils/phone';
 
 const ACCEPTED_MIME = 'image/jpeg,image/jpg,image/png,image/gif,image/webp';
 const MAX_FILES = 5;
@@ -59,6 +59,11 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
   // no preview is open. Id-keyed instead of index so removing one attachment
   // never re-aims the preview at the wrong image.
   const [previewId,        setPreviewId]        = useState(null);
+  // Inline send-error state. Set when the backend rejects the message (e.g.
+  // INTERNATIONAL_SMS_DISABLED). Cleared on any subsequent edit so the user
+  // can fix the input and retry without dismissing a modal.
+  const [sendError,        setSendError]        = useState(null);
+  const [sending,          setSending]          = useState(false);
 
   const phoneRef       = useRef(null);
   const messageRef     = useRef(null);
@@ -106,21 +111,39 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
   })();
 
   // ── Recipient resolution + validation ──────────────────────────────────────
-  // A recipient is valid if EITHER the user selected a contact from the
-  // dropdown OR their typed text normalizes to a 10-digit US number.
-  // normalizePhone() already accepts formatted variants like "(203) 555-1212"
-  // and 11-digit "+1..." input — both collapse to the same 10-digit string.
-  const typedDigits = normalizePhone(phone);
-  const isValidTypedPhone = typedDigits.length === 10;
-  const resolvedPhone = selectedContact?.phone || (isValidTypedPhone ? typedDigits : null);
+  // The candidate phone string we'd send to — either the selected contact's
+  // raw phone or the typed text. We use this string (NOT a coerced 10-digit
+  // form) when validating so an international contact like "+44 ..." is
+  // recognised as international and rejected up front instead of being
+  // silently normalised into a fake US number.
+  const candidatePhone = selectedContact?.phone ?? phone;
+  const isUsCa = isUsCaPhone(candidatePhone);
+  const typedDigits = normalizePhone(candidatePhone);
+  // Only resolve a phone when it's US/Canada — backend won't accept anything
+  // else for non-owner accounts, so we shouldn't even attempt the send.
+  const resolvedPhone = isUsCa ? typedDigits : null;
   const hasValidRecipient = !!resolvedPhone;
+
+  // Distinguish "user typed something that looks international" from "blank
+  // or too-short" so the inline error can be specific.
+  const looksInternational = (() => {
+    if (!candidatePhone) return false;
+    const trimmed = String(candidatePhone).trim();
+    if (!trimmed) return false;
+    if (isUsCa) return false;
+    // Explicit + prefix that isn't +1
+    if (trimmed.startsWith('+') && !/^\+1[\s\d]/.test(trimmed)) return true;
+    // Long-but-not-NANP digit sequence (e.g. 12-digit UK without +)
+    const digits = trimmed.replace(/\D/g, '');
+    return digits.length >= 11 && !(digits.length === 11 && digits.startsWith('1'));
+  })();
 
   // Inline error: shown only after the user has interacted past the field
   // (blurred it or attempted to send) so it doesn't fire mid-keystroke.
   const showRecipientError = recipientTouched && phone.trim().length > 0 && !hasValidRecipient;
 
   // ── Actions ────────────────────────────────────────────────────────────────
-  function handleSend() {
+  async function handleSend() {
     if (!hasValidRecipient) {
       // Surface the validation error if the user clicks Send without a valid
       // recipient. Send button is disabled in this case, but the keyboard
@@ -130,10 +153,27 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
     }
     const m = message.trim();
     if (!m && attachments.length === 0) return;
-    // Parent expects File[] for FormData uploading. Strip our wrapper objects.
-    // URLs are revoked by the unmount cleanup; onClose triggers unmount.
-    onSend(resolvedPhone, m, attachments.map(a => a.file));
-    onClose();
+
+    setSending(true);
+    setSendError(null);
+    try {
+      // Parent expects File[] for FormData uploading. Strip our wrapper objects.
+      // We AWAIT onSend so we know if the send actually succeeded — only then
+      // do we close the modal. The previous code called onClose() synchronously
+      // and lost the compose state if the send threw afterwards.
+      await onSend(resolvedPhone, m, attachments.map(a => a.file));
+      onClose();
+    } catch (err) {
+      // Map known backend codes to inline, actionable messages. Anything else
+      // falls back to the raw error — still shown inline, not as an alert.
+      const friendly =
+        err?.code === 'INTERNATIONAL_SMS_DISABLED'
+          ? 'International messaging is currently supported only for US and Canada numbers.'
+          : (err?.message || 'Failed to send message. Please try again.');
+      setSendError(friendly);
+    } finally {
+      setSending(false);
+    }
   }
 
   function handleKeyDown(e) {
@@ -148,6 +188,8 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
     // no longer trustworthy — clear it so validation goes back to "is this a
     // valid raw phone number?" rather than honouring a stale selection.
     if (selectedContact) setSelectedContact(null);
+    // Any edit clears the last server-side send error so the user can retry.
+    if (sendError) setSendError(null);
   }
 
   function handleSelectSuggestion(conv) {
@@ -242,11 +284,14 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
             }`}
           />
 
-          {/* Inline validation error — shown only after the user has finished
-              interacting with the field, never mid-keystroke. */}
+          {/* Inline validation error. International numbers get a
+              specific message; everything else (blank, too short, gibberish)
+              falls through to the generic prompt. */}
           {showRecipientError && (
             <p className="mt-1 text-[11px] text-red-500 leading-snug">
-              {t.inboxRecipientInvalid || 'Select a contact or enter a valid phone number.'}
+              {looksInternational
+                ? (t.inboxIntlSmsDisabled || 'International messaging is currently supported only for US and Canada numbers.')
+                : (t.inboxRecipientInvalid  || 'Select a contact or enter a valid phone number.')}
             </p>
           )}
 
@@ -377,20 +422,29 @@ export default function NewMessageModal({ onSend, onClose, conversations = [] })
           <p className="text-[11px] text-gray-400 mt-1">{t.inboxCmdEnter}</p>
         </div>
 
+        {/* Server-side send error — non-destructive inline banner. Compose
+            state is fully preserved; user can edit and retry directly. */}
+        {sendError && (
+          <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-[12px] leading-snug text-red-600">
+            {sendError}
+          </div>
+        )}
+
         {/* Actions */}
         <div className="flex gap-2 justify-end">
           <button
             onClick={onClose}
-            className="text-sm px-4 py-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+            disabled={sending}
+            className="text-sm px-4 py-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {t.inboxCancel}
           </button>
           <button
             onClick={handleSend}
-            disabled={!canSend}
+            disabled={!canSend || sending}
             className="text-sm px-5 py-2 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {t.inboxSend}
+            {sending ? (t.inboxSending || 'Sending…') : t.inboxSend}
           </button>
         </div>
 

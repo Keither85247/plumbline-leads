@@ -4,8 +4,9 @@ import MessageThread from './MessageThread';
 import LeadDetailsPanel from './LeadDetailsPanel';
 import NewMessageModal from './NewMessageModal';
 import { getConversations, getMessageThread, sendMessage, markMessagesRead } from '../../api';
+import { translations } from '../../i18n';
 
-function EmptyThreadState() {
+function EmptyThreadState({ t }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center px-8 bg-gray-50/50">
       <div className="w-12 h-12 rounded-2xl bg-white border border-gray-100 shadow-sm flex items-center justify-center">
@@ -14,8 +15,8 @@ function EmptyThreadState() {
         </svg>
       </div>
       <div>
-        <p className="text-sm font-medium text-gray-600">No conversation selected</p>
-        <p className="text-xs text-gray-400 mt-0.5">Choose a contact from the list</p>
+        <p className="text-sm font-medium text-gray-600">{t.inboxNoConvSelected}</p>
+        <p className="text-xs text-gray-400 mt-0.5">{t.inboxChooseContact}</p>
       </div>
     </div>
   );
@@ -26,6 +27,9 @@ function EmptyThreadState() {
 // from the backend. Send is wired to POST /api/messages/send via Twilio.
 
 export default function InboxLayout() {
+  const lang = localStorage.getItem('language') || 'en';
+  const t = translations[lang] || translations.en;
+
   const [conversations, setConversations]   = useState([]);
   const [messageMap,    setMessageMap]       = useState({});
   const [selectedId,    setSelectedId]       = useState(null);
@@ -128,14 +132,32 @@ export default function InboxLayout() {
   }, [selectedId]);
 
   // ── Compose: start a new conversation or open an existing one ──────────────
+  //
+  // Flow:
+  //   1. Send first (await sendMessage). If it fails, we rethrow — the
+  //      compose modal catches the error and shows it inline while keeping
+  //      its state intact (recipient, message body, attachments).
+  //   2. Only AFTER the send succeeds do we navigate / optimistically
+  //      surface the new thread. Previously this navigation happened up
+  //      front, so a backend rejection (international SMS, suspended user,
+  //      rate-limit) left the user staring at "No Conversation Selected"
+  //      because the 10s polling refresh replaced the optimistic
+  //      conversation with the server's list while selectedId still pointed
+  //      at the now-missing row.
   const handleComposeSend = useCallback(async (phone, text, files = []) => {
     const normalizedPhone = phone.trim();
+
+    // 1. Send. Throws on failure → bubbles to the modal's catch.
+    await sendMessage(normalizedPhone, text.trim(), files);
+
+    // 2. Success path — navigate + optimistically render the new message
+    //    so the user immediately sees their thread without waiting for the
+    //    next conversation poll.
     const existing = conversations.find(c => c.phone === normalizedPhone);
 
     if (existing) {
       handleSelect(existing.id);
     } else {
-      // Optimistically add the conversation
       const newConv = {
         id:             normalizedPhone,
         phone:          normalizedPhone,
@@ -151,11 +173,12 @@ export default function InboxLayout() {
       setMobileView('thread');
     }
 
-    // Send the message (goes through handleSend after selectedId is set,
-    // but selectedId state update is async — call sendMessage directly here)
     const targetId = existing ? existing.id : normalizedPhone;
 
-    // Build optimistic object URLs for any attached images
+    // Local-only previews for any attached images so the just-sent message
+    // shows immediately. The real media_urls will arrive from the next
+    // thread poll; we revoke these blob URLs only when the component
+    // unmounts (acceptable — small set, short-lived).
     const optimisticMediaUrls = files.length > 0
       ? JSON.stringify(files.map(f => URL.createObjectURL(f)))
       : null;
@@ -171,20 +194,6 @@ export default function InboxLayout() {
       ...prev,
       [targetId]: [...(prev[targetId] ?? []), optimisticMsg],
     }));
-
-    try {
-      await sendMessage(normalizedPhone, text.trim(), files);
-    } catch (err) {
-      console.error('[Inbox] Compose send failed:', err.message);
-      if (optimisticMediaUrls) {
-        JSON.parse(optimisticMediaUrls).forEach(u => URL.revokeObjectURL(u));
-      }
-      setMessageMap(prev => ({
-        ...prev,
-        [targetId]: (prev[targetId] ?? []).filter(m => m.id !== optimisticMsg.id),
-      }));
-      alert(`Failed to send message: ${err.message}`);
-    }
   }, [conversations, handleSelect]);
 
   return (
@@ -220,7 +229,7 @@ export default function InboxLayout() {
               showDetails={showDetails}
               onToggleDetails={() => setShowDetails(v => !v)}
             />
-          : <EmptyThreadState />
+          : <EmptyThreadState t={t} />
         }
       </div>
 

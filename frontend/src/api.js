@@ -566,7 +566,12 @@ export async function sendMessage(to, body, files = []) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to send message');
+    const error = new Error(err.error || 'Failed to send message');
+    // Attach the backend's structured code (e.g. INTERNATIONAL_SMS_DISABLED)
+    // and HTTP status so callers can show targeted inline messages.
+    error.code   = err.code || null;
+    error.status = res.status;
+    throw error;
   }
   return res.json();
 }

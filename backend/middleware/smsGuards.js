@@ -90,7 +90,10 @@ module.exports = function smsGuards(req, res, next) {
   if (!isNanpNumber(dest)) {
     log.warn('SMS blocked — non-NANP destination', { userId, email: user.email, to: rawTo, e164: dest });
     return res.status(400).json({
-      error: 'International messaging is not enabled for tester accounts. US and Canada numbers only.',
+      // Structured code lets the frontend map this to an inline validation
+      // error near the recipient field instead of a disruptive alert.
+      code:  'INTERNATIONAL_SMS_DISABLED',
+      error: 'International messaging is currently supported only for US and Canada numbers.',
     });
   }
 
