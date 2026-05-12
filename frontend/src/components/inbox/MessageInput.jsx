@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { translations } from '../../i18n';
+import SafeImage from './SafeImage';
 
 const ACCEPTED_MIME = 'image/jpeg,image/jpg,image/png,image/gif,image/webp';
 const MAX_FILES = 5;
@@ -111,7 +112,7 @@ export default function MessageInput({ onSend, placeholder = 'Message…', disab
                 aria-label={`Preview ${att.file.name}`}
                 className="block w-full h-full rounded-lg overflow-hidden border border-gray-200 bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
               >
-                <img
+                <SafeImage
                   src={att.url}
                   alt={att.file.name}
                   className="w-full h-full object-cover"
@@ -158,7 +159,7 @@ export default function MessageInput({ onSend, placeholder = 'Message…', disab
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
-            <img
+            <SafeImage
               src={previewAtt.url}
               alt={previewAtt.file.name}
               onClick={e => e.stopPropagation()}

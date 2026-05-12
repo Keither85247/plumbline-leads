@@ -4,6 +4,7 @@
 import { parseTimestamp } from '../../utils/phone';
 import { API_BASE } from '../../api';
 import { translations } from '../../i18n';
+import SafeImage from './SafeImage';
 
 function getLocale() {
   const lang = localStorage.getItem('language') || 'en';
@@ -107,25 +108,34 @@ export default function MessageBubble({
         </span>
       )}
 
-      {/* Media images — rendered above the text bubble */}
+      {/* Media images — rendered above the text bubble.
+          Keyed by URL (not index) so when an optimistic message is
+          replaced by the server version the old blob: <img> unmounts
+          cleanly and the new /api/messages/media/… <img> mounts fresh —
+          no half-loaded image staying in the DOM with a new src. The
+          bg-gray-100 on each anchor is what shows through as a skeleton
+          while SafeImage holds opacity-0 until decode completes. */}
       {hasMedia && (
         <div className={`flex flex-wrap gap-1.5 mb-1 max-w-[72%] sm:max-w-xs lg:max-w-sm xl:max-w-md ${isOut ? 'justify-end' : 'justify-start'}`}>
-          {mediaUrls.map((url, i) => (
-            <a
-              key={i}
-              href={resolveMediaUrl(url)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block rounded-xl overflow-hidden border border-white/20 shadow-sm"
-            >
-              <img
-                src={resolveMediaUrl(url)}
-                alt="MMS attachment"
-                className="max-w-[200px] max-h-[200px] object-cover block"
-                loading="lazy"
-              />
-            </a>
-          ))}
+          {mediaUrls.map(url => {
+            const resolved = resolveMediaUrl(url);
+            return (
+              <a
+                key={resolved}
+                href={resolved}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block rounded-xl overflow-hidden border border-white/20 shadow-sm bg-gray-100"
+              >
+                <SafeImage
+                  src={resolved}
+                  alt="MMS attachment"
+                  className="max-w-[200px] max-h-[200px] object-cover block"
+                  loading="lazy"
+                />
+              </a>
+            );
+          })}
         </div>
       )}
 
