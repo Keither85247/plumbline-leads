@@ -473,7 +473,7 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
 // Responds immediately with TwiML, then async: download → transcribe → lead.
 // ---------------------------------------------------------------------------
 router.post('/voicemail', express.urlencoded({ extended: true }), async (req, res) => {
-  const { RecordingUrl, From } = req.body;
+  const { RecordingUrl, From, CallSid } = req.body;
   // user_id injected by buildVoicemailTwiml into the action URL as a query param
   const userId = req.query.user_id ? parseInt(req.query.user_id, 10) : getOwnerUserId();
 
@@ -518,6 +518,10 @@ router.post('/voicemail', express.urlencoded({ extended: true }), async (req, re
       phoneNumber: From || null,
       recordingUrl: RecordingUrl || null,
       userId,
+      callSid: CallSid || null,   // lets the vendor-routing path enrich the
+                                  // originating call row with transcript +
+                                  // summary so the voicemail is still fully
+                                  // reviewable in Timeline / Contact History
     });
 
     log.info('Voicemail lead created', { from: From || 'unknown', hasRecording: !!RecordingUrl, userId });

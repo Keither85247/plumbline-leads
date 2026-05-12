@@ -139,12 +139,20 @@ function resolveCallType(call) {
         return call.transcript ? EVENT_TYPES.OUTBOUND_ANSWERED : EVENT_TYPES.OUTBOUND_UNKNOWN;
     }
   }
-  // Inbound: transcript OR duration > 0 = answered.
-  // Duration is set by the recording webhook; transcript may be missing if
-  // the call was short or the AI pipeline failed, but duration is reliable.
-  const answered = !!(call.transcript || call.duration > 0);
-  if (!answered && call.voicemail_lead_id) return EVENT_TYPES.INBOUND_VOICEMAIL;
-  return answered ? EVENT_TYPES.INBOUND_ANSWERED : EVENT_TYPES.INBOUND_MISSED;
+  // Inbound classification:
+  //   • duration > 0       → real conversation; INBOUND_ANSWERED
+  //   • voicemail_lead_id  → matching voicemail-source leads row exists;
+  //                          INBOUND_VOICEMAIL (the legacy / customer path)
+  //   • transcript+recording but no duration → voicemail processed without
+  //                          creating a leads row (vendor/supplier routing
+  //                          path — leads row is skipped, transcript +
+  //                          recording stored on the call row directly).
+  //   • otherwise          → INBOUND_MISSED
+  const hadRealConversation = call.duration > 0;
+  if (hadRealConversation) return EVENT_TYPES.INBOUND_ANSWERED;
+  if (call.voicemail_lead_id) return EVENT_TYPES.INBOUND_VOICEMAIL;
+  if (call.transcript && call.recording_url) return EVENT_TYPES.INBOUND_VOICEMAIL;
+  return EVENT_TYPES.INBOUND_MISSED;
 }
 
 export function normalizeCall(call) {

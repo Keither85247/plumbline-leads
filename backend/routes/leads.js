@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const OpenAI = require('openai');
 const db = require('../db');
+const { classifyVoicemailIntent } = require('../utils/voicemailClassifier');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -15,6 +16,22 @@ const STATUS_ORDER     = { New: 0, Contacted: 1, Qualified: 2, Closed: 3 };
 // userId is optional — Twilio webhook callers pass null (legacy row); the
 // /api/leads POST route passes req.userId so the lead is user-scoped.
 // ---------------------------------------------------------------------------
+// Helper — normalise a phone for the contacts unique key.
+function normalizeContactPhone(raw) {
+  if (!raw) return null;
+  const digits = String(raw).replace(/\D/g, '');
+  if (digits.length === 11 && digits.startsWith('1')) return digits.slice(1);
+  if (digits.length === 10) return digits;
+  return digits || null;
+}
+
+// Truncate a transcript for safe logging — never dump the whole message.
+function truncate(s, n = 120) {
+  if (!s) return '';
+  const t = String(s).replace(/\s+/g, ' ').trim();
+  return t.length > n ? `${t.slice(0, n)}…` : t;
+}
+
 async function createLeadFromTranscript({
   transcript,
   rawText,
@@ -24,6 +41,9 @@ async function createLeadFromTranscript({
   language,
   recordingUrl        = null,
   userId              = null,    // ← Phase 1 addition
+  callSid             = null,    // populated by the voicemail webhook so we
+                                 // can update the originating call row with
+                                 // transcript/summary when routing to vendor
 }) {
   const lang = language || process.env.LANGUAGE || 'en';
   const languageInstruction = lang === 'es'
@@ -48,7 +68,13 @@ async function createLeadFromTranscript({
         content: `You are a CRM assistant that analyzes contractor ${medium}s. Return a JSON object with exactly these fields:
 - "contactName": string — the primary contact's full name extracted from the message, or "Unknown" if not identifiable
 - "companyName": string — the business or organization the contact represents. Only include if explicitly stated or clearly implied. Do not guess. Return an empty string if unclear.
-- "category": string — classify the contact into exactly one of these values: "Lead" (new job inquiry, estimate request, potential sale, OR anyone reporting a problem that could require contracting work — plumbing, HVAC, electrical, sewer, leak, repair, installation, etc. — even if they don't explicitly ask for a quote; when in doubt for voicemails, default to Lead), "Existing Customer" (service issue, follow-up, complaint, or existing project from someone who has worked with the contractor before), "Vendor" (supplier, partner, subcontractor, or business contact), "Spam" (robocall, automated message, irrelevant solicitation, obvious junk, or silent/blank recording), "Other" (clearly does not fit any of the above — use sparingly). Return only the exact string value.
+- "category": string — classify the contact into exactly one of these values:
+   • "Lead" — new job inquiry, estimate request, potential sale, OR a CUSTOMER reporting a problem that could require contracting work (plumbing, HVAC, electrical, sewer, leak, repair, installation). The CALLER is the customer or someone calling on the customer's behalf. Examples: "I need a plumber for a leak", "Can you give me a quote on a bathroom remodel", "My water heater is broken".
+   • "Existing Customer" — service follow-up, complaint, or repeat work from someone the contractor has previously serviced.
+   • "Vendor" — the CALLER works for a supplier, supply house, distributor, parts/materials vendor, manufacturer rep, or subcontractor. They are calling the contractor to tell them about an order, delivery, invoice, pickup, materials, or stock. Examples: "Your order is ready for pickup", "This is ABC Supply, the delivery will arrive tomorrow", "Your P.O. number 1234 has shipped", "Materials are in at the counter". Do NOT classify as Vendor just because the word "parts" or "materials" appears — a customer saying "I need parts replaced" is still a Lead. Vendor language is supplier-side: they are informing the contractor of vendor business activity, not requesting service.
+   • "Spam" — robocall, automated message, political/charity solicitation, obvious junk, or silent/blank recording.
+   • "Other" — clearly does not fit any of the above — use sparingly.
+   Return only the exact string value.
 - "summary": string — a single concise sentence: "[Name] – [what this was about]". If no company, omit the parenthetical. If name is unknown, start with just the action. Keep it short and factual. Examples: ${summaryExamples}
 - "keyPoints": array of strings — up to 3 short, contractor-focused bullet points. Prioritize: (1) job location or address if mentioned, (2) type of work or service requested, (3) urgency, timing, or requested next step. Do NOT include anything about contact info. Do NOT repeat what is already in the summary. Every bullet should be new, specific, actionable information a contractor needs.
 - "callbackNumber": string — if the contact explicitly states a different number to reach them (e.g. "call me back at 203-555-1234"), extract it. Otherwise return an empty string.
@@ -81,9 +107,116 @@ async function createLeadFromTranscript({
   // "Lead" — anyone who left a voicemail is a potential customer, not truly
   // ambiguous. The only genuine "Other" voicemails are blank/silent recordings,
   // which should be "Spam" anyway and are caught by the prompt above.
-  const resolvedCategory = (baseCategory === 'Other' && source === 'voicemail')
+  let resolvedCategory = (baseCategory === 'Other' && source === 'voicemail')
     ? 'Lead'
     : baseCategory;
+
+  // ── Deterministic vendor/supplier override (voicemails only) ───────────────
+  // Hybrid classifier: keyword regex pass + AI. High-confidence keyword hits
+  // promote the category to Vendor even when AI guessed Lead (the prompt is
+  // biased toward Lead). Single keyword hits stay as the AI's guess but get
+  // logged so we can tune the patterns later.
+  let detectorResult = { intent: 'unknown', confidence: 'none', matched: [] };
+  if (source === 'voicemail') {
+    detectorResult = classifyVoicemailIntent(transcript);
+    if (detectorResult.confidence === 'high' && resolvedCategory !== 'Spam') {
+      resolvedCategory = 'Vendor';
+    }
+  }
+
+  // ── Vendor routing — do NOT create a lead row ─────────────────────────────
+  // Vendor / supplier voicemails belong in the Vendors/Suppliers surface
+  // (contacts table, contact_type='Vendor'), not the Leads tab. Recording +
+  // transcript + summary are preserved on the originating call row so the
+  // voicemail is still fully reviewable from Timeline / Contact History.
+  if (source === 'voicemail' && resolvedCategory === 'Vendor') {
+    const normalizedPhone = normalizeContactPhone(phoneNumber);
+    let contactId = null;
+
+    if (normalizedPhone && userId) {
+      // Upsert by (user_id, phone). If a contact already exists for this
+      // phone, enrich it but never *downgrade* an existing Vendor/Supplier
+      // classification (e.g. the user may have manually picked 'Supplier'
+      // and we shouldn't overwrite it with the generic 'Vendor').
+      const upsert = db.prepare(`
+        INSERT INTO contacts (user_id, phone, name, company, contact_type)
+        VALUES (?, ?, ?, ?, 'Vendor')
+        ON CONFLICT(user_id, phone) DO UPDATE SET
+          name         = COALESCE(NULLIF(excluded.name,    ''), contacts.name),
+          company      = COALESCE(NULLIF(excluded.company, ''), contacts.company),
+          contact_type = CASE
+                           WHEN contacts.contact_type IN ('Vendor', 'Supplier')
+                             THEN contacts.contact_type
+                           ELSE 'Vendor'
+                         END,
+          updated_at   = CURRENT_TIMESTAMP
+        RETURNING id
+      `).get(
+        userId,
+        normalizedPhone,
+        resolvedName === 'Unknown' ? null : resolvedName,
+        resolvedCompany || null,
+      );
+      contactId = upsert?.id ?? null;
+    }
+
+    // Preserve transcript + AI summary on the originating call row so the
+    // voicemail's content stays reviewable from timeline / contact history.
+    if (callSid && userId) {
+      try {
+        db.prepare(`
+          UPDATE calls
+          SET transcript = COALESCE(transcript, ?),
+              summary    = COALESCE(summary, ?),
+              key_points = COALESCE(key_points, ?),
+              recording_url = COALESCE(recording_url, ?)
+          WHERE call_sid = ?
+            AND (user_id = ? OR user_id IS NULL)
+        `).run(
+          transcript,
+          summary,
+          JSON.stringify(Array.isArray(keyPoints) ? keyPoints.slice(0, 3) : []),
+          recordingUrl,
+          callSid,
+          userId,
+        );
+      } catch (err) {
+        console.warn('[Leads] Could not enrich call row for vendor voicemail:', err.message);
+      }
+    }
+
+    console.log('[Leads] Voicemail routed to Vendor (no lead created)', {
+      user:          userId,
+      phone:         phoneNumber,
+      contactId,
+      callSid,
+      company:       resolvedCompany || null,
+      detectorIntent:      detectorResult.intent,
+      detectorConfidence:  detectorResult.confidence,
+      detectorMatched:     detectorResult.matched,
+      aiCategory:    baseCategory,
+      finalCategory: resolvedCategory,
+      transcriptPreview: truncate(transcript),
+    });
+
+    // Return a lead-shaped stub so the voicemail webhook's downstream code
+    // (push-notification title, etc.) keeps working. routedToVendor lets the
+    // caller distinguish from a real lead if it needs to.
+    return {
+      id:             null,
+      routedToVendor: true,
+      contact_id:     contactId,
+      contact_name:   resolvedName,
+      company_name:   resolvedCompany || null,
+      category:       'Vendor',
+      summary,
+      key_points:     Array.isArray(keyPoints) ? keyPoints.slice(0, 3) : [],
+      phone_number:   phoneNumber,
+      recording_url:  recordingUrl,
+      source,
+      user_id:        userId,
+    };
+  }
 
   const result = db.prepare(
     `INSERT INTO leads
@@ -106,7 +239,17 @@ async function createLeadFromTranscript({
     recordingUrl || null,
     userId,
   );
-  console.log(`[Leads] Lead created — id:${result.lastInsertRowid} source:${source} user:${userId ?? 'legacy'}`);
+  console.log('[Leads] Lead created', {
+    id:                  result.lastInsertRowid,
+    source,
+    user:                userId ?? 'legacy',
+    finalCategory:       resolvedCategory,
+    aiCategory:          baseCategory,
+    detectorIntent:      detectorResult.intent,
+    detectorConfidence:  detectorResult.confidence,
+    detectorMatched:     detectorResult.matched,
+    transcriptPreview:   truncate(transcript),
+  });
 
   const newLead = db.prepare('SELECT * FROM leads WHERE id = ?').get(result.lastInsertRowid);
   newLead.key_points = JSON.parse(newLead.key_points);
