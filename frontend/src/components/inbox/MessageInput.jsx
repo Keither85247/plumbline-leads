@@ -201,7 +201,12 @@ export default function MessageInput({ onSend, placeholder = 'Message…', disab
           </svg>
         </button>
 
-        {/* Textarea */}
+        {/* Textarea
+            Single-line height is intentionally 28px (3px padding top + 22px
+            line-height + 3px padding bottom) — exactly matches the 28px
+            paperclip button so the placeholder/text glyph centre lines up
+            with the icon centre under items-end. Each additional line adds
+            22px, so the textarea grows cleanly up to max-h (~6 lines). */}
         <textarea
           ref={textareaRef}
           value={value}
@@ -210,7 +215,7 @@ export default function MessageInput({ onSend, placeholder = 'Message…', disab
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="flex-1 bg-transparent text-sm text-gray-900 placeholder-gray-400 resize-none outline-none leading-relaxed py-0.5 min-h-[22px] max-h-[140px]"
+          className="flex-1 bg-transparent text-sm text-gray-900 placeholder-gray-400 resize-none outline-none py-[3px] leading-[22px] min-h-[28px] max-h-[140px]"
         />
 
         {/* Send button */}
