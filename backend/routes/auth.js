@@ -314,6 +314,14 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 let pendingState = null;
 
 router.get('/google', requireAuth, (req, res) => {
+  // Frontend Connect button passes the session token as ?token=... because
+  // top-level navigations on Capacitor Android / iOS Safari ITP / external
+  // tabs don't always send the SameSite=None session cookie. The token
+  // appears in this single request URL only — Referrer-Policy: no-referrer
+  // below prevents it from leaking to Google via the Referer header when
+  // we redirect.
+  res.set('Referrer-Policy', 'no-referrer');
+
   // Feature flag: Gmail OAuth is disabled until Google verification is complete.
   // Set GMAIL_OAUTH_ENABLED=true in Render env vars to enable.
   if (process.env.GMAIL_OAUTH_ENABLED !== 'true') {

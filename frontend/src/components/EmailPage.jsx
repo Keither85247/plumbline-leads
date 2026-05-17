@@ -521,7 +521,21 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
             <div className="py-1">
               <p className="text-sm text-gray-500 mb-3">{t.emailGmailNotConnected}</p>
               <a
-                href={`${BACKEND_URL}/auth/google`}
+                // /auth/google is requireAuth-protected. Top-level navigations
+                // (especially on Capacitor Android + iOS Safari ITP + any
+                // external-tab open) don't always carry the SameSite=None
+                // session cookie, so we ALSO append the localStorage session
+                // token as ?token= — requireAuth already accepts that as a
+                // fallback. The backend strips the token before redirecting
+                // to Google and sets Referrer-Policy: no-referrer so the
+                // token never leaks through the Referer header.
+                href={(() => {
+                  const token = typeof localStorage !== 'undefined'
+                    ? localStorage.getItem('plumbline_token')
+                    : null;
+                  const base = `${BACKEND_URL}/auth/google`;
+                  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+                })()}
                 className="flex items-center justify-center gap-2.5 w-full border border-gray-200 hover:border-gray-300 rounded-xl py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm"
               >
                 <GoogleLogo size={16} />
