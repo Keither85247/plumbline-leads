@@ -54,6 +54,20 @@ export function useVoiceDevice() {
   // the Device mid-call.
   const callInFlightRef = useRef(false);
 
+  // True while WE are intentionally destroying the device (during transport
+  // recovery, unmount, etc.). The Twilio SDK fires `unregistered` either way
+  // — we use this flag to distinguish our own teardown (expected, no
+  // recovery needed) from a transport-driven unregistration (unexpected;
+  // recovery required).
+  const destroyingRef = useRef(false);
+
+  // Last few unsolicited transport-error timestamps. If we see >3 within a
+  // 20-second window we back off — prevents reconnect storms when the
+  // network keeps flapping or the server is hard-down.
+  const transportErrorWindowRef = useRef([]);
+  const TRANSPORT_ERROR_BURST_LIMIT  = 3;
+  const TRANSPORT_ERROR_WINDOW_MS    = 20_000;
+
   // ── Ringtone + title alert ────────────────────────────────────────────────
   // Audio plays on desktop browsers where autoplay is unlocked by the user
   // gesture that called initialize(). On iOS Safari, autoplay is blocked
@@ -276,8 +290,30 @@ export function useVoiceDevice() {
     });
 
     device.on('unregistered', () => {
-      console.log('[VoiceDevice] Unregistered');
-      setStatus('idle');
+      console.log('[VoiceDevice] Unregistered', { destroyingByUs: destroyingRef.current });
+      // If WE triggered the destroy (recovery, unmount), the SDK fires this
+      // as part of the teardown — no recovery needed; the new device's
+      // 'registered' event will set us back to 'ready'.
+      if (destroyingRef.current) {
+        setStatus('idle');
+        return;
+      }
+      // Otherwise the transport unregistered on its own (network blip,
+      // server drop). Treat it as a transport failure and recover.
+      console.warn('[VoiceDevice] Unexpected unregister — initiating transport recovery');
+      setStatus('registering');
+      recoverVoiceTransport('unexpected_unregister');
+    });
+
+    // Twilio fires 'offline' when the underlying websocket transport drops.
+    // No new calls (inbound or outbound) can flow until the transport is
+    // restored, so we recover immediately rather than waiting for the user
+    // to attempt a call and hit a 31009.
+    device.on('offline', () => {
+      console.warn('[VoiceDevice] Event: offline — websocket transport lost');
+      if (destroyingRef.current) return;  // our own destroy fires offline too
+      setStatus('registering');
+      recoverVoiceTransport('device_offline');
     });
 
     // PROACTIVE refresh — Twilio fires this ~30s before the access token
@@ -291,13 +327,29 @@ export function useVoiceDevice() {
     });
 
     device.on('error', (err) => {
-      console.error('[VoiceDevice] Device error — code:', err.code, '| message:', err.message, '| twilioError:', err.twilioError);
-      // 20104 = AccessTokenExpired. Recover automatically instead of
-      // wedging into a sticky 'failed' state — the user shouldn't have to
-      // kill/reopen the app over a token TTL.
+      console.error('[VoiceDevice] Device error', {
+        code: err.code,
+        message: err.message,
+        twilioError: err.twilioError,
+        causes: err.causes,
+        explanation: err.explanation,
+        solutions: err.solutions,
+      });
+      // 20104 = AccessTokenExpired. Soft recovery via updateToken when
+      // possible.
       if (err.code === 20104) {
         console.log('[VoiceDevice] AccessTokenExpired (20104) — refreshing');
         refreshVoiceSession('device_error_20104');
+        return;
+      }
+      // 31009 = TransportError ("No transport available to send or receive
+      // messages"). The websocket is dead. updateToken cannot help — we
+      // need a full destroy+recreate of the Device.
+      // 31005 = ConnectionError, 53000 = Signaling connection error —
+      // same family; treat the same way.
+      if (err.code === 31009 || err.code === 31005 || err.code === 53000) {
+        console.warn('[VoiceDevice] Transport error — initiating hard recovery', { code: err.code });
+        recoverVoiceTransport(`transport_error_${err.code}`);
         return;
       }
       setError(err.message);
@@ -321,11 +373,97 @@ export function useVoiceDevice() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Single source of truth for token refresh / device recovery. All four
-  // triggers (tokenWillExpire, error 20104, visibilitychange→visible,
-  // window focus) funnel through here, deduped by refreshingRef. Active
-  // calls are NEVER torn down — refresh defers when a call is in flight
-  // and is retried when the call ends or the next trigger fires.
+  // HARD recovery — always destroys + recreates the Twilio Device. Used for
+  // transport-level failures where updateToken cannot help:
+  //   • error 31009 / 31005 / 53000 (TransportError, ConnectionError,
+  //     SignalingError) — websocket dead
+  //   • 'offline' SDK event — same diagnosis
+  //   • Unexpected 'unregistered' — transport dropped registration
+  //   • Manual Retry button — safer to assume the worst when the user has
+  //     to ask for help
+  //
+  // Shares the same dedupe (refreshingRef) and active-call guard
+  // (callInFlightRef) as refreshVoiceSession so the two paths can't fight
+  // each other.
+  //
+  // Burst guard: if we see >3 transport errors within 20 seconds, we stop
+  // auto-recovering for the rest of the burst window. Prevents reconnect
+  // storms when the network is hard-down or flapping. The user can still
+  // tap Retry; that bypasses the burst guard because it goes through the
+  // same function but with `reason='manual_retry'` which we always honour.
+  const recoverVoiceTransport = useCallback(async (reason) => {
+    if (refreshingRef.current) {
+      console.log('[VoiceDevice] recover already in flight — skipping', { reason });
+      return;
+    }
+    if (callInFlightRef.current) {
+      console.log('[VoiceDevice] active call — deferring transport recovery', { reason });
+      return;
+    }
+
+    // Burst dedupe — only applies to automatic triggers, not manual retry
+    if (reason !== 'manual_retry') {
+      const now = Date.now();
+      transportErrorWindowRef.current = transportErrorWindowRef.current
+        .filter(t => now - t < TRANSPORT_ERROR_WINDOW_MS);
+      transportErrorWindowRef.current.push(now);
+      if (transportErrorWindowRef.current.length > TRANSPORT_ERROR_BURST_LIMIT) {
+        console.warn('[VoiceDevice] transport recovery burst limit hit — backing off', {
+          reason,
+          burstSize: transportErrorWindowRef.current.length,
+        });
+        setError('Reconnecting…');
+        setStatus('failed');
+        return;
+      }
+    } else {
+      // Manual retry clears the burst window so subsequent automatic
+      // triggers get a fresh budget.
+      transportErrorWindowRef.current = [];
+    }
+
+    refreshingRef.current = true;
+    console.log('[VoiceDevice] recoverVoiceTransport start', { reason });
+    setStatus('registering');
+
+    try {
+      const token = await fetchToken();
+
+      if (deviceRef.current) {
+        try {
+          destroyingRef.current = true;     // tell our unregistered handler this is expected
+          deviceRef.current.destroy();
+        } catch (e) {
+          console.warn('[VoiceDevice] destroy() threw during recovery', { err: e.message });
+        } finally {
+          destroyingRef.current = false;
+        }
+        deviceRef.current = null;
+      }
+
+      deviceRef.current = createDevice(token);
+      setError(null);
+      console.log('[VoiceDevice] transport restored', { reason });
+      // status flips to 'ready' via the new device's 'registered' event
+    } catch (err) {
+      console.error('[VoiceDevice] recoverVoiceTransport failed', { reason, err: err.message });
+      setError(err.message);
+      setStatus('failed');
+    } finally {
+      refreshingRef.current = false;
+    }
+  }, [createDevice]);
+
+  // SOFT refresh — token-only path. All token-related triggers
+  // (tokenWillExpire, error 20104, visibilitychange→visible, window focus)
+  // funnel through here, deduped by refreshingRef. Active calls are NEVER
+  // torn down — refresh defers when a call is in flight and is retried
+  // when the next trigger fires.
+  //
+  // If the device looks unhealthy when this runs (state !== 'registered'),
+  // we promote to recoverVoiceTransport — the user likely came back from
+  // a long background and the websocket is dead, in which case updateToken
+  // alone wouldn't fix anything.
   const refreshVoiceSession = useCallback(async (reason) => {
     if (refreshingRef.current) {
       console.log('[VoiceDevice] refresh already in flight — skipping', { reason });
@@ -340,6 +478,18 @@ export function useVoiceDevice() {
     console.log('[VoiceDevice] refreshVoiceSession start', { reason });
     setStatus('registering'); // reuse "Connecting to voice…" copy
 
+    // If the device exists but isn't currently registered, the transport is
+    // gone — updateToken alone won't fix anything. Promote to a full
+    // destroy+recreate. Release the dedupe lock first so the recovery call
+    // can claim it.
+    if (deviceRef.current && deviceRef.current.state && deviceRef.current.state !== 'registered') {
+      console.warn('[VoiceDevice] device.state is not registered — promoting to hard recovery', {
+        reason, deviceState: deviceRef.current.state,
+      });
+      refreshingRef.current = false;
+      return recoverVoiceTransport(`promoted_${reason}`);
+    }
+
     try {
       const newToken = await fetchToken();
 
@@ -353,7 +503,11 @@ export function useVoiceDevice() {
           console.warn('[VoiceDevice] updateToken failed — recreating device', {
             reason, err: updateErr.message,
           });
-          try { deviceRef.current.destroy(); } catch {}
+          try {
+            destroyingRef.current = true;
+            deviceRef.current.destroy();
+          } catch {}
+          finally { destroyingRef.current = false; }
           deviceRef.current = null;
           deviceRef.current = createDevice(newToken);
         }
@@ -370,7 +524,7 @@ export function useVoiceDevice() {
     } finally {
       refreshingRef.current = false;
     }
-  }, [createDevice]);
+  }, [createDevice, recoverVoiceTransport]);
 
   const initialize = useCallback(async () => {
     if (deviceRef.current) return; // already initialized
@@ -432,8 +586,12 @@ export function useVoiceDevice() {
   // a "Retry" button without prop-drilling.
   const retryVoiceSession = useCallback(() => {
     setError(null);
-    refreshVoiceSession('manual_retry');
-  }, [refreshVoiceSession]);
+    // Manual Retry routes through HARD recovery — the user is asking for
+    // help because something more than a token refresh is needed. The
+    // 'manual_retry' reason also bypasses the burst guard inside
+    // recoverVoiceTransport so the button always works.
+    recoverVoiceTransport('manual_retry');
+  }, [recoverVoiceTransport]);
 
   // ── Outbound call ──────────────────────────────────────────────────────────
 
@@ -495,10 +653,20 @@ export function useVoiceDevice() {
         message: err.message,
         twilioError: err.twilioError,
       });
+      // A 31009/31005/53000 here means the transport was dead when the user
+      // pressed Call. The device.on('error') handler will also fire and kick
+      // off recovery, but we trigger it explicitly so a slow event delivery
+      // doesn't leave the user stuck on a sticky 'failed' state.
+      if (err.code === 31009 || err.code === 31005 || err.code === 53000) {
+        console.warn('[VoiceDevice] makeCall hit transport error — initiating hard recovery');
+        recoverVoiceTransport(`makecall_transport_${err.code}`);
+        // status will move via the recovery path; don't pin 'failed' here
+        return;
+      }
       setError(err.message);
       setStatus('failed');
     }
-  }, []);
+  }, [recoverVoiceTransport]);
 
   // ── Answer / reject incoming ───────────────────────────────────────────────
 
@@ -541,7 +709,10 @@ export function useVoiceDevice() {
     return () => {
       stopAllAlerts();
       if (deviceRef.current) {
-        deviceRef.current.destroy();
+        // Flag so the unregistered/offline handlers don't try to recover
+        // during our own teardown.
+        destroyingRef.current = true;
+        try { deviceRef.current.destroy(); } catch {}
         deviceRef.current = null;
       }
     };
