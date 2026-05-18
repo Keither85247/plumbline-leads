@@ -477,8 +477,8 @@ export default function App() {
   // (b) logged in but still checking whether this user has a number assigned.
   if (!authChecked || (currentUser && assignedNumber === null)) {
     return (
-      <div className="h-dvh flex items-center justify-center bg-gray-50">
-        <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+      <div className="h-dvh flex items-center justify-center">
+        <div className="w-6 h-6 border-2 border-accent-400 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -518,15 +518,15 @@ export default function App() {
 
   return (
     <Sentry.ErrorBoundary fallback={
-      <div className="h-dvh flex flex-col items-center justify-center gap-3 p-8 text-center bg-gray-50">
-        <p className="text-sm font-semibold text-gray-700">{t.appSomethingWrong}</p>
-        <p className="text-xs text-gray-400">{t.appErrorReported}</p>
-        <button onClick={() => window.location.reload()} className="text-sm px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+      <div className="h-dvh flex flex-col items-center justify-center gap-3 p-8 text-center">
+        <p className="text-sm font-semibold text-ink-100">{t.appSomethingWrong}</p>
+        <p className="text-xs text-ink-400">{t.appErrorReported}</p>
+        <button onClick={() => window.location.reload()} className="text-sm px-4 py-2 bg-accent-500 text-white rounded-lg hover:bg-accent-600 transition-colors">
           {t.appReload}
         </button>
       </div>
     }>
-    <div className="h-dvh bg-gray-50 flex flex-col overflow-hidden">
+    <div className="h-dvh flex flex-col overflow-hidden">
 
       {/* Push notification permission banner */}
       {showPushBanner && (
@@ -556,15 +556,18 @@ export default function App() {
         </div>
       )}
 
-      {/* Header — paddingTop pushes content below iOS status bar / Android status bar
-           in PWA standalone mode and Capacitor. env(safe-area-inset-top) is 0 on
+      {/* Header — glass-effect top bar over the dark gradient. paddingTop
+           pushes content below iOS status bar / Android status bar in PWA
+           standalone mode and Capacitor. env(safe-area-inset-top) is 0 on
            desktop so nothing changes there. */}
-      <header className="bg-white border-b border-gray-200 px-4 md:px-6 sticky top-0 z-30"
-              style={{ paddingTop: 'env(safe-area-inset-top)' }}>
+      <header
+        className="glass-nav px-4 md:px-6 sticky top-0 z-30"
+        style={{ paddingTop: 'env(safe-area-inset-top)' }}
+      >
         <div className="h-14 flex items-center justify-between w-full gap-4">
           <div className="leading-tight">
-            <span className="text-gray-900 font-bold text-lg tracking-tight">PlumbLine</span>
-            <span className="text-gray-400 font-semibold text-lg tracking-tight"> Leads</span>
+            <span className="text-ink-50 font-bold text-lg tracking-tight">PlumbLine</span>
+            <span className="text-ink-400 font-semibold text-lg tracking-tight"> Leads</span>
           </div>
           {/* Backend status dot — green when up, gray pulse when deploying/checking/down */}
           <div
@@ -572,10 +575,12 @@ export default function App() {
             title={backendStatus === 'up' ? 'Backend online' : 'Deploying update…'}
           >
             <span className={`w-2 h-2 rounded-full ${
-              backendStatus === 'up' ? 'bg-green-400' : 'bg-gray-300 animate-pulse'
+              backendStatus === 'up'
+                ? 'bg-status-new shadow-[0_0_8px_rgba(34,197,94,0.6)]'
+                : 'bg-ink-500 animate-pulse'
             }`} />
             <span className={`text-[11px] font-medium hidden sm:inline ${
-              backendStatus === 'up' ? 'text-green-600' : 'text-gray-400'
+              backendStatus === 'up' ? 'text-status-new' : 'text-ink-400'
             }`}>
               {backendStatus === 'up' ? t.appOnline : t.appUpdating}
             </span>
@@ -583,7 +588,7 @@ export default function App() {
 
           <button
             onClick={() => setSettingsOpen(true)}
-            className="p-2 text-gray-500 hover:text-gray-700 transition-colors rounded-lg hover:bg-gray-100"
+            className="p-2 text-ink-300 hover:text-ink-50 transition-colors rounded-lg hover:bg-white/[0.06]"
             aria-label="Settings"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
@@ -594,7 +599,7 @@ export default function App() {
           {/* Log out — small button, visible on all screen sizes */}
           <button
             onClick={handleLogout}
-            className="p-2 text-gray-400 hover:text-gray-600 transition-colors rounded-lg hover:bg-gray-100"
+            className="p-2 text-ink-400 hover:text-ink-100 transition-colors rounded-lg hover:bg-white/[0.06]"
             aria-label="Log out"
             title={`Log out (${currentUser.email})`}
           >
@@ -608,16 +613,16 @@ export default function App() {
       {/* Body: sidebar (desktop) + content */}
       <div className="flex flex-1 overflow-hidden">
 
-        {/* Sidebar — desktop only */}
-        <nav className="hidden md:flex w-44 bg-white border-r border-gray-200 flex-col py-4 shrink-0">
+        {/* Sidebar — desktop only. Dark surface with subtle right border. */}
+        <nav className="hidden md:flex w-44 bg-ink-900/60 border-r border-ink-800/80 backdrop-blur-sm flex-col py-4 shrink-0">
           {SIDEBAR_NAV_ICONS.map(item => (
             <button
               key={item.id}
               onClick={() => handleNavChange(item.id)}
               className={`flex items-center gap-3 px-5 py-2.5 text-sm font-medium transition-colors text-left
                 ${activeNav === item.id
-                  ? 'text-blue-600 bg-blue-50 border-r-2 border-blue-600'
-                  : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50'
+                  ? 'text-accent-300 bg-accent-500/10 border-r-2 border-accent-400'
+                  : 'text-ink-400 hover:text-ink-100 hover:bg-white/[0.04]'
                 }`}
             >
               {item.icon}
@@ -630,8 +635,8 @@ export default function App() {
               onClick={() => handleNavChange('admin')}
               className={`flex items-center gap-3 px-5 py-2.5 text-sm font-medium transition-colors text-left mt-auto
                 ${activeNav === 'admin'
-                  ? 'text-indigo-600 bg-indigo-50 border-r-2 border-indigo-600'
-                  : 'text-gray-400 hover:text-gray-700 hover:bg-gray-50'
+                  ? 'text-status-vendor bg-status-vendor/10 border-r-2 border-status-vendor'
+                  : 'text-ink-400 hover:text-ink-100 hover:bg-white/[0.04]'
                 }`}
             >
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -701,15 +706,16 @@ export default function App() {
         </main>
       </div>
 
-      {/* Gradient fade mask — mobile only. Height grows with safe-area so it
-           always covers the full nav pill + home indicator zone. */}
+      {/* Gradient fade mask — mobile only. Fades scrolled content into the
+           ink-950 base so the glass-nav reads cleanly above it. Height grows
+           with safe-area so it always covers the nav pill + home indicator. */}
       <div
         className="md:hidden fixed bottom-0 left-0 right-0"
         style={{
           height: 'calc(96px + env(safe-area-inset-bottom))',
           zIndex: 39,
           pointerEvents: 'none',
-          background: 'linear-gradient(to bottom, rgba(249,250,251,0) 0%, rgba(249,250,251,0.6) 50%, rgba(249,250,251,0.92) 100%)',
+          background: 'linear-gradient(to bottom, rgba(11,15,26,0) 0%, rgba(11,15,26,0.6) 50%, rgba(11,15,26,0.92) 100%)',
         }}
       />
 
@@ -846,12 +852,21 @@ export default function App() {
            paddingBottom = safe-area-inset-bottom so the pill sits flush just
            above the iOS home indicator / Android gesture bar with no extra gap.
            4px is a minimal breathing room so the pill never touches the indicator. */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex justify-center"
-           style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 4px)', paddingLeft: '16px', paddingRight: '16px', paddingTop: '6px' }}>
-        <nav className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-gray-100 flex items-stretch px-2 py-1">
+      {/* ── Bottom navigation — premium glass pill ─────────────────────────
+          Floating, frosted, with electric-blue active state. Tap targets are
+          comfortably large (≥48px effective hit) and the active rail uses a
+          subtle inset glow rather than a flat bg. Badge styling uses a
+          glow ring so unread counts read clearly against the dark shell. */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex justify-center pointer-events-none"
+           style={{
+             paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)',
+             paddingLeft: '14px',
+             paddingRight: '14px',
+             paddingTop: '8px',
+           }}>
+        <nav className="pointer-events-auto w-full max-w-sm glass-nav rounded-3xl flex items-stretch px-1.5 py-1.5">
           {[
             ...BOTTOM_NAV_ICONS,
-            // Owner-only admin tab appended at runtime
             ...(currentUser?.is_owner ? [{
               id: 'admin',
               icon: (active) => (
@@ -865,7 +880,6 @@ export default function App() {
               ? activeNav === 'leads' || activeNav === 'overview'
               : activeNav === item.id;
 
-            // Badge count per tab — only first 4 get badges
             const newLeads = leads.filter(l => l.status === 'New').length;
             const badgeCount =
               item.id === 'calls'  ? callsBadge           :
@@ -874,29 +888,44 @@ export default function App() {
               item.id === 'email'  ? remoteCounts.emails  :
               0;
 
-            const activeColor = item.id === 'admin' ? 'text-indigo-600 bg-indigo-50' : 'text-blue-600 bg-blue-50';
-            const activeLabelColor = item.id === 'admin' ? 'text-indigo-600' : 'text-blue-600';
+            // Admin tab gets the violet accent to distinguish it from the
+            // electric-blue primary action color used everywhere else.
+            const isAdmin = item.id === 'admin';
+            const activeIconColor  = isAdmin ? 'text-status-vendor' : 'text-accent-400';
+            const activeLabelColor = isAdmin ? 'text-status-vendor' : 'text-accent-400';
 
             return (
               <button
                 key={item.id}
                 onClick={() => handleNavChange(item.id)}
-                className={`flex-1 flex flex-col items-center justify-center gap-1 py-2.5 rounded-xl transition-all duration-150
+                className={`group flex-1 flex flex-col items-center justify-center gap-1 py-2.5 px-1 rounded-2xl
+                  transition-all duration-200 ease-out active:scale-[0.94]
                   ${isActive
-                    ? activeColor
-                    : 'text-gray-400 hover:text-gray-600'
+                    ? `${activeIconColor} bg-white/[0.04] shadow-inset-soft`
+                    : 'text-ink-400 hover:text-ink-200 hover:bg-white/[0.02]'
                   }`}
               >
-                {/* Icon wrapper — relative so badge can be positioned over it */}
+                {/* Active rail — thin accent line above the active tab */}
+                {isActive && (
+                  <span className={`absolute top-0 mt-1 h-0.5 w-8 rounded-full
+                    ${isAdmin ? 'bg-status-vendor' : 'bg-accent-400'}`} />
+                )}
+
                 <div className="relative">
                   {item.icon(isActive)}
                   {badgeCount > 0 && (
-                    <span className="absolute -top-1 -right-2 min-w-[16px] h-4 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center px-1 leading-none pointer-events-none">
+                    <span
+                      className="absolute -top-1.5 -right-2.5 min-w-[18px] h-[18px] px-1
+                                 bg-status-urgent text-white text-[10px] font-bold rounded-full
+                                 flex items-center justify-center leading-none pointer-events-none
+                                 ring-2 ring-ink-950 tabular-nums"
+                    >
                       {badgeCount > 99 ? '99+' : badgeCount}
                     </span>
                   )}
                 </div>
-                <span className={`text-[10px] leading-none font-semibold tracking-wide ${isActive ? activeLabelColor : 'text-gray-400'}`}>
+                <span className={`text-[10px] leading-none font-semibold tracking-wider transition-colors
+                  ${isActive ? activeLabelColor : 'text-ink-500 group-hover:text-ink-300'}`}>
                   {(t[item.id] || item.id).toUpperCase()}
                 </span>
               </button>

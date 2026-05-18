@@ -5,11 +5,32 @@ import { normalizePhone, parseTimestamp } from '../utils/phone';
 import PhoneActionSheet from './PhoneActionSheet';
 import { translations } from '../i18n';
 
+// Status pill colors — dark-surface variants. Each pill is a chip on the
+// ink-800 card surface, so we use saturated text on a translucent matching
+// background ring for crisp contrast without competing with the card.
 const STATUS_COLORS = {
-  New: 'bg-blue-100 text-blue-800',
-  Contacted: 'bg-yellow-100 text-yellow-800',
-  Qualified: 'bg-green-100 text-green-800',
-  Closed: 'bg-gray-100 text-gray-600'
+  New:       'bg-status-new/15        text-status-new       ring-1 ring-status-new/30',
+  Contacted: 'bg-status-contacted/15  text-status-contacted ring-1 ring-status-contacted/30',
+  Qualified: 'bg-status-customer/15   text-status-customer  ring-1 ring-status-customer/30',
+  Closed:    'bg-ink-700              text-ink-300          ring-1 ring-ink-600',
+};
+
+// Left-edge status indicator color — a vertical bar inside the card.
+// Communicates lead state at a glance during fast scanning.
+const STATUS_EDGE = {
+  New:       'bg-status-new',
+  Contacted: 'bg-status-contacted',
+  Qualified: 'bg-status-customer',
+  Closed:    'bg-ink-600',
+};
+
+// Category chip colors — secondary semantic axis (Lead vs Vendor vs ...)
+const CATEGORY_CHIP = {
+  'Lead':              'bg-accent-500/12    text-accent-300    ring-accent-400/25',
+  'Existing Customer': 'bg-status-customer/12 text-status-customer ring-status-customer/25',
+  'Vendor':            'bg-status-vendor/12 text-status-vendor  ring-status-vendor/25',
+  'Spam':              'bg-status-urgent/12 text-status-urgent  ring-status-urgent/25',
+  'Other':             'bg-ink-700          text-ink-300        ring-ink-600',
 };
 
 const STATUSES = ['New', 'Contacted', 'Qualified', 'Closed'];
@@ -148,16 +169,16 @@ function formatLeadTags(lead) {
   ].filter(Boolean);
 }
 
-// Variant styles create a clear visual hierarchy:
-//   problem  — slate tint, medium weight  → most prominent
+// Variant styles create a clear visual hierarchy on the dark ink-900 card:
+//   problem  — solid ink-700, lifted text  → most prominent
 //   urgency  — amber tint, ringed border  → alert signal
-//   location — soft gray                 → secondary
-//   other    — soft gray                 → lowest prominence
+//   location — ink-800 with soft text     → secondary
+//   other    — ink-800 with soft text     → lowest prominence
 const TAG_VARIANT_STYLES = {
-  problem:  'bg-slate-100 text-slate-700 font-medium',
-  location: 'bg-gray-100 text-gray-500',
-  urgency:  'bg-amber-50 text-amber-700 font-medium ring-1 ring-inset ring-amber-200',
-  other:    'bg-gray-100 text-gray-500',
+  problem:  'bg-ink-700/80          text-ink-100         font-medium ring-1 ring-inset ring-ink-600/60',
+  location: 'bg-ink-800/80          text-ink-300                     ring-1 ring-inset ring-ink-700/60',
+  urgency:  'bg-status-scheduled/15 text-status-scheduled font-medium ring-1 ring-inset ring-status-scheduled/30',
+  other:    'bg-ink-800/80          text-ink-300                     ring-1 ring-inset ring-ink-700/60',
 };
 
 function Tag({ icon, text, variant = 'other' }) {
@@ -318,137 +339,195 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
   const primaryPhone = lead.callback_number || lead.phone_number;
   const showCallerIdSecondary = lead.callback_number && lead.phone_number && lead.callback_number !== lead.phone_number;
 
+  // Status edge color — left vertical bar for instant scanability.
+  // Overdue overrides status so urgency wins at-a-glance even if a lead
+  // is technically still "New".
+  const edgeColor = !isArchived && urgency === 'overdue'
+    ? 'bg-status-urgent'
+    : (STATUS_EDGE[lead.status] || STATUS_EDGE.New);
+
   return (
     <div
-      className={`border rounded-lg p-3 transition-colors
-        ${urgency === 'overdue' && !isArchived ? 'border-l-[3px] border-l-amber-400' : ''}
-        ${lead.status === 'New' && !isArchived ? 'bg-blue-50 border-blue-200' : 'border-gray-200'}`}
+      className={`group relative overflow-hidden rounded-2xl
+        bg-ink-900 ring-1 ring-ink-800/80
+        shadow-card hover:shadow-card-hover
+        transition-all duration-200 ease-out
+        ${lead.status === 'New' && !isArchived ? 'ring-status-new/20' : ''}`}
     >
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={() => onContactClick && onContactClick(normalizePhone(lead.callback_number || lead.phone_number))}
-              className="font-semibold text-gray-900 truncate hover:text-blue-600 hover:underline transition-colors text-left"
-            >
-              {lead.contact_name}{lead.company_name ? ` (${lead.company_name})` : ''}
-            </button>
-            <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5 shrink-0">{category}</span>
-          </div>
-          {primaryPhone && (
-            <button
-              onClick={() => setActionSheetPhone(primaryPhone)}
-              className="text-sm text-blue-600 hover:text-blue-800 underline-offset-2 hover:underline cursor-pointer transition-colors text-left"
-            >
-              {primaryPhone}
-            </button>
-          )}
-          {showCallerIdSecondary && (
-            <p className="text-xs text-gray-400 mt-0.5">{t.leadCalledFrom} {lead.phone_number}</p>
-          )}
-          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-            <p className="text-xs text-gray-400">{formattedDate}</p>
-            <span className="text-xs text-gray-400">&middot;</span>
-            <span className="text-xs text-gray-400">{ageLabel}</span>
-            {urgency === 'overdue' && <span className="text-xs font-medium text-red-600 bg-red-50 rounded px-1.5 py-0.5">{t.leadOverdue}</span>}
-            {urgency === 'warning' && <span className="text-xs font-medium text-yellow-700 bg-yellow-50 rounded px-1.5 py-0.5">{t.leadNeedsFollowup}</span>}
-            {lead.message_count > 0 && (
-              <span className="text-xs text-teal-700 bg-teal-50 rounded px-1.5 py-0.5 font-medium">
-                💬 {lead.message_count} {lead.message_count === 1 ? t.leadText : t.leadTexts}
-              </span>
-            )}
-          </div>
-        </div>
+      {/* Status edge — vertical accent rail. Wider when overdue for urgency. */}
+      <div
+        className={`absolute left-0 top-0 bottom-0 ${edgeColor}
+          ${!isArchived && urgency === 'overdue' ? 'w-1.5' : 'w-1'}`}
+        aria-hidden="true"
+      />
 
-        {/* Status + kebab menu */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          {!isArchived && (
-            <select
-              value={lead.status}
-              onChange={handleStatusChange}
-              disabled={updating}
-              className={`text-xs font-medium rounded-full px-3 py-1 cursor-pointer border-0
-                          focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:cursor-wait
-                          ${STATUS_COLORS[lead.status] || STATUS_COLORS['New']}`}
-            >
-              {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          )}
-
-          {/* Kebab menu */}
-          <div className="relative" ref={menuRef}>
-            <button
-              onClick={() => setMenuOpen(o => !o)}
-              disabled={updating}
-              className="p-1 rounded text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors disabled:cursor-wait"
-              aria-label="More options"
-            >
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
-              </svg>
-            </button>
-            {menuOpen && (
-              <div className="absolute right-0 top-7 z-20 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[130px]">
-                {isArchived ? (
-                  <button
-                    onClick={handleUnarchive}
-                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                  >
-                    {t.leadUnarchive}
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleArchive}
-                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                  >
-                    {t.leadArchive}
-                  </button>
+      {/* Card body with extra left padding to clear the status edge */}
+      <div className="pl-4 pr-3 py-3.5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            {/* ── Title row — bold name + quiet category chip ─────────────── */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => onContactClick && onContactClick(normalizePhone(lead.callback_number || lead.phone_number))}
+                className="font-semibold text-base text-ink-50 truncate hover:text-accent-300 transition-colors text-left tracking-tight"
+              >
+                {lead.contact_name}
+                {lead.company_name && (
+                  <span className="text-ink-400 font-normal"> · {lead.company_name}</span>
                 )}
-                <button
-                  onClick={handleDelete}
-                  className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
-                >
-                  {t.leadDelete}
-                </button>
-              </div>
+              </button>
+              <span className={`text-[10px] font-semibold tracking-wider uppercase rounded-md px-1.5 py-0.5 shrink-0
+                ring-1 ${CATEGORY_CHIP[category] || CATEGORY_CHIP.Other}`}>
+                {category}
+              </span>
+              {/* "NEW" attention badge — glow-pulses to draw the eye */}
+              {lead.status === 'New' && !isArchived && (
+                <span className="text-[10px] font-bold tracking-wider uppercase rounded-md px-1.5 py-0.5
+                                 bg-status-new text-ink-950 animate-pulse-glow">
+                  NEW
+                </span>
+              )}
+            </div>
+
+            {/* ── Phone row — interactive, accent color ───────────────────── */}
+            {primaryPhone && (
+              <button
+                onClick={() => setActionSheetPhone(primaryPhone)}
+                className="mt-0.5 text-sm font-medium text-accent-300 hover:text-accent-200 cursor-pointer transition-colors text-left tabular-nums"
+              >
+                {primaryPhone}
+              </button>
             )}
+            {showCallerIdSecondary && (
+              <p className="text-[11px] text-ink-500 mt-0.5">
+                {t.leadCalledFrom} <span className="tabular-nums">{lead.phone_number}</span>
+              </p>
+            )}
+
+            {/* ── Metadata row — timestamps + urgency + message count ─────── */}
+            <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+              <span className="text-[11px] text-ink-500 tabular-nums">{ageLabel}</span>
+              <span className="text-ink-700">•</span>
+              <span className="text-[11px] text-ink-500">{formattedDate}</span>
+
+              {urgency === 'overdue' && (
+                <span className="text-[10px] font-semibold tracking-wide uppercase
+                                 text-status-urgent bg-status-urgent/12 rounded-md px-1.5 py-0.5
+                                 ring-1 ring-status-urgent/30">
+                  {t.leadOverdue}
+                </span>
+              )}
+              {urgency === 'warning' && (
+                <span className="text-[10px] font-semibold tracking-wide uppercase
+                                 text-status-scheduled bg-status-scheduled/12 rounded-md px-1.5 py-0.5
+                                 ring-1 ring-status-scheduled/30">
+                  {t.leadNeedsFollowup}
+                </span>
+              )}
+              {lead.message_count > 0 && (
+                <span className="text-[10px] font-semibold tracking-wide uppercase
+                                 text-status-customer bg-status-customer/12 rounded-md px-1.5 py-0.5
+                                 ring-1 ring-status-customer/30 tabular-nums">
+                  {lead.message_count} {lead.message_count === 1 ? t.leadText : t.leadTexts}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* ── Right side — status select + kebab menu ───────────────────── */}
+          <div className="flex items-center gap-1 shrink-0">
+            {!isArchived && (
+              <select
+                value={lead.status}
+                onChange={handleStatusChange}
+                disabled={updating}
+                className={`text-[11px] font-semibold tracking-wide rounded-full pl-2.5 pr-7 py-1
+                            cursor-pointer border-0 appearance-none bg-no-repeat
+                            focus:outline-none focus:ring-2 focus:ring-accent-400 disabled:cursor-wait
+                            ${STATUS_COLORS[lead.status] || STATUS_COLORS['New']}`}
+                style={{
+                  backgroundImage: `url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='currentColor' stroke-width='2.5' viewBox='0 0 24 24'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E")`,
+                  backgroundPosition: 'right 0.5rem center',
+                  backgroundSize: '0.75rem',
+                }}
+              >
+                {STATUSES.map(s => <option key={s} value={s} className="bg-ink-800 text-ink-50">{s}</option>)}
+              </select>
+            )}
+
+            <div className="relative" ref={menuRef}>
+              <button
+                onClick={() => setMenuOpen(o => !o)}
+                disabled={updating}
+                className="p-1.5 rounded-lg text-ink-400 hover:text-ink-200 hover:bg-white/[0.06] transition-colors disabled:cursor-wait"
+                aria-label="More options"
+              >
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
+                </svg>
+              </button>
+              {menuOpen && (
+                <div className="absolute right-0 top-9 z-20 glass rounded-xl shadow-card py-1 min-w-[140px] animate-slide-up">
+                  {isArchived ? (
+                    <button
+                      onClick={handleUnarchive}
+                      className="w-full text-left px-3.5 py-2 text-sm text-ink-100 hover:bg-white/[0.06] transition-colors"
+                    >
+                      {t.leadUnarchive}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleArchive}
+                      className="w-full text-left px-3.5 py-2 text-sm text-ink-100 hover:bg-white/[0.06] transition-colors"
+                    >
+                      {t.leadArchive}
+                    </button>
+                  )}
+                  <button
+                    onClick={handleDelete}
+                    className="w-full text-left px-3.5 py-2 text-sm text-status-urgent hover:bg-status-urgent/10 transition-colors"
+                  >
+                    {t.leadDelete}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
-      </div>
 
       {lead.summary && (
         <p
-          className={`text-sm text-gray-600 mt-2 leading-snug cursor-pointer ${!descExpanded ? 'line-clamp-2' : ''}`}
+          className={`text-sm text-ink-200 mt-2.5 leading-relaxed cursor-pointer ${!descExpanded ? 'line-clamp-2' : ''}`}
           onClick={() => setDescExpanded(v => !v)}
         >
           {lead.summary}
         </p>
       )}
       {lead.key_points && lead.key_points.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
           {formatLeadTags(lead).map((tag, i) => (
             <Tag key={i} icon={tag.icon} text={tag.value} variant={tag.variant} />
           ))}
         </div>
       )}
       {baseFollowUp && !isArchived && (
-        <div className="mt-2 border-t border-gray-100 pt-2">
-          <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
-            <div className="flex items-center justify-between mb-1">
+        <div className="mt-3 pt-3 border-t border-ink-800/80">
+          <div className="rounded-xl bg-ink-800/60 ring-1 ring-ink-700/60 px-3 py-2.5">
+            <div className="flex items-center justify-between mb-1.5">
               <div className="flex items-center gap-2">
-                <p className="text-xs font-medium text-gray-500">{t.leadSuggestedFollowup}</p>
+                <p className="text-[11px] font-semibold tracking-wide uppercase text-ink-400">{t.leadSuggestedFollowup}</p>
                 {!editingFollowUp
-                  ? <button onClick={handleEditClick} className="text-xs text-gray-400 hover:text-gray-600 transition-colors">{t.leadFollowupEdit}</button>
-                  : <button onClick={() => setEditingFollowUp(false)} className="text-xs text-blue-500 hover:text-blue-700 transition-colors">{t.leadFollowupDone}</button>
+                  ? <button onClick={handleEditClick} className="text-[11px] text-ink-400 hover:text-ink-200 transition-colors">{t.leadFollowupEdit}</button>
+                  : <button onClick={() => setEditingFollowUp(false)} className="text-[11px] text-accent-300 hover:text-accent-200 transition-colors">{t.leadFollowupDone}</button>
                 }
               </div>
               <button
                 onClick={handleSend}
                 disabled={isSending || hasSent}
-                className={`text-xs transition-colors ${
+                className={`text-[11px] font-semibold tracking-wide transition-colors ${
                   hasSent
-                    ? 'text-gray-400 cursor-not-allowed'
-                    : 'text-blue-500 hover:text-blue-700 disabled:opacity-50'
+                    ? 'text-ink-500 cursor-not-allowed'
+                    : 'text-accent-300 hover:text-accent-200 disabled:opacity-50'
                 }`}
               >
                 {hasSent ? t.leadSent : isSending ? t.leadSending : t.leadSend}
@@ -459,22 +538,22 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                 value={displayedFollowUp}
                 onChange={e => setFollowUpDraft(e.target.value)}
                 rows={3}
-                className="w-full text-xs text-gray-700 border border-gray-200 rounded-md px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none bg-white"
+                className="w-full text-xs text-ink-100 border border-ink-700 rounded-lg px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-accent-500 resize-none bg-ink-900"
               />
             ) : (
-              <p className="text-xs text-gray-600 leading-relaxed">
+              <p className="text-xs text-ink-200 leading-relaxed">
                 {showingTranslation && translatedText ? translatedText : displayedFollowUp}
               </p>
             )}
 
             {/* Translation controls — only visible when feature is enabled */}
             {replyTranslation && !editingFollowUp && (
-              <div className="mt-2 pt-2 border-t border-gray-100 flex items-center gap-3">
+              <div className="mt-2 pt-2 border-t border-ink-700/60 flex items-center gap-3">
                 {!translatedText ? (
                   <button
                     onClick={handleTranslate}
                     disabled={isTranslating}
-                    className="text-xs text-violet-600 hover:text-violet-800 font-medium transition-colors disabled:opacity-50"
+                    className="text-xs text-status-vendor hover:text-violet-300 font-medium transition-colors disabled:opacity-50"
                   >
                     {isTranslating ? t.translating : t.translateTo}
                   </button>
@@ -482,15 +561,15 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                   <>
                     <button
                       onClick={() => setShowingTranslation(p => !p)}
-                      className="text-xs text-violet-600 hover:text-violet-800 font-medium transition-colors"
+                      className="text-xs text-status-vendor hover:text-violet-300 font-medium transition-colors"
                     >
                       {showingTranslation ? t.showOriginal : t.showTranslation}
                     </button>
-                    <span className="text-gray-300 text-xs">·</span>
+                    <span className="text-ink-600 text-xs">·</span>
                     <button
                       onClick={handleTranslate}
                       disabled={isTranslating}
-                      className="text-xs text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-50"
+                      className="text-xs text-ink-400 hover:text-ink-200 transition-colors disabled:opacity-50"
                     >
                       {isTranslating ? t.translating : t.leadRetranslate}
                     </button>
@@ -502,13 +581,14 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
         </div>
       )}
       {rawText && (
-        <div className="mt-2 border-t border-gray-100 pt-2">
-          <button onClick={() => setShowRaw(p => !p)} className="text-xs text-gray-400 hover:text-gray-600 transition-colors">
+        <div className="mt-2 border-t border-ink-800/80 pt-2">
+          <button onClick={() => setShowRaw(p => !p)} className="text-xs text-ink-400 hover:text-ink-200 transition-colors">
             {showRaw ? t.leadHideOriginal : t.leadViewOriginal}
           </button>
-          {showRaw && <p className="mt-2 text-xs text-gray-400 leading-relaxed whitespace-pre-wrap">{rawText}</p>}
+          {showRaw && <p className="mt-2 text-xs text-ink-400 leading-relaxed whitespace-pre-wrap">{rawText}</p>}
         </div>
       )}
+      </div>
 
       {actionSheetPhone && (
         <PhoneActionSheet

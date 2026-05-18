@@ -1,3 +1,69 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Plumbline Leads — base typography + dark shell
+   ─────────────────────────────────────────────────────────────────────────
+   The app defaults to a dark, layered surface. Components opt into ink-*
+   tokens for surfaces and accent-* for actions. Older components keep
+   their light styling internally — they read as floating light panels on
+   the dark shell until phase-2 migration.
+*/
+
+@layer base {
+  html {
+    /* Smooth font rendering on macOS / iOS, crisper on Android Capacitor */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    -webkit-tap-highlight-color: transparent;   /* kill the gray flash on Android tap */
+  }
+
+  body {
+    /* Layered dark background — subtle radial accent over the deep ink */
+    background-color: #0b0f1a;                   /* ink-950 */
+    background-image:
+      radial-gradient(circle at 12% 8%,  rgba(37, 99, 235, 0.10) 0%, transparent 45%),
+      radial-gradient(circle at 92% 92%, rgba(167, 139, 250, 0.06) 0%, transparent 50%);
+    background-attachment: fixed;
+    color: #eceef2;                              /* ink-100 — default text */
+    font-feature-settings: "cv11", "ss01", "ss03"; /* tabular numerals + alt forms when supported */
+    overscroll-behavior-y: none;                  /* no rubber-band on scroll */
+  }
+
+  /* Stronger numeric rendering for timestamps, counts, money */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Editorial heading rhythm — quieter letter-spacing at large sizes */
+  h1, h2, h3 { letter-spacing: -0.015em; }
+  h1 { letter-spacing: -0.025em; }
+}
+
+/* ── Reusable utility classes ────────────────────────────────────────── */
+@layer utilities {
+  /* Hide scrollbars cleanly across platforms (still scrollable) */
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+
+  /* Glass surface — frosted translucent panel over the dark shell */
+  .glass {
+    background-color: rgba(20, 26, 38, 0.72);   /* ink-900 @ 72 */
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  /* Subtler glass — for nav, less opacity, lighter rim */
+  .glass-nav {
+    background-color: rgba(11, 15, 26, 0.78);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow:
+      0 -1px 0 rgba(255, 255, 255, 0.06) inset,
+      0 8px 32px rgba(0, 0, 0, 0.55);
+  }
+}
