@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { getCalls, getAllContactProfiles } from '../api';
+import { getCalls, getAllContactProfiles, deleteContact } from '../api';
 import { normalizePhone, parseTimestamp } from '../utils/phone';
 import ContactHistoryModal from './ContactHistoryModal';
 import PhoneActionSheet    from './PhoneActionSheet';
@@ -110,25 +110,43 @@ function Toast({ message, onDone }) {
 
 // ─── Contact row ────────────────────────────────────────────────────────────
 
-function ContactRow({ contact, t, onTap, onCall, onTogglePin, isPinned, voiceDevice }) {
+function ContactRow({ contact, t, onTap, onCall, onTogglePin, onDelete, isPinned, voiceDevice }) {
   const phone = contact.normalized || contact.displayPhone;
   const canCall = !!(voiceDevice?.makeCall && voiceDevice?.status !== 'connected' && voiceDevice?.status !== 'dialing');
   const displayName = contact.name || contact.displayPhone || '—';
 
+  // Pin toggle from the star button at row-end. Stop propagation so the row's
+  // own tap (which opens the contact history modal) doesn't fire underneath.
+  function handlePinTap(e) {
+    e.stopPropagation();
+    onTogglePin(contact);
+  }
+
   return (
     <SwipeableRow
+      // Swipe right → place a call. Available only when the voice device is
+      // idle so we don't bump an in-progress call.
       leftAction={canCall && contact.normalized ? {
         icon: <PhoneIcon className="w-5 h-5" />,
         label: t.contactsSwipeCall || 'Call',
         color: 'bg-status-new',
         onTrigger: () => onCall(contact.displayPhone),
       } : undefined}
-      rightAction={{
-        icon: <StarIcon filled={!isPinned} className="w-5 h-5" />,
-        label: isPinned ? (t.contactsUnpin || 'Unpin') : (t.contactsPin || 'Pin'),
-        color: 'bg-status-scheduled',
-        onTrigger: () => onTogglePin(contact),
-      }}
+      // Swipe left → delete (iPhone Contacts convention). Pin moved to a
+      // tappable star at row-end so the destructive gesture matches the
+      // expected mental model (left = destructive). Only wired when a real
+      // contact-profile row exists in the DB (`profileId`) — phone-only
+      // rows surfaced from leads/calls have nothing to delete.
+      rightAction={onDelete && contact.profileId ? {
+        icon: (
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z" />
+          </svg>
+        ),
+        label: t.contactsSwipeDelete || 'Delete',
+        color: 'bg-status-urgent',
+        onTrigger: () => onDelete(contact),
+      } : undefined}
     >
       <div
         onClick={onTap}
@@ -160,20 +178,24 @@ function ContactRow({ contact, t, onTap, onCall, onTogglePin, isPinned, voiceDev
                 <p className="text-xs text-ink-400 truncate">{contact.company}</p>
               </>
             )}
-            {isPinned && (
-              <span className="text-status-scheduled" aria-label={t.contactsPinned || 'Pinned'}>
-                <StarIcon filled className="w-3 h-3" />
-              </span>
-            )}
           </div>
         </div>
 
-        <svg
-          className="shrink-0 w-4 h-4 text-ink-400"
-          fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
+        {/* Pin toggle — filled star when pinned (amber), outline when not
+             (quiet). Tap doesn't bubble to the row, so favorites can be
+             toggled without opening the history modal. */}
+        <button
+          type="button"
+          onClick={handlePinTap}
+          aria-label={isPinned ? (t.contactsUnpin || 'Unpin') : (t.contactsPin || 'Pin')}
+          className={`shrink-0 p-1.5 rounded-lg transition-colors
+            ${isPinned
+              ? 'text-status-scheduled hover:bg-status-scheduled/10'
+              : 'text-ink-400 hover:text-ink-200 hover:bg-black/[0.04]'
+            }`}
         >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
+          <StarIcon filled={isPinned} className="w-4 h-4" />
+        </button>
       </div>
     </SwipeableRow>
   );
@@ -245,6 +267,29 @@ export default function ContactsPage({ leads, voiceDevice = {}, callsRefreshKey 
       return next;
     });
   }, [t.contactsUnpinned, t.contactsPinnedToast]);
+
+  // ── Delete contact ──────────────────────────────────────────────────────
+  // Optimistic: drop the profile row from `allProfiles` immediately so the
+  // list refreshes without waiting for the server round-trip. On failure we
+  // restore the row and show an error toast. Calls/messages/leads referencing
+  // the same phone keep flowing as before — only the profile row is removed.
+  const handleDelete = useCallback(async (contact) => {
+    if (!contact?.profileId) return; // shouldn't reach — rightAction is gated on this
+    const confirmMsg = (t.contactsDeleteConfirm || 'Delete this contact? Calls and texts will stay.')
+      + (contact.name ? `\n\n${contact.name}` : '');
+    if (!window.confirm(confirmMsg)) return;
+
+    const snapshot = allProfiles;
+    setAllProfiles(prev => prev.filter(p => p.id !== contact.profileId));
+    setToast(t.contactsDeleted || 'Contact deleted');
+    try {
+      await deleteContact(contact.profileId);
+    } catch (err) {
+      console.error('[ContactsPage] Delete failed:', err);
+      setAllProfiles(snapshot);
+      setToast(t.contactsDeleteFailed || 'Couldn’t delete — try again');
+    }
+  }, [allProfiles, t.contactsDeleteConfirm, t.contactsDeleted, t.contactsDeleteFailed]);
 
   // ── Contact merge (unchanged logic — same map of phone → contact) ──────
   const contacts = useMemo(() => {
@@ -486,6 +531,7 @@ export default function ContactsPage({ leads, voiceDevice = {}, callsRefreshKey 
                     : setSelectedPhone(contact.displayPhone)}
                   onCall={(phone) => setActionSheetPhone(phone)}
                   onTogglePin={handleTogglePin}
+                  onDelete={handleDelete}
                 />
               ))}
             </GroupedListSection>
@@ -511,6 +557,7 @@ export default function ContactsPage({ leads, voiceDevice = {}, callsRefreshKey 
                     : setSelectedPhone(contact.displayPhone)}
                   onCall={(phone) => setActionSheetPhone(phone)}
                   onTogglePin={handleTogglePin}
+                  onDelete={handleDelete}
                 />
               ))}
             </GroupedListSection>

@@ -437,6 +437,21 @@ export async function saveContactProfile(phone, data) {
   return res.json();
 }
 
+// Hard-delete a saved contact profile by row id. Used by the Contacts swipe-
+// to-delete action. Calls/messages/leads that reference the same phone are
+// intentionally NOT removed (matches iPhone Contacts behavior).
+export async function deleteContact(id) {
+  const res = await apiFetch(`${API_BASE}/contacts/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    let msg = 'Failed to delete contact';
+    try { const err = await res.json(); msg = err.error || msg; } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
 // ── Gmail / email ─────────────────────────────────────────────────────────────
 
 /** Returns { connected: bool, email: string|null } */

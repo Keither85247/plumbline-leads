@@ -1368,11 +1368,22 @@ export default function EmailPage() {
                 </div>
               ))}
             </div>
-          ) : emails.length === 0 ? (
+          ) : (!gmailStatus.connected || emails.length === 0) ? (
+            // Desync fix: when Gmail isn't connected we ALWAYS show the empty
+            // state — even if the local DB still has cached emails from a
+            // previous sync. Before this gate, disconnecting Gmail (or having
+            // the token silently expire) left the row list rendered while the
+            // header banner said "not connected." Users saw two contradicting
+            // truths on the same screen. Now the banner and the body agree:
+            // not connected → no list, with the connect CTA front-and-center.
             <EmptyState
               icon={<EnvelopeIcon className="w-5 h-5" />}
-              title={t.emailNoEmails}
+              title={gmailStatus.connected ? t.emailNoEmails : (t.emailNotConnectedTitle || 'Gmail not connected')}
               subtitle={gmailStatus.connected ? t.emailConnectHint : t.emailNotConnected}
+              action={!gmailStatus.connected && gmailStatus.enabled ? {
+                label: t.emailConnectButton,
+                onClick: () => { window.location.href = `${BACKEND_URL}/auth/google`; },
+              } : undefined}
             />
           ) : (
             <div className="space-y-6 px-4 pt-2">

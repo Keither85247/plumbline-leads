@@ -54,6 +54,13 @@ export default function SwipeableRow({
   rightAction,
   threshold = DEFAULT_THRESHOLD,
   className = '',
+  // The foreground MUST be opaque or the action panel underneath bleeds
+  // through at rest (the bug that turned every Calls row into a neon-green
+  // slab). Default to bg-ink-900 (the white card surface) so any row sitting
+  // inside a GroupedListSection looks correct out of the box. Override only
+  // when you genuinely want a tinted at-rest fill (e.g. a "selected" master-
+  // detail row) — and make sure your override is fully opaque.
+  surfaceClass = 'bg-ink-900',
   children,
   // When disabled, swipe is a no-op (children render normally). Used by
   // selected rows in a master-detail layout where we want the row to NOT
@@ -162,10 +169,11 @@ export default function SwipeableRow({
         </div>
       )}
 
-      {/* Foreground — slides over the action panels */}
+      {/* Foreground — slides over the action panels. MUST be opaque
+           (surfaceClass) or the action color bleeds through at rest. */}
       <div
         ref={rowRef}
-        className="relative z-10 will-change-transform"
+        className={`relative z-10 will-change-transform ${surfaceClass}`}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}

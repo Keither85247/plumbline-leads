@@ -41,20 +41,26 @@ function formatDuration(seconds) {
   return m === 0 ? `${s}s` : `${m}m ${s}s`;
 }
 
-// Compact relative time used in the right-aligned column. We pull the hour:min
-// shape from locale formatting so it's localized cheaply.
+// Recency label used inline on each row's metadata line.
+//
+// The section header (Today / Yesterday / Saturday) already supplies the day,
+// so the row's own time only needs to disambiguate within that day:
+//   • <1m   → "just now"
+//   • <60m  → "5m ago"
+//   • <24h  → "3h ago"
+//   • older → "10:42 AM" (time-of-day; day comes from the section header)
+//
+// Returning a relative "Xm ago" for the today bucket gives missed-call rows
+// the human-time signal the user explicitly asked for in the redesign brief.
 function rowTime(dateStr) {
   const date = parseTimestamp(dateStr);
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  if (date >= todayStart) {
-    return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-  }
-  // Anything older than today shows weekday or date — the grouped section
-  // header already carries the day, so we keep the row time short.
-  const dayDiff = Math.floor((todayStart - date) / 86_400_000);
-  if (dayDiff < 7) return date.toLocaleDateString('en-US', { weekday: 'short' });
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const ms = Date.now() - date.getTime();
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
 // Date-section label, matched to Timeline's vocabulary so the two pages feel
@@ -211,6 +217,23 @@ function RecentRow({ call, t, expanded, onToggle, onOpenActions, onCallback, onJ
     onOpenActions(call.from_number);
   }
 
+  // Right-column ornament — at most one glyph at a time so the column stays
+  // visually quiet. Voicemail rows show a jump-arrow (tap to scroll-in-view);
+  // expandable rows show a chevron that rotates on open; everything else
+  // shows nothing (the row is still tappable via the action sheet).
+  const rightOrnament = meta.isVoicemail ? (
+    <svg className="w-4 h-4 text-status-vendor" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+    </svg>
+  ) : meta.isExpandable ? (
+    <svg
+      className={`w-4 h-4 text-ink-500 transition-transform ${expanded ? 'rotate-180' : ''}`}
+      fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+    </svg>
+  ) : null;
+
   return (
     <SwipeableRow
       leftAction={{
@@ -222,43 +245,41 @@ function RecentRow({ call, t, expanded, onToggle, onOpenActions, onCallback, onJ
     >
       <div
         onClick={handleTap}
-        className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-ink-800/60 active:bg-ink-800 transition-colors"
+        className="flex items-start gap-3 px-4 py-3 cursor-pointer hover:bg-ink-800/40 active:bg-ink-800/70 transition-colors"
       >
         <CallAvatar call={call} meta={meta} />
 
+        {/* Main column — iPhone-Recents three-line hierarchy:
+              1. Contact name (bold, dominant)
+              2. Direction + recency (quiet, colored)
+              3. Phone number (tertiary, tabular)
+            The row deliberately reads top-to-bottom: WHO → WHAT → DETAIL. */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-sm font-semibold text-ink-50 truncate">{displayName}</p>
-            <span className="shrink-0 text-[11px] text-ink-400 tabular-nums whitespace-nowrap">
-              {rowTime(call.created_at)}
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5 mt-0.5 text-[11px] truncate">
-            <span className={`font-medium ${meta.labelClass}`}>{meta.text}</span>
-            {showPhone && <span className="text-ink-500">·</span>}
-            {showPhone && (
-              <span className="text-ink-400 truncate tabular-nums">{formatPhone(call.from_number)}</span>
-            )}
-            {duration && <span className="text-ink-500">·</span>}
-            {duration && <span className="text-ink-400 tabular-nums">{duration}</span>}
-          </div>
+          <p className="text-[15px] font-semibold text-ink-50 truncate leading-tight">
+            {displayName}
+          </p>
+          <p className="text-xs mt-1 truncate leading-tight">
+            <span className={`${meta.labelClass} font-medium`}>{meta.text}</span>
+            <span className="text-ink-400"> · {rowTime(call.created_at)}</span>
+          </p>
+          {showPhone && (
+            <p className="text-xs text-ink-500 mt-0.5 tabular-nums truncate leading-tight">
+              {formatPhone(call.from_number)}
+            </p>
+          )}
         </div>
 
-        {/* Right affordance — chevron for expandables, arrow for voicemail jumps */}
-        <div className="shrink-0 w-4 ml-1">
-          {meta.isVoicemail && (
-            <svg className="w-4 h-4 text-status-vendor" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-            </svg>
+        {/* Right column — duration top, ornament bottom. Stretched to match
+             the row's vertical rhythm so both line up cleanly even when the
+             phone line is hidden (unknown contacts). */}
+        <div className="shrink-0 flex flex-col items-end self-stretch min-w-[2.75rem] py-0.5">
+          {duration ? (
+            <span className="text-[11px] text-ink-400 tabular-nums leading-tight">{duration}</span>
+          ) : (
+            <span className="leading-tight">&nbsp;</span>
           )}
-          {meta.isExpandable && (
-            <svg
-              className={`w-4 h-4 text-ink-500 transition-transform ${expanded ? 'rotate-180' : ''}`}
-              fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-            </svg>
-          )}
+          <div className="flex-1" />
+          {rightOrnament}
         </div>
       </div>
 

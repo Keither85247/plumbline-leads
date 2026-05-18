@@ -289,4 +289,34 @@ router.put('/:phone', express.json(), (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// DELETE /api/contacts/:id
+// Removes the contact profile row. Calls, messages, and leads that reference
+// the same phone number are NOT touched — they continue to surface as
+// "Unknown" the next time they're rendered (matching iPhone behavior where
+// deleting a contact doesn't wipe call history).
+//
+// Returns 404 (not 403) when the contact belongs to another user, so we
+// don't leak ownership information across accounts.
+// ---------------------------------------------------------------------------
+router.delete('/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ error: 'invalid_id' });
+    }
+    const result = db.prepare(
+      'DELETE FROM contacts WHERE id = ? AND user_id = ?'
+    ).run(id, req.userId);
+
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'not_found' });
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[Contacts] DELETE failed:', err.message);
+    res.status(500).json({ error: 'Failed to delete contact' });
+  }
+});
+
 module.exports = router;
