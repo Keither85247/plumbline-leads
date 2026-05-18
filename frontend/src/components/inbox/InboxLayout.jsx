@@ -32,15 +32,15 @@ function revokeBlobMediaUrls(message) {
 
 function EmptyThreadState({ t }) {
   return (
-    <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center px-8 bg-gray-50/50">
-      <div className="w-12 h-12 rounded-2xl bg-white border border-gray-100 shadow-sm flex items-center justify-center">
-        <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+    <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center px-8 bg-ink-950">
+      <div className="w-12 h-12 rounded-2xl bg-ink-900 ring-1 ring-ink-700 shadow-card flex items-center justify-center">
+        <svg className="w-5 h-5 text-ink-400" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 16a2 2 0 01-2 2H7l-4 4V6a2 2 0 012-2h14a2 2 0 012 2v10z" />
         </svg>
       </div>
       <div>
-        <p className="text-sm font-medium text-gray-600">{t.inboxNoConvSelected}</p>
-        <p className="text-xs text-gray-400 mt-0.5">{t.inboxChooseContact}</p>
+        <p className="text-sm font-semibold text-ink-100">{t.inboxNoConvSelected}</p>
+        <p className="text-xs text-ink-400 mt-0.5">{t.inboxChooseContact}</p>
       </div>
     </div>
   );
@@ -49,8 +49,15 @@ function EmptyThreadState({ t }) {
 // ── InboxLayout ─────────────────────────────────────────────────────────────
 // Top-level state manager for the inbox. Fetches real conversations + messages
 // from the backend. Send is wired to POST /api/messages/send via Twilio.
+//
+// Props (added since the redesign):
+//   leads         — array of all active leads. Used to overlay CRM context onto
+//                   conversation rows: category tint on the avatar, "AI reply
+//                   ready" indicator when a follow-up text is suggested.
+//   voiceDevice   — Twilio voice device, used so swipe-right on a conversation
+//                   row can place a call to that contact.
 
-export default function InboxLayout() {
+export default function InboxLayout({ leads = [], voiceDevice = {} }) {
   const lang = localStorage.getItem('language') || 'en';
   const t = translations[lang] || translations.en;
 
@@ -381,13 +388,16 @@ export default function InboxLayout() {
 
   return (
     // Fills the full available height. Parent in App.jsx must be flex-1 + overflow-hidden.
-    <div className="flex flex-1 min-h-0 overflow-hidden bg-white border-t border-gray-100">
+    // ink-950 = sage canvas, so the inbox doesn't get a stark white wash on
+    // mobile when there's no selected thread to fill the right pane.
+    <div className="flex flex-1 min-h-0 overflow-hidden bg-ink-950">
 
       {/* ── Left: conversation list ─────────────────────────────── */}
       <aside className={`
-        flex-col border-r border-gray-100 shrink-0
-        w-full md:w-72 lg:w-80
+        flex-col shrink-0
+        w-full md:w-80 lg:w-96
         ${mobileView === 'thread' ? 'hidden md:flex' : 'flex'}
+        md:border-r md:border-ink-700
       `}>
         <ConversationList
           conversations={conversations}
@@ -396,6 +406,8 @@ export default function InboxLayout() {
           onCompose={() => setComposeOpen(true)}
           onDelete={handleDeleteRequest}
           loading={loading}
+          leads={leads}
+          voiceDevice={voiceDevice}
         />
       </aside>
 

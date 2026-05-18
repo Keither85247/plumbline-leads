@@ -684,7 +684,7 @@ export default function App() {
             />
           )}
 
-          {activeNav === 'text' && <InboxLayout />}
+          {activeNav === 'text' && <InboxLayout leads={leads} voiceDevice={voiceDevice} />}
 
           {activeNav === 'email' && <EmailPage />}
 
