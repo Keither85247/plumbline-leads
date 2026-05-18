@@ -100,10 +100,12 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Outer panel — slightly lifted ink-900 surface with subtle ring */}
-      <div className="flex-1 flex flex-col rounded-2xl bg-ink-900/80 ring-1 ring-ink-800/60 shadow-card overflow-hidden backdrop-blur-sm">
-        {/* Category tabs — horizontal rail with accent underline + glow badge */}
-        <div className="flex items-center border-b border-ink-800/80 overflow-x-auto no-scrollbar">
+      {/* Outer panel — white card floating on the sage canvas */}
+      <div className="flex-1 flex flex-col rounded-2xl bg-ink-900 ring-1 ring-ink-700 shadow-card overflow-hidden">
+        {/* Category tabs — horizontal rail with near-black active underline
+             (black-pill motif applied to tab indicators). Active badge is a
+             solid black pill; inactive is the quiet sage sub-surface. */}
+        <div className="flex items-center border-b border-ink-700 overflow-x-auto no-scrollbar">
           {TABS.map(tab => {
             const unread = unreadCounts[tab.category] || 0;
             const isActive = activeTab === tab.category;
@@ -113,16 +115,16 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
                 onClick={() => setActiveTab(tab.category)}
                 className={`flex items-center gap-1.5 px-4 py-3 text-sm whitespace-nowrap shrink-0 transition-colors
                   ${isActive
-                    ? 'font-semibold text-accent-300 border-b-2 border-accent-400'
-                    : 'font-normal text-ink-400 border-b-2 border-transparent hover:text-ink-200'
+                    ? 'font-semibold text-ink-50 border-b-2 border-ink-50'
+                    : 'font-normal text-ink-400 border-b-2 border-transparent hover:text-ink-100'
                   }`}
               >
                 {tab.label}
                 {unread > 0 && (
                   <span className={`inline-flex items-center justify-center rounded-full text-[11px] font-bold min-w-[18px] h-[18px] px-1 leading-none tabular-nums
                     ${isActive
-                      ? 'bg-accent-500 text-ink-50 shadow-[0_0_0_2px_rgba(11,15,26,1),0_0_10px_rgba(37,99,235,0.55)]'
-                      : 'bg-ink-700 text-ink-200'}`}>
+                      ? 'bg-ink-50 text-white'
+                      : 'bg-ink-800 text-ink-400 ring-1 ring-ink-700'}`}>
                     {unread}
                   </span>
                 )}
@@ -137,7 +139,7 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
             <h2 className="text-base font-semibold text-ink-50 tracking-tight">
               {TABS.find(t => t.category === activeTab)?.label}
             </h2>
-            <span className="text-xs text-ink-300 bg-ink-800 ring-1 ring-ink-700/60 rounded-full px-2.5 py-0.5 tabular-nums">
+            <span className="text-xs text-ink-400 bg-ink-800 ring-1 ring-ink-700 rounded-full px-2.5 py-0.5 tabular-nums">
               {filtered.length} {t.leadListTotal}
             </span>
           </div>

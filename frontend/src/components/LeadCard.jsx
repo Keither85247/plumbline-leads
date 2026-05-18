@@ -5,14 +5,15 @@ import { normalizePhone, parseTimestamp } from '../utils/phone';
 import PhoneActionSheet from './PhoneActionSheet';
 import { translations } from '../i18n';
 
-// Status pill colors — dark-surface variants. Each pill is a chip on the
-// ink-800 card surface, so we use saturated text on a translucent matching
-// background ring for crisp contrast without competing with the card.
+// Status pill colors — light-surface variants. Each pill sits on a white
+// card, so we use a soft tint background + ring + the saturated status
+// color for the text. Tints stay at 10-15% opacity so chips read as
+// quiet markers rather than competing visual weight.
 const STATUS_COLORS = {
-  New:       'bg-status-new/15        text-status-new       ring-1 ring-status-new/30',
-  Contacted: 'bg-status-contacted/15  text-status-contacted ring-1 ring-status-contacted/30',
-  Qualified: 'bg-status-customer/15   text-status-customer  ring-1 ring-status-customer/30',
-  Closed:    'bg-ink-700              text-ink-300          ring-1 ring-ink-600',
+  New:       'bg-status-new/10        text-status-new       ring-1 ring-status-new/25',
+  Contacted: 'bg-status-contacted/10  text-status-contacted ring-1 ring-status-contacted/25',
+  Qualified: 'bg-status-customer/10   text-status-customer  ring-1 ring-status-customer/25',
+  Closed:    'bg-ink-800              text-ink-400          ring-1 ring-ink-700',
 };
 
 // Left-edge status indicator color — a vertical bar inside the card.
@@ -21,16 +22,18 @@ const STATUS_EDGE = {
   New:       'bg-status-new',
   Contacted: 'bg-status-contacted',
   Qualified: 'bg-status-customer',
-  Closed:    'bg-ink-600',
+  Closed:    'bg-ink-500',
 };
 
-// Category chip colors — secondary semantic axis (Lead vs Vendor vs ...)
+// Category chip colors — secondary semantic axis (Lead vs Vendor vs ...).
+// Lead chips use the near-black ink so the primary category reads with the
+// same weight as the black-pill primary CTAs elsewhere in the UI.
 const CATEGORY_CHIP = {
-  'Lead':              'bg-accent-500/12    text-accent-300    ring-accent-400/25',
-  'Existing Customer': 'bg-status-customer/12 text-status-customer ring-status-customer/25',
-  'Vendor':            'bg-status-vendor/12 text-status-vendor  ring-status-vendor/25',
-  'Spam':              'bg-status-urgent/12 text-status-urgent  ring-status-urgent/25',
-  'Other':             'bg-ink-700          text-ink-300        ring-ink-600',
+  'Lead':              'bg-ink-50              text-white          ring-ink-50',
+  'Existing Customer': 'bg-status-customer/10  text-status-customer ring-status-customer/25',
+  'Vendor':            'bg-status-vendor/10   text-status-vendor  ring-status-vendor/25',
+  'Spam':              'bg-status-urgent/10   text-status-urgent  ring-status-urgent/25',
+  'Other':             'bg-ink-800            text-ink-400        ring-ink-700',
 };
 
 const STATUSES = ['New', 'Contacted', 'Qualified', 'Closed'];
@@ -169,16 +172,16 @@ function formatLeadTags(lead) {
   ].filter(Boolean);
 }
 
-// Variant styles create a clear visual hierarchy on the dark ink-900 card:
-//   problem  — solid ink-700, lifted text  → most prominent
-//   urgency  — amber tint, ringed border  → alert signal
-//   location — ink-800 with soft text     → secondary
-//   other    — ink-800 with soft text     → lowest prominence
+// Variant styles create a clear visual hierarchy on the white card:
+//   problem  — solid ink-50 pill (near-black), white text  → most prominent
+//   urgency  — amber tint, ringed border                   → alert signal
+//   location — soft sage tint with subtle ring             → secondary
+//   other    — soft sage tint with subtle ring             → lowest prominence
 const TAG_VARIANT_STYLES = {
-  problem:  'bg-ink-700/80          text-ink-100         font-medium ring-1 ring-inset ring-ink-600/60',
-  location: 'bg-ink-800/80          text-ink-300                     ring-1 ring-inset ring-ink-700/60',
-  urgency:  'bg-status-scheduled/15 text-status-scheduled font-medium ring-1 ring-inset ring-status-scheduled/30',
-  other:    'bg-ink-800/80          text-ink-300                     ring-1 ring-inset ring-ink-700/60',
+  problem:  'bg-ink-50              text-white            font-medium',
+  location: 'bg-ink-800             text-ink-300          ring-1 ring-inset ring-ink-700',
+  urgency:  'bg-status-scheduled/12 text-status-scheduled font-medium ring-1 ring-inset ring-status-scheduled/30',
+  other:    'bg-ink-800             text-ink-400          ring-1 ring-inset ring-ink-700',
 };
 
 function Tag({ icon, text, variant = 'other' }) {
@@ -369,7 +372,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
             <div className="flex items-center gap-2 flex-wrap">
               <button
                 onClick={() => onContactClick && onContactClick(normalizePhone(lead.callback_number || lead.phone_number))}
-                className="font-semibold text-base text-ink-50 truncate hover:text-accent-300 transition-colors text-left tracking-tight"
+                className="font-semibold text-base text-ink-50 truncate hover:text-accent-600 transition-colors text-left tracking-tight"
               >
                 {lead.contact_name}
                 {lead.company_name && (
@@ -380,20 +383,21 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                 ring-1 ${CATEGORY_CHIP[category] || CATEGORY_CHIP.Other}`}>
                 {category}
               </span>
-              {/* "NEW" attention badge — glow-pulses to draw the eye */}
+              {/* "NEW" attention badge — emerald pill with a glow-pulse ring
+                   to draw the eye. White text for AAA contrast on green. */}
               {lead.status === 'New' && !isArchived && (
                 <span className="text-[10px] font-bold tracking-wider uppercase rounded-md px-1.5 py-0.5
-                                 bg-status-new text-ink-950 animate-pulse-glow">
+                                 bg-status-new text-white animate-pulse-glow">
                   NEW
                 </span>
               )}
             </div>
 
-            {/* ── Phone row — interactive, accent color ───────────────────── */}
+            {/* ── Phone row — interactive, accent blue for link affordance ── */}
             {primaryPhone && (
               <button
                 onClick={() => setActionSheetPhone(primaryPhone)}
-                className="mt-0.5 text-sm font-medium text-accent-300 hover:text-accent-200 cursor-pointer transition-colors text-left tabular-nums"
+                className="mt-0.5 text-sm font-medium text-accent-600 hover:text-accent-700 cursor-pointer transition-colors text-left tabular-nums"
               >
                 {primaryPhone}
               </button>
@@ -407,7 +411,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
             {/* ── Metadata row — timestamps + urgency + message count ─────── */}
             <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
               <span className="text-[11px] text-ink-500 tabular-nums">{ageLabel}</span>
-              <span className="text-ink-700">•</span>
+              <span className="text-ink-500">•</span>
               <span className="text-[11px] text-ink-500">{formattedDate}</span>
 
               {urgency === 'overdue' && (
@@ -459,7 +463,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
               <button
                 onClick={() => setMenuOpen(o => !o)}
                 disabled={updating}
-                className="p-1.5 rounded-lg text-ink-400 hover:text-ink-200 hover:bg-white/[0.06] transition-colors disabled:cursor-wait"
+                className="p-1.5 rounded-lg text-ink-400 hover:text-ink-100 hover:bg-black/[0.04] transition-colors disabled:cursor-wait"
                 aria-label="More options"
               >
                 <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
@@ -471,14 +475,14 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                   {isArchived ? (
                     <button
                       onClick={handleUnarchive}
-                      className="w-full text-left px-3.5 py-2 text-sm text-ink-100 hover:bg-white/[0.06] transition-colors"
+                      className="w-full text-left px-3.5 py-2 text-sm text-ink-100 hover:bg-black/[0.04] transition-colors"
                     >
                       {t.leadUnarchive}
                     </button>
                   ) : (
                     <button
                       onClick={handleArchive}
-                      className="w-full text-left px-3.5 py-2 text-sm text-ink-100 hover:bg-white/[0.06] transition-colors"
+                      className="w-full text-left px-3.5 py-2 text-sm text-ink-100 hover:bg-black/[0.04] transition-colors"
                     >
                       {t.leadArchive}
                     </button>
@@ -517,17 +521,19 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
               <div className="flex items-center gap-2">
                 <p className="text-[11px] font-semibold tracking-wide uppercase text-ink-400">{t.leadSuggestedFollowup}</p>
                 {!editingFollowUp
-                  ? <button onClick={handleEditClick} className="text-[11px] text-ink-400 hover:text-ink-200 transition-colors">{t.leadFollowupEdit}</button>
-                  : <button onClick={() => setEditingFollowUp(false)} className="text-[11px] text-accent-300 hover:text-accent-200 transition-colors">{t.leadFollowupDone}</button>
+                  ? <button onClick={handleEditClick} className="text-[11px] text-ink-400 hover:text-ink-100 transition-colors">{t.leadFollowupEdit}</button>
+                  : <button onClick={() => setEditingFollowUp(false)} className="text-[11px] text-accent-600 hover:text-accent-700 transition-colors">{t.leadFollowupDone}</button>
                 }
               </div>
+              {/* Send — primary CTA per card. Black pill matches the
+                   reference "Send" button on the Pay screen. */}
               <button
                 onClick={handleSend}
                 disabled={isSending || hasSent}
-                className={`text-[11px] font-semibold tracking-wide transition-colors ${
+                className={`text-[11px] font-semibold tracking-wide rounded-full px-3 py-1 transition-colors ${
                   hasSent
-                    ? 'text-ink-500 cursor-not-allowed'
-                    : 'text-accent-300 hover:text-accent-200 disabled:opacity-50'
+                    ? 'bg-ink-700 text-ink-400 cursor-not-allowed'
+                    : 'bg-ink-50 text-white hover:bg-ink-100 disabled:opacity-50'
                 }`}
               >
                 {hasSent ? t.leadSent : isSending ? t.leadSending : t.leadSend}
@@ -538,7 +544,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                 value={displayedFollowUp}
                 onChange={e => setFollowUpDraft(e.target.value)}
                 rows={3}
-                className="w-full text-xs text-ink-100 border border-ink-700 rounded-lg px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-accent-500 resize-none bg-ink-900"
+                className="w-full text-xs text-ink-100 border border-ink-600 rounded-lg px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-accent-500 resize-none bg-ink-900"
               />
             ) : (
               <p className="text-xs text-ink-200 leading-relaxed">
@@ -553,7 +559,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                   <button
                     onClick={handleTranslate}
                     disabled={isTranslating}
-                    className="text-xs text-status-vendor hover:text-violet-300 font-medium transition-colors disabled:opacity-50"
+                    className="text-xs text-status-vendor hover:text-violet-800 font-medium transition-colors disabled:opacity-50"
                   >
                     {isTranslating ? t.translating : t.translateTo}
                   </button>
@@ -561,15 +567,15 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                   <>
                     <button
                       onClick={() => setShowingTranslation(p => !p)}
-                      className="text-xs text-status-vendor hover:text-violet-300 font-medium transition-colors"
+                      className="text-xs text-status-vendor hover:text-violet-800 font-medium transition-colors"
                     >
                       {showingTranslation ? t.showOriginal : t.showTranslation}
                     </button>
-                    <span className="text-ink-600 text-xs">·</span>
+                    <span className="text-ink-500 text-xs">·</span>
                     <button
                       onClick={handleTranslate}
                       disabled={isTranslating}
-                      className="text-xs text-ink-400 hover:text-ink-200 transition-colors disabled:opacity-50"
+                      className="text-xs text-ink-400 hover:text-ink-100 transition-colors disabled:opacity-50"
                     >
                       {isTranslating ? t.translating : t.leadRetranslate}
                     </button>

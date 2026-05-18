@@ -478,7 +478,7 @@ export default function App() {
   if (!authChecked || (currentUser && assignedNumber === null)) {
     return (
       <div className="h-dvh flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-accent-400 border-t-transparent rounded-full animate-spin" />
+        <div className="w-6 h-6 border-2 border-ink-50 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -588,7 +588,7 @@ export default function App() {
 
           <button
             onClick={() => setSettingsOpen(true)}
-            className="p-2 text-ink-300 hover:text-ink-50 transition-colors rounded-lg hover:bg-white/[0.06]"
+            className="p-2 text-ink-400 hover:text-ink-50 transition-colors rounded-lg hover:bg-black/[0.04]"
             aria-label="Settings"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
@@ -599,7 +599,7 @@ export default function App() {
           {/* Log out — small button, visible on all screen sizes */}
           <button
             onClick={handleLogout}
-            className="p-2 text-ink-400 hover:text-ink-100 transition-colors rounded-lg hover:bg-white/[0.06]"
+            className="p-2 text-ink-400 hover:text-ink-50 transition-colors rounded-lg hover:bg-black/[0.04]"
             aria-label="Log out"
             title={`Log out (${currentUser.email})`}
           >
@@ -613,30 +613,33 @@ export default function App() {
       {/* Body: sidebar (desktop) + content */}
       <div className="flex flex-1 overflow-hidden">
 
-        {/* Sidebar — desktop only. Dark surface with subtle right border. */}
-        <nav className="hidden md:flex w-44 bg-ink-900/60 border-r border-ink-800/80 backdrop-blur-sm flex-col py-4 shrink-0">
+        {/* Sidebar — desktop only. White surface with a soft right border.
+             Active row: near-black text on a faint ink-800 tint (the "black
+             pill" motif adapted for a full-width row). */}
+        <nav className="hidden md:flex w-44 bg-ink-900 border-r border-ink-700 flex-col py-4 shrink-0">
           {SIDEBAR_NAV_ICONS.map(item => (
             <button
               key={item.id}
               onClick={() => handleNavChange(item.id)}
               className={`flex items-center gap-3 px-5 py-2.5 text-sm font-medium transition-colors text-left
                 ${activeNav === item.id
-                  ? 'text-accent-300 bg-accent-500/10 border-r-2 border-accent-400'
-                  : 'text-ink-400 hover:text-ink-100 hover:bg-white/[0.04]'
+                  ? 'text-ink-50 bg-ink-800 border-r-2 border-ink-50'
+                  : 'text-ink-400 hover:text-ink-100 hover:bg-black/[0.03]'
                 }`}
             >
               {item.icon}
               {t[item.id]}
             </button>
           ))}
-          {/* Owner-only admin tab */}
+          {/* Owner-only admin tab — keeps the violet status tint so it's
+               always visually distinct from the standard nav items. */}
           {currentUser?.is_owner && (
             <button
               onClick={() => handleNavChange('admin')}
               className={`flex items-center gap-3 px-5 py-2.5 text-sm font-medium transition-colors text-left mt-auto
                 ${activeNav === 'admin'
                   ? 'text-status-vendor bg-status-vendor/10 border-r-2 border-status-vendor'
-                  : 'text-ink-400 hover:text-ink-100 hover:bg-white/[0.04]'
+                  : 'text-ink-400 hover:text-ink-100 hover:bg-black/[0.03]'
                 }`}
             >
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -707,15 +710,16 @@ export default function App() {
       </div>
 
       {/* Gradient fade mask — mobile only. Fades scrolled content into the
-           ink-950 base so the glass-nav reads cleanly above it. Height grows
-           with safe-area so it always covers the nav pill + home indicator. */}
+           sage canvas (ink-950 = #d6e6db) so the glass-nav reads cleanly
+           above it. Height grows with safe-area so it always covers the
+           nav pill + home indicator. */}
       <div
         className="md:hidden fixed bottom-0 left-0 right-0"
         style={{
           height: 'calc(96px + env(safe-area-inset-bottom))',
           zIndex: 39,
           pointerEvents: 'none',
-          background: 'linear-gradient(to bottom, rgba(11,15,26,0) 0%, rgba(11,15,26,0.6) 50%, rgba(11,15,26,0.92) 100%)',
+          background: 'linear-gradient(to bottom, rgba(214,230,219,0) 0%, rgba(214,230,219,0.65) 50%, rgba(214,230,219,0.95) 100%)',
         }}
       />
 
@@ -848,15 +852,12 @@ export default function App() {
         />
       )}
 
-      {/* Bottom navigation — mobile only, floating pill style.
-           paddingBottom = safe-area-inset-bottom so the pill sits flush just
-           above the iOS home indicator / Android gesture bar with no extra gap.
-           4px is a minimal breathing room so the pill never touches the indicator. */}
-      {/* ── Bottom navigation — premium glass pill ─────────────────────────
-          Floating, frosted, with electric-blue active state. Tap targets are
-          comfortably large (≥48px effective hit) and the active rail uses a
-          subtle inset glow rather than a flat bg. Badge styling uses a
-          glow ring so unread counts read clearly against the dark shell. */}
+      {/* ── Bottom navigation — frosted white pill, black-on-white active ──
+          Active tab fills with a soft sub-surface tint and pushes its icon
+          + label to near-black (the black-pill motif adapted for a tab bar).
+          Admin keeps its violet so it's always identifiable. Tap targets are
+          comfortably large (≥48px effective hit). The red badge ring uses
+          the sage canvas so the ring blends in instead of looking pasted on. */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex justify-center pointer-events-none"
            style={{
              paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)',
@@ -888,11 +889,11 @@ export default function App() {
               item.id === 'email'  ? remoteCounts.emails  :
               0;
 
-            // Admin tab gets the violet accent to distinguish it from the
-            // electric-blue primary action color used everywhere else.
+            // Admin keeps the violet status tint so it's always visually
+            // distinct from the default near-black active state.
             const isAdmin = item.id === 'admin';
-            const activeIconColor  = isAdmin ? 'text-status-vendor' : 'text-accent-400';
-            const activeLabelColor = isAdmin ? 'text-status-vendor' : 'text-accent-400';
+            const activeIconColor  = isAdmin ? 'text-status-vendor' : 'text-ink-50';
+            const activeLabelColor = isAdmin ? 'text-status-vendor' : 'text-ink-50';
 
             return (
               <button
@@ -901,14 +902,15 @@ export default function App() {
                 className={`group flex-1 flex flex-col items-center justify-center gap-1 py-2.5 px-1 rounded-2xl
                   transition-all duration-200 ease-out active:scale-[0.94]
                   ${isActive
-                    ? `${activeIconColor} bg-white/[0.04] shadow-inset-soft`
-                    : 'text-ink-400 hover:text-ink-200 hover:bg-white/[0.02]'
+                    ? `${activeIconColor} bg-ink-800`
+                    : 'text-ink-400 hover:text-ink-100 hover:bg-black/[0.03]'
                   }`}
               >
-                {/* Active rail — thin accent line above the active tab */}
+                {/* Active rail — short bar above the icon. Near-black to
+                     match the black-pill aesthetic; violet for admin. */}
                 {isActive && (
                   <span className={`absolute top-0 mt-1 h-0.5 w-8 rounded-full
-                    ${isAdmin ? 'bg-status-vendor' : 'bg-accent-400'}`} />
+                    ${isAdmin ? 'bg-status-vendor' : 'bg-ink-50'}`} />
                 )}
 
                 <div className="relative">

@@ -1,19 +1,22 @@
 /** @type {import('tailwindcss').Config} */
 //
-// Plumbline Leads — design system.
+// Plumbline Leads — design system (light/sage edition).
 //
-// Premium field-service aesthetic: deep charcoal surfaces, electric blue
-// accents, intentional status colors. Tokens are deliberately small and
-// purposeful — components opt into the system by class name, no theme
-// provider needed.
+// Premium field-service aesthetic, take 2: soft sage canvas, white cards,
+// near-black primary CTAs (black-pill), category-coded status colors. We
+// kept the same token names from the dark edition so components don't need
+// renames — only the underlying values flipped.
 //
-// Color naming convention:
-//   ink/*       → dark surface scale (50 → 950, dark by default)
-//   accent/*    → primary action color (electric blue)
-//   status/*    → semantic colors (lead, contacted, scheduled, urgent, ...)
-//
-// Use these tokens for ALL new UI. Older components can stay on default
-// Tailwind grays until phase-2 migration.
+// Color naming convention (semantic, theme-agnostic):
+//   ink/*       → surface + text scale. ink-950 is the OUTERMOST surface
+//                 (the body sage tint), ink-900 is the elevated card
+//                 surface (white). ink-50 is the PRIMARY text/CTA fill
+//                 (near-black). The scale runs background → text.
+//   accent/*    → secondary action color (electric blue). Used for links,
+//                 focus rings, "translate" / link-style affordances.
+//                 Primary CTAs use a black pill (bg-ink-50) per the ref.
+//   status/*    → semantic colors (lead, contacted, scheduled, urgent...).
+//                 Unchanged across themes — green/red/amber are universal.
 
 export default {
   darkMode: 'class',
@@ -24,27 +27,45 @@ export default {
   theme: {
     extend: {
       colors: {
-        // ── Layered ink surfaces (the new dark scale) ───────────────────
-        // Use as: bg-ink-950 (app background) → bg-ink-900 (elevated card)
-        //         → bg-ink-800 (nested content) → bg-ink-700 (active row)
-        // Borders: border-ink-800 (subtle separator), border-ink-700 (card edge)
-        // Text:    text-ink-50 (primary), text-ink-300 (secondary),
-        //          text-ink-500 (tertiary / metadata)
+        // ── Surface + text scale ────────────────────────────────────────────
+        // Reading the scale: 950 = the outermost body tint (sage). 900 = the
+        // elevated card surface (pure white for max legibility on the tint).
+        // 800/700 = slightly lifted variants for sub-surfaces / borders.
+        // 500-300 = text scale from quietest metadata to body text. 200-50 =
+        // headings down to the near-black used for primary text and the
+        // black-pill primary CTA.
+        //
+        // Component usage convention (same as the dark edition):
+        //   bg-ink-950  → outermost app background (sage tint)
+        //   bg-ink-900  → elevated card surface (white)
+        //   bg-ink-800  → nested sub-surface inside a card
+        //   bg-ink-700  → quiet pressed/active row tint
+        //   border-ink-700/600 → light dividers / card edges
+        //   text-ink-50  → primary text & primary CTA fill (near-black)
+        //   text-ink-300 → body text
+        //   text-ink-400 → secondary text
+        //   text-ink-500 → tertiary text / metadata
         ink: {
-          50:  '#f6f7f9',
-          100: '#eceef2',
-          200: '#d3d8e0',
-          300: '#a4adba',
-          400: '#737e8e',
-          500: '#525c6b',
-          600: '#3a424e',
-          700: '#2a313b',
-          800: '#1c2230',   // elevated card surface
-          900: '#141a26',   // app surface
-          950: '#0b0f1a',   // outermost background
+          // Text scale (darkest → mid). text-ink-50 = primary text.
+          50:  '#0c1010',   // primary text / black-pill CTA fill
+          100: '#171b1b',   // heading
+          200: '#252a2a',   // subheading / strong body
+          300: '#3a403e',   // body text
+          400: '#5f6663',   // secondary text
+          500: '#8a918d',   // tertiary text / metadata
+          // Border + surface scale (mid → lightest). The lightest is the
+          // sage body tint — every other surface stacks on top.
+          600: '#c5cac7',   // heavier border
+          700: '#dee1de',   // light border / divider
+          800: '#eef1ee',   // slightly tinted sub-surface (nested cards)
+          900: '#ffffff',   // elevated card surface — pure white
+          950: '#d6e6db',   // outermost background — soft sage tint
         },
 
-        // ── Accent — electric blue (primary actions, brand) ────────────
+        // ── Accent — electric blue (secondary actions, links, focus) ──────
+        // Note: in this edition the PRIMARY CTA is black-pill (bg-ink-50),
+        // matching the reference. Accent stays blue for hyperlink-style
+        // affordances and focus rings where a pop of color helps.
         accent: {
           50:  '#eef5ff',
           100: '#d9e8ff',
@@ -59,27 +80,29 @@ export default {
         },
 
         // ── Status palette (semantic, used by chips + status edges) ─────
+        // Unchanged across editions — green/red/amber/violet are universal
+        // signals that read identically on dark and light surfaces.
         status: {
-          new:        '#22c55e',  // emerald — new lead, alive, fresh
-          contacted:  '#60a5fa',  // sky    — already reached out
-          scheduled:  '#f59e0b',  // amber  — on the calendar
-          urgent:     '#ef4444',  // red    — overdue / action required
-          vendor:     '#a78bfa',  // violet — vendor/supplier
-          customer:   '#2dd4bf',  // teal   — existing customer
+          new:        '#16a34a',  // emerald — new lead, alive, fresh (slightly deeper than dark edition for white-card contrast)
+          contacted:  '#2563eb',  // blue   — already reached out
+          scheduled:  '#d97706',  // amber  — on the calendar
+          urgent:     '#dc2626',  // red    — overdue / action required
+          vendor:     '#7c3aed',  // violet — vendor/supplier
+          customer:   '#0d9488',  // teal   — existing customer
           spam:       '#6b7280',  // gray   — junk
         },
       },
 
-      // ── Premium shadows tuned for dark surfaces ───────────────────────
-      // Standard tailwind shadows are designed for light UIs — they
-      // disappear or blow out on dark. These have higher opacity + larger
-      // spread for visible elevation on ink-900/950.
+      // ── Premium shadows tuned for LIGHT surfaces ─────────────────────────
+      // Standard tailwind shadows are too gray/dim for white cards on a
+      // tinted background — they read as flat. These are slightly softer
+      // and warmer (sage-tinted) for natural depth on the new canvas.
       boxShadow: {
-        'card':       '0 1px 2px rgba(0,0,0,0.4), 0 4px 12px -2px rgba(0,0,0,0.3)',
-        'card-hover': '0 2px 4px rgba(0,0,0,0.45), 0 12px 28px -4px rgba(0,0,0,0.45)',
-        'nav-glass':  '0 -1px 0 rgba(255,255,255,0.06) inset, 0 8px 32px rgba(0,0,0,0.5)',
-        'inset-soft': 'inset 0 1px 0 rgba(255,255,255,0.04)',
-        'badge-glow': '0 0 0 2px rgba(11,15,26,1), 0 0 12px rgba(239,68,68,0.5)',
+        'card':       '0 1px 2px rgba(15, 35, 25, 0.04), 0 4px 16px -3px rgba(15, 35, 25, 0.08)',
+        'card-hover': '0 2px 4px rgba(15, 35, 25, 0.06), 0 14px 32px -6px rgba(15, 35, 25, 0.14)',
+        'nav-glass':  '0 -1px 0 rgba(255,255,255,0.9) inset, 0 -8px 28px rgba(15, 35, 25, 0.08), 0 8px 32px rgba(15, 35, 25, 0.08)',
+        'inset-soft': 'inset 0 1px 0 rgba(255,255,255,0.6)',
+        'badge-glow': '0 0 0 2px #ffffff, 0 0 12px rgba(220, 38, 38, 0.45)',
       },
 
       // ── Border radius scale (slightly larger than default for premium feel) ─
@@ -106,10 +129,10 @@ export default {
           '0%, 100%': { transform: 'scale(1)' },
           '50%':      { transform: 'scale(0.98)' },
         },
-        // Quiet attention pulse for "NEW" badges
+        // Quiet attention pulse for "NEW" badges — emerald ring on white
         'pulse-glow': {
-          '0%, 100%': { boxShadow: '0 0 0 0 rgba(34,197,94,0.5)' },
-          '50%':      { boxShadow: '0 0 0 6px rgba(34,197,94,0)' },
+          '0%, 100%': { boxShadow: '0 0 0 0 rgba(22, 163, 74, 0.45)' },
+          '50%':      { boxShadow: '0 0 0 6px rgba(22, 163, 74, 0)' },
         },
       },
       animation: {
