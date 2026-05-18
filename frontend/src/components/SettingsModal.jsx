@@ -4,6 +4,7 @@ import VoicemailGreetingEditor from './VoicemailGreetingEditor';
 import PhoneNumbersAdmin from './PhoneNumbersAdmin';
 import TeamAdmin from './TeamAdmin';
 import { triggerGmailSync } from '../api';
+import BuildInfoPanel from './BuildInfoPanel';
 
 // ── Inline save-result toast ──────────────────────────────────────────────────
 function SaveToast({ status, t }) {
@@ -299,6 +300,12 @@ export default function SettingsModal({
               </div>
             </div>
           )}
+
+          {/* Build info — shows which frontend bundle is running. Critical for
+              diagnosing "browser shows X, phone shows Y" — the values here
+              prove whether the device is on the live Vercel build or a stale
+              bundled copy. Tap "Hard Refresh" to bust the WebView cache. */}
+          <BuildInfoPanel />
 
           {/* Language */}
           <div>
