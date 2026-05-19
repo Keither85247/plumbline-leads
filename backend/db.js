@@ -492,6 +492,25 @@ db.exec(`
   )
 `);
 
+// ── Per-user contact hide list ──────────────────────────────────────────────
+// Mirror of conversation_hides for the Contacts screen. The Contacts list is
+// derived from leads/calls/saved-profiles via a frontend merge; only entries
+// with a row in the `contacts` table can be hard-deleted via DELETE
+// /api/contacts/:id. Everything else needs a per-user hide flag so swipe-to-
+// delete works on phone-only rows too (the majority of the list).
+//
+// Hide is identified by normalized phone (digits-only, leading-1 stripped) so
+// it survives variations in how the same number is stored across leads/calls.
+// A future "show hidden contacts" UI can use DELETE on this table to restore.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS contact_hides (
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    phone      TEXT    NOT NULL,
+    hidden_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, phone)
+  )
+`);
+
 // ── Per-user Twilio phone numbers ─────────────────────────────────────────────
 // One row per purchased Twilio number. assigned_user_id is nullable (unassigned).
 // Inbound call/SMS routing reads this table to determine which user owns a number.

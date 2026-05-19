@@ -170,6 +170,75 @@ router.post('/', express.json(), (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Contact hides — per-user "remove from list" for phone-only contacts.
+//
+// The Contacts screen merges three sources (leads / calls / saved profiles)
+// into one virtual list. The DELETE /:id route below handles the profile-
+// backed rows; this hide list handles everything else. A hide is a phone-
+// based marker that the frontend uses to filter the merged list.
+//
+// Endpoints (mounted at /api/contacts):
+//   GET    /hidden             → ["3034567890", ...] phones the user hid
+//   POST   /hide  { phone }    → upsert a hide row
+//   DELETE /hide/:phone        → remove (unhide)
+//
+// CRITICAL ROUTE ORDER: these MUST be declared before the GET /:phone and
+// DELETE /:id wildcards. Express matches in declaration order, so without
+// the early position GET /hidden would resolve to GET /:phone with
+// phone="hidden" (returning null), and DELETE /hide/:phone would never
+// reach this handler because /:id would match first.
+// ---------------------------------------------------------------------------
+
+function normalizePhoneIn(raw) {
+  if (!raw) return null;
+  const d = String(raw).replace(/\D/g, '');
+  if (!d) return null;
+  return d.length === 11 && d.startsWith('1') ? d.slice(1) : d;
+}
+
+router.get('/hidden', (req, res) => {
+  try {
+    const rows = db.prepare(
+      'SELECT phone FROM contact_hides WHERE user_id = ?'
+    ).all(req.userId);
+    res.json(rows.map(r => r.phone));
+  } catch (err) {
+    console.error('[Contacts] GET /hidden failed:', err.message);
+    res.status(500).json({ error: 'Failed to fetch hidden contacts' });
+  }
+});
+
+router.post('/hide', express.json(), (req, res) => {
+  try {
+    const phone = normalizePhoneIn(req.body?.phone);
+    if (!phone) return res.status(400).json({ error: 'invalid_phone' });
+    db.prepare(`
+      INSERT INTO contact_hides (user_id, phone)
+      VALUES (?, ?)
+      ON CONFLICT(user_id, phone) DO NOTHING
+    `).run(req.userId, phone);
+    res.json({ ok: true, phone });
+  } catch (err) {
+    console.error('[Contacts] POST /hide failed:', err.message);
+    res.status(500).json({ error: 'Failed to hide contact' });
+  }
+});
+
+router.delete('/hide/:phone', (req, res) => {
+  try {
+    const phone = normalizePhoneIn(req.params.phone);
+    if (!phone) return res.status(400).json({ error: 'invalid_phone' });
+    db.prepare(
+      'DELETE FROM contact_hides WHERE user_id = ? AND phone = ?'
+    ).run(req.userId, phone);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[Contacts] DELETE /hide failed:', err.message);
+    res.status(500).json({ error: 'Failed to unhide contact' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/contacts/:phone
 // ---------------------------------------------------------------------------
 router.get('/:phone', (req, res) => {

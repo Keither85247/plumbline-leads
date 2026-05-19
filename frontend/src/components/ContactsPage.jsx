@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { getCalls, getAllContactProfiles, deleteContact } from '../api';
+import { getCalls, getAllContactProfiles, deleteContact, hideContact, getHiddenContactPhones } from '../api';
 import { normalizePhone, parseTimestamp } from '../utils/phone';
 import ContactHistoryModal from './ContactHistoryModal';
 import PhoneActionSheet    from './PhoneActionSheet';
@@ -134,10 +134,11 @@ function ContactRow({ contact, t, onTap, onCall, onTogglePin, onDelete, isPinned
       } : undefined}
       // Swipe left → delete (iPhone Contacts convention). Pin moved to a
       // tappable star at row-end so the destructive gesture matches the
-      // expected mental model (left = destructive). Only wired when a real
-      // contact-profile row exists in the DB (`profileId`) — phone-only
-      // rows surfaced from leads/calls have nothing to delete.
-      rightAction={onDelete && contact.profileId ? {
+      // expected mental model (left = destructive). Shown for ALL contacts —
+      // page-level handleDelete dispatches to either DELETE /api/contacts/:id
+      // (profile-backed rows) or POST /api/contacts/hide (phone-only rows
+      // derived from leads/calls).
+      rightAction={onDelete ? {
         icon: (
           <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z" />
@@ -212,6 +213,7 @@ export default function ContactsPage({ leads, voiceDevice = {}, callsRefreshKey 
 
   const [calls,            setCalls]            = useState([]);
   const [allProfiles,      setAllProfiles]      = useState([]);
+  const [hiddenPhones,     setHiddenPhones]     = useState(() => new Set());
   const [selectedPhone,    setSelectedPhone]    = useState(null);
   const [actionSheetPhone, setActionSheetPhone] = useState(null);
   const [search,           setSearch]           = useState('');
@@ -222,6 +224,15 @@ export default function ContactsPage({ leads, voiceDevice = {}, callsRefreshKey 
   // ── Data fetching (unchanged behavior) ─────────────────────────────────
   useEffect(() => {
     getAllContactProfiles().then(setAllProfiles).catch(() => {});
+  }, []);
+
+  // Hidden-contact list — phones the user has deleted from the contacts
+  // view but that have no profile row to hard-delete. Fetched once on mount;
+  // hideContact() optimistically extends this set on each swipe.
+  useEffect(() => {
+    getHiddenContactPhones()
+      .then(arr => setHiddenPhones(new Set(arr)))
+      .catch(() => {}); // best-effort; empty set means "nothing hidden" which is safe
   }, []);
 
   useEffect(() => {
@@ -269,27 +280,54 @@ export default function ContactsPage({ leads, voiceDevice = {}, callsRefreshKey 
   }, [t.contactsUnpinned, t.contactsPinnedToast]);
 
   // ── Delete contact ──────────────────────────────────────────────────────
-  // Optimistic: drop the profile row from `allProfiles` immediately so the
-  // list refreshes without waiting for the server round-trip. On failure we
-  // restore the row and show an error toast. Calls/messages/leads referencing
-  // the same phone keep flowing as before — only the profile row is removed.
+  // Dispatches to one of two backends depending on contact origin:
+  //   • profileId present  → DELETE /api/contacts/:id  (drops the profile row)
+  //   • derived from call/lead → POST /api/contacts/hide (per-user hide flag)
+  //
+  // Both flavors update the UI optimistically and rollback on failure. Calls/
+  // messages/leads with the same phone remain untouched in either case —
+  // mirrors iPhone Contacts: deleting a contact never wipes call history.
   const handleDelete = useCallback(async (contact) => {
-    if (!contact?.profileId) return; // shouldn't reach — rightAction is gated on this
+    if (!contact) return;
     const confirmMsg = (t.contactsDeleteConfirm || 'Delete this contact? Calls and texts will stay.')
       + (contact.name ? `\n\n${contact.name}` : '');
     if (!window.confirm(confirmMsg)) return;
 
-    const snapshot = allProfiles;
-    setAllProfiles(prev => prev.filter(p => p.id !== contact.profileId));
+    if (contact.profileId) {
+      // Profile-backed: hard-delete the row in the contacts table.
+      const snapshot = allProfiles;
+      setAllProfiles(prev => prev.filter(p => p.id !== contact.profileId));
+      setToast(t.contactsDeleted || 'Contact deleted');
+      try {
+        await deleteContact(contact.profileId);
+      } catch (err) {
+        console.error('[ContactsPage] Delete (profile) failed:', err);
+        setAllProfiles(snapshot);
+        setToast(t.contactsDeleteFailed || 'Couldn’t delete — try again');
+      }
+      return;
+    }
+
+    // Derived contact (lead/call only) — add to the hide list so the merge
+    // filters it out. We use the normalized phone as the stable key.
+    const phone = contact.normalized;
+    if (!phone) {
+      // Profile-less and phone-less (e.g. email-only manual contact with
+      // no profileId) — nothing we can do. Shouldn't happen in practice.
+      setToast(t.contactsDeleteFailed || 'Couldn’t delete — try again');
+      return;
+    }
+    const snapshot = hiddenPhones;
+    setHiddenPhones(prev => { const next = new Set(prev); next.add(phone); return next; });
     setToast(t.contactsDeleted || 'Contact deleted');
     try {
-      await deleteContact(contact.profileId);
+      await hideContact(phone);
     } catch (err) {
-      console.error('[ContactsPage] Delete failed:', err);
-      setAllProfiles(snapshot);
+      console.error('[ContactsPage] Delete (hide) failed:', err);
+      setHiddenPhones(snapshot);
       setToast(t.contactsDeleteFailed || 'Couldn’t delete — try again');
     }
-  }, [allProfiles, t.contactsDeleteConfirm, t.contactsDeleted, t.contactsDeleteFailed]);
+  }, [allProfiles, hiddenPhones, t.contactsDeleteConfirm, t.contactsDeleted, t.contactsDeleteFailed]);
 
   // ── Contact merge (unchanged logic — same map of phone → contact) ──────
   const contacts = useMemo(() => {
@@ -384,8 +422,13 @@ export default function ContactsPage({ leads, voiceDevice = {}, callsRefreshKey 
       }
     }
 
-    return Array.from(map.values());
-  }, [leads, calls, allProfiles]);
+    // Filter out hidden phones — derived contacts (no profile row) that the
+    // user has explicitly swipe-deleted. Profile-backed deletes already
+    // dropped from `allProfiles` so they never make it into the map.
+    const all = Array.from(map.values());
+    if (hiddenPhones.size === 0) return all;
+    return all.filter(c => !c.normalized || !hiddenPhones.has(c.normalized));
+  }, [leads, calls, allProfiles, hiddenPhones]);
 
   // ── Search filter ──────────────────────────────────────────────────────
   const filtered = useMemo(() => {

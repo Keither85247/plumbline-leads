@@ -438,14 +438,59 @@ export async function saveContactProfile(phone, data) {
 }
 
 // Hard-delete a saved contact profile by row id. Used by the Contacts swipe-
-// to-delete action. Calls/messages/leads that reference the same phone are
-// intentionally NOT removed (matches iPhone Contacts behavior).
+// to-delete action when the contact has a real row in the `contacts` table
+// (i.e. `profileId` is set). Calls/messages/leads that reference the same
+// phone are intentionally NOT removed (matches iPhone Contacts behavior).
 export async function deleteContact(id) {
   const res = await apiFetch(`${API_BASE}/contacts/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
   if (!res.ok) {
     let msg = 'Failed to delete contact';
+    try { const err = await res.json(); msg = err.error || msg; } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+// Hide a derived contact by phone. The Contacts list is merged from leads/
+// calls/profiles — for phone-only rows (no profile row to DELETE), we use
+// a per-user hide marker so the row disappears from the list without
+// touching the underlying call/lead/message records. The merge filters
+// hidden phones out at render time.
+export async function hideContact(phone) {
+  const res = await apiFetch(`${API_BASE}/contacts/hide`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone }),
+  });
+  if (!res.ok) {
+    let msg = 'Failed to hide contact';
+    try { const err = await res.json(); msg = err.error || msg; } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+// Fetch the list of phones the user has hidden. Returned as an array of
+// normalized digit-only strings so the frontend can shove them into a Set
+// for O(1) lookup during the contacts merge.
+export async function getHiddenContactPhones() {
+  const res = await apiFetch(`${API_BASE}/contacts/hidden`);
+  if (!res.ok) throw new Error('Failed to fetch hidden contacts');
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+// Unhide a previously-hidden contact phone. Symmetric with hideContact —
+// not yet wired into a UI but exposed so a future "Show hidden" admin
+// surface can restore phones without backend changes.
+export async function unhideContact(phone) {
+  const res = await apiFetch(`${API_BASE}/contacts/hide/${encodeURIComponent(phone)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    let msg = 'Failed to unhide contact';
     try { const err = await res.json(); msg = err.error || msg; } catch {}
     throw new Error(msg);
   }
