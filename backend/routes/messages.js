@@ -195,7 +195,46 @@ router.get('/', (req, res) => {
       ORDER BY m.created_at DESC
     `).all(req.userId, req.userId, req.userId, req.userId, req.userId);
 
-    return res.json(rows.map(r => {
+    // ── De-dupe phone variants ───────────────────────────────────────────
+    // The SQL above groups by m.phone *literally*, so if the same number is
+    // stored as both '+16317477174' and '16317477174' (or '6317477174') the
+    // thread shows up twice in the inbox — the exact bug a user spotted on
+    // 2026-05-24. Both write paths look correct today, so this likely comes
+    // from legacy/seed data. We canonicalize to a 10-digit digits-only key
+    // here in JS so any future format variance also collapses cleanly.
+    function canonicalKey(phone) {
+      const d = (phone || '').replace(/\D/g, '');
+      if (!d) return null;
+      return (d.length === 11 && d[0] === '1') ? d.slice(1) : d;
+    }
+
+    const byCanonical = new Map();
+    for (const row of rows) {
+      const key = canonicalKey(row.phone);
+      // Rows with no recognisable phone — keep as-is, key uniquely so they
+      // don't all collapse into one "unknown" bucket
+      if (!key) { byCanonical.set(`raw:${row.phone}`, row); continue; }
+
+      const existing = byCanonical.get(key);
+      if (!existing) {
+        byCanonical.set(key, { ...row });
+        continue;
+      }
+      // Same canonical phone — pick the newer message as the representative,
+      // sum unread counts across the variants so the badge stays accurate
+      const rowTs      = new Date(row.timestamp).getTime();
+      const existingTs = new Date(existing.timestamp).getTime();
+      const totalUnread = (existing.unread || 0) + (row.unread || 0);
+      if (rowTs > existingTs) {
+        byCanonical.set(key, { ...row, unread: totalUnread });
+      } else {
+        existing.unread = totalUnread;
+      }
+    }
+    const deduped = Array.from(byCanonical.values())
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    return res.json(deduped.map(r => {
       const digits       = (r.phone || '').replace(/\D/g, '');
       const normalized10 = (digits.length === 11 && digits[0] === '1') ? digits.slice(1) : digits;
 
