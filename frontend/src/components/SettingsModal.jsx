@@ -69,6 +69,7 @@ export default function SettingsModal({
   replyTranslation, onReplyTranslationChange,
   push,
   isOwner,
+  onNavigateAdmin, // () => void — owners only; closes the modal and opens AdminPage
 }) {
   const t = translations[language] || translations.en;
 
@@ -179,6 +180,32 @@ export default function SettingsModal({
 
         {/* Form — scrollable */}
         <div className="px-6 py-5 space-y-5 overflow-y-auto">
+
+          {/* Admin entry — owner-only, lives here instead of the bottom nav so
+              the public surface stays at six items (the layout budget). Tap
+              navigates to the Admin page and closes the modal in one move. */}
+          {isOwner && onNavigateAdmin && (
+            <button
+              type="button"
+              onClick={onNavigateAdmin}
+              className="w-full flex items-center justify-between gap-3 bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-3 hover:bg-indigo-100 transition-colors"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center shrink-0">
+                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2a4 4 0 014-4h0a4 4 0 014 4v2M12 11a4 4 0 100-8 4 4 0 000 8zM3 20a9 9 0 0118 0" />
+                  </svg>
+                </span>
+                <div className="min-w-0 text-left">
+                  <p className="text-sm font-semibold text-indigo-900 truncate">{t.admin || 'Admin'}</p>
+                  <p className="text-[11px] text-indigo-700/70 truncate">Manage users, numbers, demo data</p>
+                </div>
+              </div>
+              <svg className="w-4 h-4 text-indigo-600 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          )}
 
           {/* Your Name */}
           <div>
