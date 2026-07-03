@@ -556,57 +556,67 @@ export default function App() {
         </div>
       )}
 
-      {/* Header — glass-effect top bar over the dark gradient. paddingTop
-           pushes content below iOS status bar / Android status bar in PWA
-           standalone mode and Capacitor. env(safe-area-inset-top) is 0 on
-           desktop so nothing changes there. */}
+      {/* Header — matches the Figma top bar. Solid white surface, brand
+           wordmark on the left ("PlumbLine" bold black + "Leads" medium
+           gray), settings + logout icons on the right sitting inside soft
+           gray circular buttons. The status-dot (backend online/pulse) is
+           preserved as a subtle indicator between the wordmark and the
+           action buttons. */}
       <header
-        className="glass-nav px-4 md:px-6 sticky top-0 z-30"
+        className="bg-ink-900 border-b border-ink-800 px-4 md:px-6 sticky top-0 z-30"
         style={{ paddingTop: 'env(safe-area-inset-top)' }}
       >
         <div className="h-14 flex items-center justify-between w-full gap-4">
+          {/* Wordmark */}
           <div className="leading-tight">
-            <span className="text-ink-50 font-bold text-lg tracking-tight">PlumbLine</span>
-            <span className="text-ink-400 font-semibold text-lg tracking-tight"> Leads</span>
-          </div>
-          {/* Backend status dot — green when up, gray pulse when deploying/checking/down */}
-          <div
-            className="flex items-center gap-1.5 mr-1"
-            title={backendStatus === 'up' ? 'Backend online' : 'Deploying update…'}
-          >
-            <span className={`w-2 h-2 rounded-full ${
-              backendStatus === 'up'
-                ? 'bg-status-new shadow-[0_0_8px_rgba(34,197,94,0.6)]'
-                : 'bg-ink-500 animate-pulse'
-            }`} />
-            <span className={`text-[11px] font-medium hidden sm:inline ${
-              backendStatus === 'up' ? 'text-status-new' : 'text-ink-400'
-            }`}>
-              {backendStatus === 'up' ? t.appOnline : t.appUpdating}
-            </span>
+            <span className="text-ink-50 font-bold text-[20px] tracking-tight">PlumbLine</span>
+            <span className="text-ink-500 font-medium text-[20px] tracking-tight"> Leads</span>
           </div>
 
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="p-2 text-ink-400 hover:text-ink-50 transition-colors rounded-lg hover:bg-black/[0.04]"
-            aria-label="Settings"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          </button>
-          {/* Log out — small button, visible on all screen sizes */}
-          <button
-            onClick={handleLogout}
-            className="p-2 text-ink-400 hover:text-ink-50 transition-colors rounded-lg hover:bg-black/[0.04]"
-            aria-label="Log out"
-            title={`Log out (${currentUser.email})`}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-            </svg>
-          </button>
+          {/* Right cluster: status-dot + circular icon buttons */}
+          <div className="flex items-center gap-2">
+            <div
+              className="flex items-center gap-1.5 mr-1"
+              title={backendStatus === 'up' ? 'Backend online' : 'Deploying update…'}
+            >
+              <span className={`w-2 h-2 rounded-full ${
+                backendStatus === 'up'
+                  ? 'bg-brand-500 shadow-[0_0_8px_rgba(3,152,85,0.55)]'
+                  : 'bg-ink-500 animate-pulse'
+              }`} />
+              <span className={`text-[11px] font-medium hidden sm:inline ${
+                backendStatus === 'up' ? 'text-brand-600' : 'text-ink-500'
+              }`}>
+                {backendStatus === 'up' ? t.appOnline : t.appUpdating}
+              </span>
+            </div>
+
+            {/* Settings — gray circle */}
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="w-9 h-9 rounded-full bg-ink-800 text-ink-400 hover:text-ink-50 hover:bg-ink-700
+                         flex items-center justify-center transition-colors"
+              aria-label="Settings"
+            >
+              <svg className="w-4.5 h-4.5" style={{ width: 18, height: 18 }} fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </button>
+
+            {/* Log out — gray circle */}
+            <button
+              onClick={handleLogout}
+              className="w-9 h-9 rounded-full bg-ink-800 text-ink-400 hover:text-ink-50 hover:bg-ink-700
+                         flex items-center justify-center transition-colors"
+              aria-label="Log out"
+              title={`Log out (${currentUser.email})`}
+            >
+              <svg style={{ width: 16, height: 16 }} fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -696,16 +706,16 @@ export default function App() {
       </div>
 
       {/* Gradient fade mask — mobile only. Fades scrolled content into the
-           sage canvas (ink-950 = #d6e6db) so the glass-nav reads cleanly
-           above it. Height grows with safe-area so it always covers the
-           nav pill + home indicator. */}
+           near-white body (ink-950 = #f9fafb) so the floating nav pill
+           reads cleanly above it. Height grows with safe-area so it always
+           covers the nav pill + home indicator. */}
       <div
         className="md:hidden fixed bottom-0 left-0 right-0"
         style={{
           height: 'calc(96px + env(safe-area-inset-bottom))',
           zIndex: 39,
           pointerEvents: 'none',
-          background: 'linear-gradient(to bottom, rgba(214,230,219,0) 0%, rgba(214,230,219,0.65) 50%, rgba(214,230,219,0.95) 100%)',
+          background: 'linear-gradient(to bottom, rgba(249,250,251,0) 0%, rgba(249,250,251,0.7) 50%, rgba(249,250,251,0.95) 100%)',
         }}
       />
 
@@ -839,12 +849,11 @@ export default function App() {
         />
       )}
 
-      {/* ── Bottom navigation — frosted white pill, black-on-white active ──
-          Active tab fills with a soft sub-surface tint and pushes its icon
-          + label to near-black (the black-pill motif adapted for a tab bar).
-          Admin keeps its violet so it's always identifiable. Tap targets are
-          comfortably large (≥48px effective hit). The red badge ring uses
-          the sage canvas so the ring blends in instead of looking pasted on. */}
+      {/* ── Bottom navigation — matches the Figma spec.
+           Outer container: light-gray fully-rounded pill (via .nav-pill).
+           Active tab: brand-green pill nested inside, with the icon + label
+           on tinted green text. Inactive tabs: quiet gray icon + label with
+           the tab body transparent. Admin keeps its violet identity. */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex justify-center pointer-events-none"
            style={{
              paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)',
@@ -852,7 +861,7 @@ export default function App() {
              paddingRight: '14px',
              paddingTop: '8px',
            }}>
-        <nav className="pointer-events-auto w-full max-w-sm glass-nav rounded-3xl flex items-stretch px-1.5 py-1.5">
+        <nav className="pointer-events-auto w-full max-w-sm nav-pill rounded-full flex items-stretch px-1.5 py-1.5">
           {/* Admin lives in Settings, not the bottom nav. Six items is the layout
                budget for the floating pill — adding a seventh squashes icons and
                labels below readable size. Owners reach Admin via Settings → Admin
@@ -870,30 +879,24 @@ export default function App() {
               item.id === 'email'  ? remoteCounts.emails  :
               0;
 
-            // Admin keeps the violet status tint so it's always visually
-            // distinct from the default near-black active state.
+            // Admin keeps the violet identity so it's visually distinct
+            // from the default brand-green active state.
             const isAdmin = item.id === 'admin';
-            const activeIconColor  = isAdmin ? 'text-status-vendor' : 'text-ink-50';
-            const activeLabelColor = isAdmin ? 'text-status-vendor' : 'text-ink-50';
+            const activeIconColor  = isAdmin ? 'text-status-vendor' : 'text-brand-800';
+            const activeLabelColor = isAdmin ? 'text-status-vendor' : 'text-brand-800';
+            const activeBg         = isAdmin ? 'bg-status-vendor/12' : 'bg-brand-100';
 
             return (
               <button
                 key={item.id}
                 onClick={() => handleNavChange(item.id)}
-                className={`group flex-1 flex flex-col items-center justify-center gap-1 py-2.5 px-1 rounded-2xl
+                className={`group flex-1 flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-full
                   transition-all duration-200 ease-out active:scale-[0.94]
                   ${isActive
-                    ? `${activeIconColor} bg-ink-800`
-                    : 'text-ink-400 hover:text-ink-100 hover:bg-black/[0.03]'
+                    ? `${activeIconColor} ${activeBg}`
+                    : 'text-ink-500 hover:text-ink-100'
                   }`}
               >
-                {/* Active rail — short bar above the icon. Near-black to
-                     match the black-pill aesthetic; violet for admin. */}
-                {isActive && (
-                  <span className={`absolute top-0 mt-1 h-0.5 w-8 rounded-full
-                    ${isAdmin ? 'bg-status-vendor' : 'bg-ink-50'}`} />
-                )}
-
                 <div className="relative">
                   {item.icon(isActive)}
                   {badgeCount > 0 && (
@@ -901,7 +904,7 @@ export default function App() {
                       className="absolute -top-1.5 -right-2.5 min-w-[18px] h-[18px] px-1
                                  bg-status-urgent text-white text-[10px] font-bold rounded-full
                                  flex items-center justify-center leading-none pointer-events-none
-                                 ring-2 ring-ink-950 tabular-nums"
+                                 ring-2 ring-ink-800 tabular-nums"
                     >
                       {badgeCount > 99 ? '99+' : badgeCount}
                     </span>

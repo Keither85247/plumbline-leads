@@ -3,12 +3,13 @@
 @tailwind utilities;
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Plumbline Leads — base typography + sage canvas
+   Plumbline Leads — base typography + near-white canvas
    ─────────────────────────────────────────────────────────────────────────
-   The app sits on a soft sage tint with white cards floating above. The
-   color tokens come from tailwind.config.js (ink-* / accent-* / status-*);
-   only the body surface and the reusable .glass utilities are anchored
-   here in CSS because they're whole-app primitives.
+   The approved Figma places white cards on a near-white body surface (no
+   more sage tint). Each card carries its own soft colored halo to
+   communicate lead status. Color tokens live in tailwind.config.js; only
+   the body surface and the reusable .glass utilities are anchored here
+   in CSS because they're whole-app primitives.
 */
 
 @layer base {
@@ -21,16 +22,9 @@
   }
 
   body {
-    /* Sage canvas — a soft pastel green wash with subtle radial highlights
-       to add depth without competing with card content. The base color is
-       ink-950 from the token scale; we layer two very low-opacity radial
-       gradients (warm + cool) so the surface reads as a hand-mixed paint
-       rather than a flat fill. */
-    background-color: #d6e6db;                   /* ink-950 — sage canvas */
-    background-image:
-      radial-gradient(circle at 12% 8%,  rgba(255, 255, 255, 0.55) 0%, transparent 50%),
-      radial-gradient(circle at 92% 92%, rgba(13, 148, 136, 0.06) 0%, transparent 55%);
-    background-attachment: fixed;
+    /* Near-white body — matches the Figma. Cards sit on top with a soft
+       colored halo (shadow-glow-*) providing all the state signaling. */
+    background-color: #f9fafb;                   /* ink-950 — near-white canvas */
     color: #3a403e;                              /* ink-300 — default body text */
     font-feature-settings: "cv11", "ss01", "ss03"; /* tabular numerals + alt forms when supported */
     overscroll-behavior-y: none;                  /* no rubber-band on scroll */
@@ -53,25 +47,24 @@
   .no-scrollbar::-webkit-scrollbar { display: none; }
 
   /* Glass surface — frosted translucent white panel for modals/menus.
-     Tuned for the sage canvas: enough white to read as a "panel," enough
-     translucency that the surface beneath still bleeds through. */
+     On a near-white canvas the tint is subtle; the border rim is what
+     defines the panel edge. */
   .glass {
-    background-color: rgba(255, 255, 255, 0.85);
+    background-color: rgba(255, 255, 255, 0.92);
     -webkit-backdrop-filter: blur(20px) saturate(180%);
     backdrop-filter: blur(20px) saturate(180%);
     border: 1px solid rgba(15, 35, 25, 0.06);
   }
 
-  /* Subtler glass — for the bottom nav. White-frosted with a soft sage
-     shadow above (so it lifts off the scroll content cleanly). */
-  .glass-nav {
-    background-color: rgba(255, 255, 255, 0.78);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-    backdrop-filter: blur(24px) saturate(180%);
-    border: 1px solid rgba(15, 35, 25, 0.06);
+  /* Solid pill container for the bottom nav — matches the Figma spec.
+     The nav is a fully-rounded light-gray pill floating above the content
+     with a soft drop shadow. Active-tab treatment is handled inline (a
+     nested brand-green pill). */
+  .nav-pill {
+    background-color: #f3f4f6;                    /* ink-800 — same as tag pill bg */
+    border: 1px solid rgba(15, 35, 25, 0.04);
     box-shadow:
-      0 -1px 0 rgba(255, 255, 255, 0.9) inset,
-      0 -8px 28px rgba(15, 35, 25, 0.06),
-      0 8px 32px rgba(15, 35, 25, 0.08);
+      0 8px 24px rgba(15, 35, 25, 0.08),
+      0 2px 6px rgba(15, 35, 25, 0.04);
   }
 }

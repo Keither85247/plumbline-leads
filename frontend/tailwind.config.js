@@ -47,62 +47,101 @@ export default {
         //   text-ink-500 → tertiary text / metadata
         ink: {
           // Text scale (darkest → mid). text-ink-50 = primary text.
-          50:  '#0c1010',   // primary text / black-pill CTA fill
+          50:  '#0c1010',   // primary text — card titles, section headers
           100: '#171b1b',   // heading
           200: '#252a2a',   // subheading / strong body
           300: '#3a403e',   // body text
           400: '#5f6663',   // secondary text
-          500: '#8a918d',   // tertiary text / metadata
-          // Border + surface scale (mid → lightest). The lightest is the
-          // sage body tint — every other surface stacks on top.
+          500: '#6b7280',   // tertiary text / metadata (date, "13 total") — bumped slightly per Figma
+          // Border + surface scale (mid → lightest). Body surface is now
+          // near-white to match the approved Figma (sage removed).
           600: '#c5cac7',   // heavier border
-          700: '#dee1de',   // light border / divider
-          800: '#eef1ee',   // slightly tinted sub-surface (nested cards)
+          700: '#e5e7eb',   // light border / divider
+          800: '#f3f4f6',   // key-point tag pill bg / nested sub-surface
           900: '#ffffff',   // elevated card surface — pure white
-          950: '#d6e6db',   // outermost background — soft sage tint
+          950: '#f9fafb',   // outermost body background — near-white
         },
 
-        // ── Accent — electric blue (secondary actions, links, focus) ──────
-        // Note: in this edition the PRIMARY CTA is black-pill (bg-ink-50),
-        // matching the reference. Accent stays blue for hyperlink-style
-        // affordances and focus rings where a pop of color helps.
+        // ── Brand — the primary green from the Figma. The card-glow shadow
+        //     color (#039855) is the anchor; everything else in the ramp
+        //     derives from that value. Used for:
+        //       • Send button fill
+        //       • "Suggested follow-up" heading + "Read more" + "View
+        //         original message" link
+        //       • NEW status dot + pill
+        //       • Bottom nav active-tab pill
+        brand: {
+          50:  '#ecfdf5',   // suggested-follow-up panel tint / lightest bg
+          100: '#d1fae5',   // NEW status pill background / edit icon disc
+          200: '#a7f3d0',
+          300: '#6ee7b7',
+          400: '#34d399',
+          500: '#10b981',   // NEW status dot
+          600: '#059669',   // "Suggested follow-up" heading / links
+          700: '#047857',   // Send button hover
+          800: '#039855',   // Send button fill + card-glow shadow — CONFIRMED FROM FIGMA
+          900: '#065f46',
+        },
+
+        // ── Accent — kept as electric blue for phone-number links and any
+        //     hyperlink-style affordance where brand green would compete.
         accent: {
           50:  '#eef5ff',
           100: '#d9e8ff',
           200: '#b3d1ff',
           300: '#7eaeff',
           400: '#4d87ff',
-          500: '#2563eb',   // primary
+          500: '#2563eb',   // primary blue — phone number
           600: '#1d4ed8',
           700: '#1e40af',
           800: '#1e3a8a',
           900: '#172554',
         },
 
-        // ── Status palette (semantic, used by chips + status edges) ─────
-        // Unchanged across editions — green/red/amber/violet are universal
-        // signals that read identically on dark and light surfaces.
+        // ── Status palette — one hex per named state, used by pill tokens
+        //     and the card-glow shadow (see boxShadow below). Values match
+        //     the approved Figma preview:
+        //       NEW / QUALIFIED → brand green (#039855)
+        //       CONTACTED       → amber
+        //       OVERDUE / URGENT→ red
+        //       VENDOR          → violet
+        //       CUSTOMER        → teal
+        //       CLOSED / SPAM   → gray
         status: {
-          new:        '#16a34a',  // emerald — new lead, alive, fresh (slightly deeper than dark edition for white-card contrast)
-          contacted:  '#2563eb',  // blue   — already reached out
-          scheduled:  '#d97706',  // amber  — on the calendar
-          urgent:     '#dc2626',  // red    — overdue / action required
+          new:        '#039855',  // brand green — new lead, alive
+          contacted:  '#d97706',  // amber — reached out, awaiting reply
+          scheduled:  '#d97706',  // amber — legacy alias, same tone
+          urgent:     '#dc2626',  // red — overdue / action required
+          qualified:  '#039855',  // brand green — accepted lead
           vendor:     '#7c3aed',  // violet — vendor/supplier
-          customer:   '#0d9488',  // teal   — existing customer
-          spam:       '#6b7280',  // gray   — junk
+          customer:   '#0d9488',  // teal — existing customer
+          spam:       '#6b7280',  // gray — junk
+          closed:     '#6b7280',  // gray — finished
         },
       },
 
-      // ── Premium shadows tuned for LIGHT surfaces ─────────────────────────
-      // Standard tailwind shadows are too gray/dim for white cards on a
-      // tinted background — they read as flat. These are slightly softer
-      // and warmer (sage-tinted) for natural depth on the new canvas.
+      // ── Shadows ──────────────────────────────────────────────────────────
+      // The lead-card state glow is the star of this system — it replaces
+      // the old status-edge bar with a soft colored halo around each card.
+      // Values come straight from the approved Figma spec:
+      //     X:0  Y:0  Blur:11  Spread:0  Color:{status hex}  Opacity:60%
+      // The `glow-*` tokens name each status; the color inside the rgba()
+      // matches the corresponding entry in `colors.status`.
       boxShadow: {
-        'card':       '0 1px 2px rgba(15, 35, 25, 0.04), 0 4px 16px -3px rgba(15, 35, 25, 0.08)',
-        'card-hover': '0 2px 4px rgba(15, 35, 25, 0.06), 0 14px 32px -6px rgba(15, 35, 25, 0.14)',
-        'nav-glass':  '0 -1px 0 rgba(255,255,255,0.9) inset, 0 -8px 28px rgba(15, 35, 25, 0.08), 0 8px 32px rgba(15, 35, 25, 0.08)',
-        'inset-soft': 'inset 0 1px 0 rgba(255,255,255,0.6)',
-        'badge-glow': '0 0 0 2px #ffffff, 0 0 12px rgba(220, 38, 38, 0.45)',
+        'card':          '0 1px 2px rgba(15, 35, 25, 0.04), 0 4px 16px -3px rgba(15, 35, 25, 0.08)',
+        'card-hover':    '0 2px 4px rgba(15, 35, 25, 0.06), 0 14px 32px -6px rgba(15, 35, 25, 0.14)',
+        'nav-glass':     '0 -1px 0 rgba(255,255,255,0.9) inset, 0 -8px 28px rgba(15, 35, 25, 0.08), 0 8px 32px rgba(15, 35, 25, 0.08)',
+        'inset-soft':    'inset 0 1px 0 rgba(255,255,255,0.6)',
+        'badge-glow':    '0 0 0 2px #ffffff, 0 0 12px rgba(220, 38, 38, 0.45)',
+
+        // State-glow halos — Figma spec: 0 0 11px 0 <status>@60%
+        'glow-new':       '0 0 11px 0 rgba(3, 152, 85, 0.6)',    // brand green
+        'glow-qualified': '0 0 11px 0 rgba(3, 152, 85, 0.6)',    // brand green (same as new)
+        'glow-contacted': '0 0 11px 0 rgba(217, 119, 6, 0.6)',   // amber
+        'glow-scheduled': '0 0 11px 0 rgba(217, 119, 6, 0.6)',   // amber (legacy alias)
+        'glow-overdue':   '0 0 11px 0 rgba(220, 38, 38, 0.6)',   // red
+        'glow-urgent':    '0 0 11px 0 rgba(220, 38, 38, 0.6)',   // red (legacy alias)
+        'glow-closed':    '0 0 11px 0 rgba(107, 114, 128, 0.35)',// muted gray
       },
 
       // ── Border radius scale (slightly larger than default for premium feel) ─

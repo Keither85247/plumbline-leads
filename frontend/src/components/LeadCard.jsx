@@ -5,68 +5,70 @@ import { normalizePhone, parseTimestamp } from '../utils/phone';
 import PhoneActionSheet from './PhoneActionSheet';
 import { translations } from '../i18n';
 
-// Status pill colors — light-surface variants. Each pill sits on a white
-// card, so we use a soft tint background + ring + the saturated status
-// color for the text. Tints stay at 10-15% opacity so chips read as
-// quiet markers rather than competing visual weight.
-const STATUS_COLORS = {
-  New:       'bg-status-new/10        text-status-new       ring-1 ring-status-new/25',
-  Contacted: 'bg-status-contacted/10  text-status-contacted ring-1 ring-status-contacted/25',
-  Qualified: 'bg-status-customer/10   text-status-customer  ring-1 ring-status-customer/25',
-  Closed:    'bg-ink-800              text-ink-400          ring-1 ring-ink-700',
-};
+// ─────────────────────────────────────────────────────────────────────────────
+// LeadCard — matches the approved Figma spec.
+//
+// Card shape:
+//   • rounded-3xl (24px), white fill, no border/ring
+//   • state-driven drop-shadow glow (NEW → green halo, OVERDUE → red halo,
+//     etc.) — replaces the old left-edge status bar
+//   • fixed 358px width on a 390px screen (16px gutter each side)
+//   • content padding is a single generous inner box (24px) so every row
+//     inside breathes — the Figma's most visible signature
+//
+// Sections top-to-bottom (also matches Figma frame ordering):
+//   1. Title row     — name (bold) · status pill (dot + label)  ·  phone (right) · kebab
+//   2. Date          — "Apr 26, 2026" (quiet gray)
+//   3. Tag pills     — key-point pills in a wrap row
+//   4. More-details  — link-styled toggle that reveals the AI summary
+//   5. Suggested-    — mint-tinted panel with heading, body, read-more,
+//      follow-up       "View original message" link, edit icon disc, and
+//                      the green Send pill (primary CTA)
+//
+// All existing state and handlers are preserved — this file is a
+// presentation rewrite only.
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Left-edge status indicator color — a vertical bar inside the card.
-// Communicates lead state at a glance during fast scanning.
-const STATUS_EDGE = {
-  New:       'bg-status-new',
-  Contacted: 'bg-status-contacted',
-  Qualified: 'bg-status-customer',
-  Closed:    'bg-ink-500',
+// Status pill config — the pill sitting inside the card title row. Each
+// status maps to a light tinted background + a saturated text/dot color.
+// The OVERDUE variant is a synthetic override triggered when a New lead
+// crosses the 24h freshness threshold.
+const STATUS_PILL = {
+  New:       { bg: 'bg-brand-100',     text: 'text-brand-800',      dot: 'bg-brand-500',      label: 'NEW' },
+  Contacted: { bg: 'bg-amber-100',     text: 'text-amber-700',      dot: 'bg-amber-500',      label: 'CONTACTED' },
+  Qualified: { bg: 'bg-brand-100',     text: 'text-brand-800',      dot: 'bg-brand-500',      label: 'QUALIFIED' },
+  Closed:    { bg: 'bg-ink-800',       text: 'text-ink-500',        dot: 'bg-ink-500',        label: 'CLOSED' },
 };
+const OVERDUE_PILL = { bg: 'bg-red-100', text: 'text-red-700', dot: 'bg-red-500', label: 'OVERDUE' };
 
-// Category chip colors — secondary semantic axis (Lead vs Vendor vs ...).
-// Lead chips use the near-black ink so the primary category reads with the
-// same weight as the black-pill primary CTAs elsewhere in the UI.
-const CATEGORY_CHIP = {
-  'Lead':              'bg-ink-50              text-white          ring-ink-50',
-  'Existing Customer': 'bg-status-customer/10  text-status-customer ring-status-customer/25',
-  'Vendor':            'bg-status-vendor/10   text-status-vendor  ring-status-vendor/25',
-  'Spam':              'bg-status-urgent/10   text-status-urgent  ring-status-urgent/25',
-  'Other':             'bg-ink-800            text-ink-400        ring-ink-700',
+// Card-glow shadow per status. Keys match the STATUS_PILL keys plus the
+// synthetic OVERDUE override. See tailwind.config.js boxShadow.glow-* for
+// the underlying Figma spec (0 0 11px 0 <status>@60%).
+const STATUS_GLOW = {
+  New:       'shadow-glow-new',
+  Contacted: 'shadow-glow-contacted',
+  Qualified: 'shadow-glow-qualified',
+  Closed:    'shadow-glow-closed',
 };
+const OVERDUE_GLOW = 'shadow-glow-overdue';
 
 const STATUSES = ['New', 'Contacted', 'Qualified', 'Closed'];
 
-function getAgeLabel(createdAt, t) {
-  const diffMs = Date.now() - new Date(createdAt).getTime();
-  const minutes = Math.floor(diffMs / 60000);
-  if (minutes < 1) return t.timeJustNow;
-  if (minutes < 60) return `${minutes}${t.timeOldM}`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}${t.timeOldH}`;
-  const days = Math.floor(hours / 24);
-  return `${days}${t.timeOldD}`;
-}
-
+// Overdue is a synthetic urgency signal calculated per render. Only New
+// leads can be "overdue" (once they're Contacted/Qualified/Closed the
+// contractor has already acted).
 function getUrgency(createdAt, status) {
   if (status !== 'New') return null;
   const diffMs = Date.now() - new Date(createdAt).getTime();
   const hours = diffMs / 3600000;
   if (hours >= 24) return 'overdue';
-  if (hours >= 2) return 'warning';
   return null;
 }
 
-// ── Tag system ────────────────────────────────────────────────────────────────
-//
-// formatLeadTags() is the single transformation point between raw AI key_points
-// and what the contractor sees. Never pass raw AI text directly to the Tag UI.
-//
-// Priority order: problem → location → urgency → other context
-
-// Maps a keyword pattern in the job-type value to a concise label.
-// First match wins. Pair with an action suffix determined separately.
+// ── Tag extraction ──────────────────────────────────────────────────────────
+// formatLeadTags is unchanged from the previous version — same content, same
+// prioritization. The Figma shows the pills as a uniform light-gray style so
+// we drop icons and variants at the render step below.
 const JOB_TYPE_PATTERNS = [
   [/water heater/i,                'Water heater'],
   [/oil burner|oil boiler/i,       'Oil burner'],
@@ -98,16 +100,14 @@ function condenseJobType(value) {
       const isRepair      = /repair|fix|broken|burst|fail|not working/i.test(value);
       if (isReplacement) return `${label} replacement`;
       if (isRepair)      return `${label} repair`;
-      return label; // service call / unclear action
+      return label;
     }
   }
-  // No pattern match — take the first 5 words rather than truncating mid-word
   const words = value.trim().split(/\s+/);
   return words.length > 5 ? words.slice(0, 5).join(' ') + '…' : value;
 }
 
 function condensePreference(value) {
-  // Strip common filler openers so we get to the useful part fast
   return value
     .replace(/^(a contractor|contractor|someone)\s+(who|that)\s+/i, '')
     .replace(/^(looking for|prefers?|wants?)\s+/i, '')
@@ -118,7 +118,8 @@ function isUrgentValue(value) {
   return /urgent|immediate|prompt|critical|asap|emergency|frustrat|worse|serious|right away/i.test(value);
 }
 
-// Returns an ordered array of { icon, value } tag objects ready to render.
+// Returns a flat array of tag strings for the pill row. Order matches the
+// previous priority: problem → location → urgency → other context.
 function formatLeadTags(lead) {
   if (!lead.key_points || lead.key_points.length === 0) return [];
 
@@ -129,97 +130,108 @@ function formatLeadTags(lead) {
 
   for (const point of lead.key_points) {
     const colonIdx = point.indexOf(':');
-
-    // No "Label: value" structure — treat as freeform context
     if (colonIdx === -1) {
-      const condensed = condensePreference(point.trim());
-      otherTags.push({ icon: '💬', value: condensed });
+      otherTags.push(condensePreference(point.trim()));
       continue;
     }
-
     const label = point.slice(0, colonIdx).trim().toLowerCase();
     const value = point.slice(colonIdx + 1).trim();
 
     if (label === 'job location' || label === 'location') {
-      // Prefer city/town over state. For "City, ST" or "Street, City, ST" the
-      // last segment is the state code — skip it and take the segment before it.
       const parts = value.split(',').map(p => p.trim()).filter(Boolean);
       const last  = parts[parts.length - 1] ?? '';
       const isStateCode = /^[A-Z]{2}$/.test(last);
-      const city  = (isStateCode && parts.length >= 2)
-        ? parts[parts.length - 2]   // "Norwalk, CT" → "Norwalk"
-        : last;                      // "17 Main St, Norwalk" → "Norwalk"
-      locationTag = { icon: '📍', value: city };
-
+      locationTag = (isStateCode && parts.length >= 2) ? parts[parts.length - 2] : last;
     } else if (label === 'type of work' || label === 'service' || label === 'service requested') {
-      problemTag = { icon: '🔧', value: condenseJobType(value) };
-
+      problemTag = condenseJobType(value);
     } else if (label.includes('urgency')) {
-      urgencyTag = { icon: '⚡', value: isUrgentValue(value) ? 'Urgent' : 'Follow up' };
-
+      urgencyTag = isUrgentValue(value) ? 'Urgent' : 'Follow up';
     } else if (label.includes('customer prefer') || label.includes('preference')) {
-      otherTags.push({ icon: '💬', value: condensePreference(value) });
+      otherTags.push(condensePreference(value));
     }
-    // Silently drop labels we don't recognise — avoids noise
   }
 
-  // problem first → location → urgency → any other context pills
-  return [
-    problemTag  && { ...problemTag,  variant: 'problem'  },
-    locationTag && { ...locationTag, variant: 'location' },
-    urgencyTag  && { ...urgencyTag,  variant: 'urgency'  },
-    ...otherTags.map(t => ({ ...t, variant: 'other' })),
-  ].filter(Boolean);
+  return [problemTag, locationTag, urgencyTag, ...otherTags].filter(Boolean);
 }
 
-// Variant styles create a clear visual hierarchy on the white card:
-//   problem  — solid ink-50 pill (near-black), white text  → most prominent
-//   urgency  — amber tint, ringed border                   → alert signal
-//   location — soft sage tint with subtle ring             → secondary
-//   other    — soft sage tint with subtle ring             → lowest prominence
-const TAG_VARIANT_STYLES = {
-  problem:  'bg-ink-50              text-white            font-medium',
-  location: 'bg-ink-800             text-ink-300          ring-1 ring-inset ring-ink-700',
-  urgency:  'bg-status-scheduled/12 text-status-scheduled font-medium ring-1 ring-inset ring-status-scheduled/30',
-  other:    'bg-ink-800             text-ink-400          ring-1 ring-inset ring-ink-700',
-};
-
-function Tag({ icon, text, variant = 'other' }) {
+// Uniform light-gray key-point tag pill — matches the Figma "Water Leak"
+// treatment exactly (no icons, no variant tinting, single style).
+function TagPill({ text }) {
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs whitespace-nowrap ${TAG_VARIANT_STYLES[variant]}`}>
-      {icon && <span className="shrink-0 leading-none">{icon}</span>}
-      <span>{text}</span>
+    <span className="inline-flex items-center px-3 py-1 rounded-full bg-ink-800 text-ink-300 text-xs font-medium whitespace-nowrap">
+      {text}
     </span>
+  );
+}
+
+// ── Icons ───────────────────────────────────────────────────────────────────
+
+function KebabIcon() {
+  return (
+    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="5"  r="1.6" />
+      <circle cx="12" cy="12" r="1.6" />
+      <circle cx="12" cy="19" r="1.6" />
+    </svg>
+  );
+}
+
+function ChevronDown({ className = 'w-3.5 h-3.5' }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
+function PencilIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 11l10-10 4 4-10 10H9v-4z" />
+    </svg>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contractorName, onContactClick, isArchived = false, language = 'en', replyTranslation = false }) {
+export default function LeadCard({
+  lead,
+  onLeadUpdated,
+  onLeadRemoved,
+  contractorName,
+  onContactClick,
+  isArchived = false,
+  language = 'en',
+  replyTranslation = false,
+}) {
   const t = translations[language] || translations.en;
   const invalidate = useInvalidate();
-  const [updating, setUpdating] = useState(false);
-  const [showRaw, setShowRaw] = useState(false);
-  const [descExpanded, setDescExpanded] = useState(false);
-  const [editingFollowUp, setEditingFollowUp] = useState(false);
-  const [followUpDraft, setFollowUpDraft] = useState(null);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [updating, setUpdating]                 = useState(false);
+  const [showRaw, setShowRaw]                   = useState(false);
+  const [descExpanded, setDescExpanded]         = useState(false);
+  const [readMoreExpanded, setReadMoreExpanded] = useState(false);
+  const [editingFollowUp, setEditingFollowUp]   = useState(false);
+  const [followUpDraft, setFollowUpDraft]       = useState(null);
+  const [menuOpen, setMenuOpen]                 = useState(false);
+  const [statusMenuOpen, setStatusMenuOpen]     = useState(false);
   const [actionSheetPhone, setActionSheetPhone] = useState(null);
   // Translation state
-  const [translatedText, setTranslatedText] = useState(null);
+  const [translatedText, setTranslatedText]         = useState(null);
   const [showingTranslation, setShowingTranslation] = useState(false);
-  const [isTranslating, setIsTranslating] = useState(false);
+  const [isTranslating, setIsTranslating]           = useState(false);
   const menuRef = useRef(null);
+  const statusRef = useRef(null);
 
-  // Close menu when clicking outside
+  // Close menus on outside click
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuOpen && !statusMenuOpen) return;
     const handler = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+      if (menuOpen && menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+      if (statusMenuOpen && statusRef.current && !statusRef.current.contains(e.target)) setStatusMenuOpen(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [menuOpen]);
+  }, [menuOpen, statusMenuOpen]);
 
   const baseFollowUp = contractorName
     ? (lead.follow_up_text || '').replace(/\[Your Name\]/g, contractorName)
@@ -230,7 +242,6 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
   const handleEditClick = () => {
     if (followUpDraft === null) setFollowUpDraft(baseFollowUp);
     setEditingFollowUp(true);
-    // Clear translation — user is editing the source text
     setTranslatedText(null);
     setShowingTranslation(false);
   };
@@ -250,17 +261,17 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
   };
 
   const [isSending, setIsSending] = useState(false);
-  const [hasSent, setHasSent] = useState(false);
+  const [hasSent, setHasSent]     = useState(false);
 
   const handleSend = async () => {
     const to = lead.callback_number || lead.phone_number;
     const text = showingTranslation ? translatedText : displayedFollowUp;
-    if (!to) { alert('No phone number available for this lead.'); return; }
+    if (!to)          { alert('No phone number available for this lead.'); return; }
     if (!text?.trim()) { alert('Follow-up text is empty.'); return; }
     setIsSending(true);
     try {
       await sendMessage(to, text.trim());
-      setHasSent(true);   // lock button before alert so it can't be tapped again
+      setHasSent(true);
       alert('Message sent!');
     } catch (err) {
       alert(`Failed to send: ${err.message}`);
@@ -269,8 +280,8 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
     }
   };
 
-  const handleStatusChange = async (e) => {
-    const newStatus = e.target.value;
+  const handleStatusChange = async (newStatus) => {
+    setStatusMenuOpen(false);
     setUpdating(true);
     try {
       const updated = await updateLeadStatus(lead.id, newStatus);
@@ -287,11 +298,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
     setUpdating(true);
     try {
       await archiveLead(lead.id);
-      // Optimistic local update: parent removes the row from whichever list
-      // is currently rendering this card (active leads OR archived).
       onLeadRemoved(lead.id);
-      // Invalidate the leads bus key so any other surface that depends on
-      // the active-leads list (e.g. App.jsx's master leads state) refetches.
       invalidate('leads');
     } catch (err) {
       console.error('Archive failed:', err);
@@ -306,9 +313,6 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
     try {
       await unarchiveLead(lead.id);
       onLeadRemoved(lead.id);
-      // The unarchived lead now belongs back in App's master `leads` state.
-      // Invalidating triggers fetchLeads — the row reappears in the
-      // category sub-tab without waiting for the 30s heartbeat poll.
       invalidate('leads');
     } catch (err) {
       console.error('Unarchive failed:', err);
@@ -331,147 +335,104 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
     }
   };
 
+  // ── Derived render values ────────────────────────────────────────────────
   const formattedDate = parseTimestamp(lead.created_at).toLocaleDateString('en-US', {
     month: 'short', day: 'numeric', year: 'numeric'
   });
 
-  const ageLabel = getAgeLabel(lead.created_at, t);
-  const urgency = getUrgency(lead.created_at, lead.status);
-  const rawText = lead.raw_text || lead.transcript;
-  const category = lead.category || 'Lead';
-  const primaryPhone = lead.callback_number || lead.phone_number;
-  const showCallerIdSecondary = lead.callback_number && lead.phone_number && lead.callback_number !== lead.phone_number;
+  const urgency        = getUrgency(lead.created_at, lead.status);
+  const isOverdue      = !isArchived && urgency === 'overdue';
+  const rawText        = lead.raw_text || lead.transcript;
+  const primaryPhone   = lead.callback_number || lead.phone_number;
+  const showCallerIdSecondary = lead.callback_number && lead.phone_number
+    && lead.callback_number !== lead.phone_number;
 
-  // Status edge color — left vertical bar for instant scanability.
-  // Overdue overrides status so urgency wins at-a-glance even if a lead
-  // is technically still "New".
-  const edgeColor = !isArchived && urgency === 'overdue'
-    ? 'bg-status-urgent'
-    : (STATUS_EDGE[lead.status] || STATUS_EDGE.New);
+  // Status pill + glow — OVERDUE overrides the underlying status so
+  // urgency wins at-a-glance even though the lead is technically still "New".
+  const pill = isOverdue ? OVERDUE_PILL : (STATUS_PILL[lead.status] || STATUS_PILL.New);
+  const glow = isArchived
+    ? ''
+    : (isOverdue ? OVERDUE_GLOW : (STATUS_GLOW[lead.status] || STATUS_GLOW.New));
+
+  const tags = formatLeadTags(lead);
 
   return (
-    <div
-      className={`group relative overflow-hidden rounded-2xl
-        bg-ink-900 ring-1 ring-ink-800/80
-        shadow-card hover:shadow-card-hover
-        transition-all duration-200 ease-out
-        ${lead.status === 'New' && !isArchived ? 'ring-status-new/20' : ''}`}
-    >
-      {/* Status edge — vertical accent rail. Wider when overdue for urgency. */}
-      <div
-        className={`absolute left-0 top-0 bottom-0 ${edgeColor}
-          ${!isArchived && urgency === 'overdue' ? 'w-1.5' : 'w-1'}`}
-        aria-hidden="true"
-      />
+    <div className={`w-full bg-ink-900 rounded-3xl ${glow} transition-shadow duration-200`}>
+      {/* Inner content — the Figma has a very generous inner box so every
+           row inside gets its own breathing room. 20px matches the visible
+           padding in the design. */}
+      <div className="px-5 py-5">
 
-      {/* Card body with extra left padding to clear the status edge */}
-      <div className="pl-4 pr-3 py-3.5">
+        {/* ── 1. Title row ─────────────────────────────────────────────── */}
         <div className="flex items-start justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            {/* ── Title row — bold name + quiet category chip ─────────────── */}
-            <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-2 min-w-0 flex-1 flex-wrap">
+            <button
+              onClick={() => onContactClick && onContactClick(normalizePhone(primaryPhone))}
+              className="font-semibold text-[17px] leading-tight text-ink-50 truncate tracking-tight text-left"
+            >
+              {lead.contact_name}
+              {lead.company_name && (
+                <span className="text-ink-400 font-normal"> · {lead.company_name}</span>
+              )}
+            </button>
+
+            {/* Status pill — click to open a small menu that changes status.
+                 Preserves the existing status-change workflow but wears the
+                 Figma's dot+label pill treatment. */}
+            <div className="relative shrink-0" ref={statusRef}>
               <button
-                onClick={() => onContactClick && onContactClick(normalizePhone(lead.callback_number || lead.phone_number))}
-                className="font-semibold text-base text-ink-50 truncate hover:text-accent-600 transition-colors text-left tracking-tight"
+                type="button"
+                onClick={() => !isArchived && setStatusMenuOpen(o => !o)}
+                disabled={updating || isArchived}
+                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full ${pill.bg} ${pill.text}
+                            text-[10px] font-semibold uppercase tracking-wider
+                            transition-opacity ${!isArchived ? 'cursor-pointer hover:opacity-90' : ''}
+                            disabled:opacity-60`}
               >
-                {lead.contact_name}
-                {lead.company_name && (
-                  <span className="text-ink-400 font-normal"> · {lead.company_name}</span>
-                )}
+                <span className={`w-1.5 h-1.5 rounded-full ${pill.dot}`} aria-hidden="true" />
+                <span>{pill.label}</span>
               </button>
-              <span className={`text-[10px] font-semibold tracking-wider uppercase rounded-md px-1.5 py-0.5 shrink-0
-                ring-1 ${CATEGORY_CHIP[category] || CATEGORY_CHIP.Other}`}>
-                {category}
-              </span>
-              {/* "NEW" attention badge — emerald pill with a glow-pulse ring
-                   to draw the eye. White text for AAA contrast on green. */}
-              {lead.status === 'New' && !isArchived && (
-                <span className="text-[10px] font-bold tracking-wider uppercase rounded-md px-1.5 py-0.5
-                                 bg-status-new text-white animate-pulse-glow">
-                  NEW
-                </span>
-              )}
-            </div>
 
-            {/* ── Phone row — interactive, accent blue for link affordance ── */}
-            {primaryPhone && (
-              <button
-                onClick={() => setActionSheetPhone(primaryPhone)}
-                className="mt-0.5 text-sm font-medium text-accent-600 hover:text-accent-700 cursor-pointer transition-colors text-left tabular-nums"
-              >
-                {primaryPhone}
-              </button>
-            )}
-            {showCallerIdSecondary && (
-              <p className="text-[11px] text-ink-500 mt-0.5">
-                {t.leadCalledFrom} <span className="tabular-nums">{lead.phone_number}</span>
-              </p>
-            )}
-
-            {/* ── Metadata row — timestamps + urgency + message count ─────── */}
-            <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-              <span className="text-[11px] text-ink-500 tabular-nums">{ageLabel}</span>
-              <span className="text-ink-500">•</span>
-              <span className="text-[11px] text-ink-500">{formattedDate}</span>
-
-              {urgency === 'overdue' && (
-                <span className="text-[10px] font-semibold tracking-wide uppercase
-                                 text-status-urgent bg-status-urgent/12 rounded-md px-1.5 py-0.5
-                                 ring-1 ring-status-urgent/30">
-                  {t.leadOverdue}
-                </span>
-              )}
-              {urgency === 'warning' && (
-                <span className="text-[10px] font-semibold tracking-wide uppercase
-                                 text-status-scheduled bg-status-scheduled/12 rounded-md px-1.5 py-0.5
-                                 ring-1 ring-status-scheduled/30">
-                  {t.leadNeedsFollowup}
-                </span>
-              )}
-              {lead.message_count > 0 && (
-                <span className="text-[10px] font-semibold tracking-wide uppercase
-                                 text-status-customer bg-status-customer/12 rounded-md px-1.5 py-0.5
-                                 ring-1 ring-status-customer/30 tabular-nums">
-                  {lead.message_count} {lead.message_count === 1 ? t.leadText : t.leadTexts}
-                </span>
+              {statusMenuOpen && (
+                <div className="absolute left-0 top-7 z-20 min-w-[140px] py-1 rounded-xl bg-white
+                                shadow-card border border-ink-700">
+                  {STATUSES.map(s => (
+                    <button
+                      key={s}
+                      onClick={() => handleStatusChange(s)}
+                      className={`w-full text-left px-3 py-2 text-sm hover:bg-ink-800 transition-colors
+                                  ${lead.status === s ? 'text-ink-50 font-semibold' : 'text-ink-300'}`}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
           </div>
 
-          {/* ── Right side — status select + kebab menu ───────────────────── */}
-          <div className="flex items-center gap-1 shrink-0">
-            {!isArchived && (
-              <select
-                value={lead.status}
-                onChange={handleStatusChange}
-                disabled={updating}
-                className={`text-[11px] font-semibold tracking-wide rounded-full pl-2.5 pr-7 py-1
-                            cursor-pointer border-0 appearance-none bg-no-repeat
-                            focus:outline-none focus:ring-2 focus:ring-accent-400 disabled:cursor-wait
-                            ${STATUS_COLORS[lead.status] || STATUS_COLORS['New']}`}
-                style={{
-                  backgroundImage: `url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='currentColor' stroke-width='2.5' viewBox='0 0 24 24'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E")`,
-                  backgroundPosition: 'right 0.5rem center',
-                  backgroundSize: '0.75rem',
-                }}
+          {/* Right side — phone (top) + kebab (top-right) */}
+          <div className="flex items-start gap-2 shrink-0">
+            {primaryPhone && (
+              <button
+                onClick={() => setActionSheetPhone(primaryPhone)}
+                className="text-[14px] font-medium text-accent-500 hover:text-accent-600 tabular-nums whitespace-nowrap"
               >
-                {STATUSES.map(s => <option key={s} value={s} className="bg-ink-800 text-ink-50">{s}</option>)}
-              </select>
+                {primaryPhone}
+              </button>
             )}
 
             <div className="relative" ref={menuRef}>
               <button
                 onClick={() => setMenuOpen(o => !o)}
                 disabled={updating}
-                className="p-1.5 rounded-lg text-ink-400 hover:text-ink-100 hover:bg-black/[0.04] transition-colors disabled:cursor-wait"
+                className="text-ink-500 hover:text-ink-100 transition-colors disabled:cursor-wait -mr-1 -mt-1 p-1"
                 aria-label="More options"
               >
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                  <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
-                </svg>
+                <KebabIcon />
               </button>
               {menuOpen && (
-                <div className="absolute right-0 top-9 z-20 glass rounded-xl shadow-card py-1 min-w-[140px] animate-slide-up">
+                <div className="absolute right-0 top-8 z-20 glass rounded-xl shadow-card py-1 min-w-[140px]">
                   {isArchived ? (
                     <button
                       onClick={handleUnarchive}
@@ -489,7 +450,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                   )}
                   <button
                     onClick={handleDelete}
-                    className="w-full text-left px-3.5 py-2 text-sm text-status-urgent hover:bg-status-urgent/10 transition-colors"
+                    className="w-full text-left px-3.5 py-2 text-sm text-status-urgent hover:bg-red-50 transition-colors"
                   >
                     {t.leadDelete}
                   </button>
@@ -499,62 +460,95 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
           </div>
         </div>
 
-      {lead.summary && (
-        <p
-          className={`text-sm text-ink-200 mt-2.5 leading-relaxed cursor-pointer ${!descExpanded ? 'line-clamp-2' : ''}`}
-          onClick={() => setDescExpanded(v => !v)}
-        >
-          {lead.summary}
+        {/* ── 2. Date row ─────────────────────────────────────────────── */}
+        <p className="mt-1 text-[13px] text-ink-500">
+          {formattedDate}
         </p>
-      )}
-      {lead.key_points && lead.key_points.length > 0 && (
-        <div className="mt-2.5 flex flex-wrap gap-1.5">
-          {formatLeadTags(lead).map((tag, i) => (
-            <Tag key={i} icon={tag.icon} text={tag.value} variant={tag.variant} />
-          ))}
-        </div>
-      )}
-      {baseFollowUp && !isArchived && (
-        <div className="mt-3 pt-3 border-t border-ink-800/80">
-          <div className="rounded-xl bg-ink-800/60 ring-1 ring-ink-700/60 px-3 py-2.5">
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-2">
-                <p className="text-[11px] font-semibold tracking-wide uppercase text-ink-400">{t.leadSuggestedFollowup}</p>
-                {!editingFollowUp
-                  ? <button onClick={handleEditClick} className="text-[11px] text-ink-400 hover:text-ink-100 transition-colors">{t.leadFollowupEdit}</button>
-                  : <button onClick={() => setEditingFollowUp(false)} className="text-[11px] text-accent-600 hover:text-accent-700 transition-colors">{t.leadFollowupDone}</button>
-                }
-              </div>
-              {/* Send — primary CTA per card. Black pill matches the
-                   reference "Send" button on the Pay screen. */}
-              <button
-                onClick={handleSend}
-                disabled={isSending || hasSent}
-                className={`text-[11px] font-semibold tracking-wide rounded-full px-3 py-1 transition-colors ${
-                  hasSent
-                    ? 'bg-ink-700 text-ink-400 cursor-not-allowed'
-                    : 'bg-ink-50 text-white hover:bg-ink-100 disabled:opacity-50'
-                }`}
-              >
-                {hasSent ? t.leadSent : isSending ? t.leadSending : t.leadSend}
-              </button>
+        {showCallerIdSecondary && (
+          <p className="mt-0.5 text-[11px] text-ink-500">
+            {t.leadCalledFrom} <span className="tabular-nums">{lead.phone_number}</span>
+          </p>
+        )}
+
+        {/* ── 3. Tag pills ─────────────────────────────────────────────── */}
+        {tags.length > 0 && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {tags.map((tag, i) => <TagPill key={i} text={tag} />)}
+          </div>
+        )}
+
+        {/* ── 4. More details — reveals the AI summary + raw message ──── */}
+        {(lead.summary || rawText) && (
+          <button
+            onClick={() => setDescExpanded(v => !v)}
+            className="mt-4 inline-flex items-center gap-1 text-[13px] font-medium text-accent-500 hover:text-accent-600"
+          >
+            {t.leadMoreDetails || 'More details'}
+            <span className={`transition-transform ${descExpanded ? 'rotate-180' : ''}`}>
+              <ChevronDown />
+            </span>
+          </button>
+        )}
+        {descExpanded && lead.summary && (
+          <p className="mt-2 text-[14px] text-ink-300 leading-relaxed">
+            {lead.summary}
+          </p>
+        )}
+
+        {/* ── 5. Suggested follow-up panel ─────────────────────────────── */}
+        {baseFollowUp && !isArchived && (
+          <div className="mt-5 rounded-2xl bg-brand-50 px-4 py-4">
+            {/* Heading row */}
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[14px] font-semibold text-brand-600">
+                {t.leadSuggestedFollowup || 'Suggested follow-up'}
+              </p>
+              {!editingFollowUp ? (
+                <button
+                  onClick={handleEditClick}
+                  className="text-[12px] text-ink-500 hover:text-ink-100 transition-colors"
+                >
+                  {t.leadFollowupEdit || 'Edit'}
+                </button>
+              ) : (
+                <button
+                  onClick={() => setEditingFollowUp(false)}
+                  className="text-[12px] text-brand-600 hover:text-brand-700 font-medium transition-colors"
+                >
+                  {t.leadFollowupDone || 'Done'}
+                </button>
+              )}
             </div>
+
+            {/* Body */}
             {editingFollowUp ? (
               <textarea
                 value={displayedFollowUp}
                 onChange={e => setFollowUpDraft(e.target.value)}
-                rows={3}
-                className="w-full text-xs text-ink-100 border border-ink-600 rounded-lg px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-accent-500 resize-none bg-ink-900"
+                rows={4}
+                className="mt-2 w-full text-[13px] text-ink-100 border border-ink-700 rounded-lg px-3 py-2
+                           focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none bg-white"
               />
             ) : (
-              <p className="text-xs text-ink-200 leading-relaxed">
+              <p className={`mt-2 text-[13px] text-ink-300 leading-relaxed ${!readMoreExpanded ? 'line-clamp-2' : ''}`}>
                 {showingTranslation && translatedText ? translatedText : displayedFollowUp}
+                {!readMoreExpanded && (
+                  <>
+                    {' '}
+                    <button
+                      onClick={() => setReadMoreExpanded(true)}
+                      className="text-brand-600 font-medium hover:text-brand-700"
+                    >
+                      {t.leadReadMore || 'Read more'}
+                    </button>
+                  </>
+                )}
               </p>
             )}
 
-            {/* Translation controls — only visible when feature is enabled */}
+            {/* Translation controls */}
             {replyTranslation && !editingFollowUp && (
-              <div className="mt-2 pt-2 border-t border-ink-700/60 flex items-center gap-3">
+              <div className="mt-2 flex items-center gap-3">
                 {!translatedText ? (
                   <button
                     onClick={handleTranslate}
@@ -575,7 +569,7 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                     <button
                       onClick={handleTranslate}
                       disabled={isTranslating}
-                      className="text-xs text-ink-400 hover:text-ink-100 transition-colors disabled:opacity-50"
+                      className="text-xs text-ink-500 hover:text-ink-100 transition-colors disabled:opacity-50"
                     >
                       {isTranslating ? t.translating : t.leadRetranslate}
                     </button>
@@ -583,17 +577,53 @@ export default function LeadCard({ lead, onLeadUpdated, onLeadRemoved, contracto
                 )}
               </div>
             )}
+
+            {/* Actions row — original message link · edit disc · Send pill */}
+            <div className="mt-4 flex items-center justify-between gap-2">
+              {rawText ? (
+                <button
+                  onClick={() => setShowRaw(p => !p)}
+                  className="text-[13px] font-medium text-brand-600 hover:text-brand-700 underline underline-offset-2"
+                >
+                  {showRaw ? (t.leadHideOriginal || 'Hide original message') : (t.leadViewOriginal || 'View original message')}
+                </button>
+              ) : <span />}
+
+              <div className="flex items-center gap-2 shrink-0">
+                {!editingFollowUp && (
+                  <button
+                    onClick={handleEditClick}
+                    className="w-9 h-9 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center hover:bg-brand-200 transition-colors"
+                    aria-label={t.leadFollowupEdit || 'Edit'}
+                  >
+                    <PencilIcon />
+                  </button>
+                )}
+                <button
+                  onClick={handleSend}
+                  disabled={isSending || hasSent}
+                  className={`h-9 px-5 rounded-full text-[14px] font-semibold transition-colors
+                              ${hasSent
+                                ? 'bg-ink-700 text-ink-400 cursor-not-allowed'
+                                : 'bg-brand-800 hover:bg-brand-700 text-white disabled:opacity-50'}`}
+                >
+                  {hasSent ? t.leadSent : isSending ? t.leadSending : (t.leadSend || 'Send')}
+                </button>
+              </div>
+            </div>
+
+            {/* Raw original message reveal — sits inside the follow-up panel
+                 so it's contextually attached to the "View original message"
+                 link above. */}
+            {showRaw && rawText && (
+              <div className="mt-3 pt-3 border-t border-brand-100">
+                <p className="text-[12px] text-ink-400 leading-relaxed whitespace-pre-wrap">
+                  {rawText}
+                </p>
+              </div>
+            )}
           </div>
-        </div>
-      )}
-      {rawText && (
-        <div className="mt-2 border-t border-ink-800/80 pt-2">
-          <button onClick={() => setShowRaw(p => !p)} className="text-xs text-ink-400 hover:text-ink-200 transition-colors">
-            {showRaw ? t.leadHideOriginal : t.leadViewOriginal}
-          </button>
-          {showRaw && <p className="mt-2 text-xs text-ink-400 leading-relaxed whitespace-pre-wrap">{rawText}</p>}
-        </div>
-      )}
+        )}
       </div>
 
       {actionSheetPhone && (
