@@ -6,69 +6,58 @@ import PhoneActionSheet from './PhoneActionSheet';
 import { translations } from '../i18n';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LeadCard — matches the approved Figma spec.
+// LeadCard — implements the approved Figma spec (values read from dev panel).
 //
-// Card shape:
-//   • rounded-3xl (24px), white fill, no border/ring
-//   • state-driven drop-shadow glow (NEW → green halo, OVERDUE → red halo,
-//     etc.) — replaces the old left-edge status bar
-//   • fixed 358px width on a 390px screen (16px gutter each side)
-//   • content padding is a single generous inner box (24px) so every row
-//     inside breathes — the Figma's most visible signature
+// Confirmed measurements:
+//   card     358×hug · radius 24px · fill #FFFFFF · glow 0 0 11px <status>@60%
+//   chips    bg #F3F4F6 · border 1px #E5E7EB · radius 40px · h 26px
+//   Send     #065F46 (surface/brand_primary_main) · 64×36 · radius full
+//   panel    bg #F3F4F6 (same gray as chips/page — NOT mint)
 //
-// Sections top-to-bottom (also matches Figma frame ordering):
-//   1. Title row     — name (bold) · status pill (dot + label)  ·  phone (right) · kebab
-//   2. Date          — "Apr 26, 2026" (quiet gray)
-//   3. Tag pills     — key-point pills in a wrap row
-//   4. More-details  — link-styled toggle that reveals the AI summary
-//   5. Suggested-    — mint-tinted panel with heading, body, read-more,
-//      follow-up       "View original message" link, edit icon disc, and
-//                      the green Send pill (primary CTA)
+// Status variants (all five exist as Figma frames):
+//   NEW green · OVERDUE red · CONTACTED orange · QUALIFIED purple ·
+//   ARCHIVE gray (no glow)
 //
-// All existing state and handlers are preserved — this file is a
-// presentation rewrite only.
+// Text colors:
+//   "Suggested follow-up" heading + "Read more"  → blue (link color)
+//   "View original message"                       → near-black, underlined
+//   "More details"                                → gray, not a link color
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Status pill config — the pill sitting inside the card title row. Each
-// status maps to a light tinted background + a saturated text/dot color.
-// The OVERDUE variant is a synthetic override triggered when a New lead
-// crosses the 24h freshness threshold.
+// Status pill — dot + UPPERCASE label on a soft tinted bg. OVERDUE is a
+// synthetic override applied when a New lead crosses the 24h threshold;
+// ARCHIVE is applied to any card rendered from the archived list.
 const STATUS_PILL = {
-  New:       { bg: 'bg-brand-100',     text: 'text-brand-800',      dot: 'bg-brand-500',      label: 'NEW' },
-  Contacted: { bg: 'bg-amber-100',     text: 'text-amber-700',      dot: 'bg-amber-500',      label: 'CONTACTED' },
-  Qualified: { bg: 'bg-brand-100',     text: 'text-brand-800',      dot: 'bg-brand-500',      label: 'QUALIFIED' },
-  Closed:    { bg: 'bg-ink-800',       text: 'text-ink-500',        dot: 'bg-ink-500',        label: 'CLOSED' },
+  New:       { cls: 'bg-[#ECFDF3] text-[#067647]', dot: 'bg-[#12B76A]', label: 'NEW' },
+  Contacted: { cls: 'bg-[#FEF6EE] text-[#B93815]', dot: 'bg-[#EF6820]', label: 'CONTACTED' },
+  Qualified: { cls: 'bg-[#F4F3FF] text-[#5925DC]', dot: 'bg-[#7A5AF8]', label: 'QUALIFIED' },
+  Closed:    { cls: 'bg-[#F2F4F7] text-[#475467]', dot: 'bg-[#98A2B3]', label: 'CLOSED' },
 };
-const OVERDUE_PILL = { bg: 'bg-red-100', text: 'text-red-700', dot: 'bg-red-500', label: 'OVERDUE' };
+const OVERDUE_PILL = { cls: 'bg-[#FEF3F2] text-[#D92D20]', dot: 'bg-[#F04438]', label: 'OVERDUE' };
+const ARCHIVE_PILL = { cls: 'bg-[#F2F4F7] text-[#475467]', dot: 'bg-[#98A2B3]', label: 'ARCHIVE' };
 
-// Card-glow shadow per status. Keys match the STATUS_PILL keys plus the
-// synthetic OVERDUE override. See tailwind.config.js boxShadow.glow-* for
-// the underlying Figma spec (0 0 11px 0 <status>@60%).
 const STATUS_GLOW = {
   New:       'shadow-glow-new',
   Contacted: 'shadow-glow-contacted',
   Qualified: 'shadow-glow-qualified',
-  Closed:    'shadow-glow-closed',
+  Closed:    '',
 };
 const OVERDUE_GLOW = 'shadow-glow-overdue';
 
 const STATUSES = ['New', 'Contacted', 'Qualified', 'Closed'];
 
-// Overdue is a synthetic urgency signal calculated per render. Only New
-// leads can be "overdue" (once they're Contacted/Qualified/Closed the
-// contractor has already acted).
+// Follow-up preview truncation. The Figma shows the body cut mid-word with an
+// inline "… Read more" link, which a CSS line-clamp can't do (the link would
+// get clipped with the text). Character-based truncation matches the comp.
+const FOLLOWUP_PREVIEW_CHARS = 90;
+
 function getUrgency(createdAt, status) {
   if (status !== 'New') return null;
   const diffMs = Date.now() - new Date(createdAt).getTime();
-  const hours = diffMs / 3600000;
-  if (hours >= 24) return 'overdue';
-  return null;
+  return diffMs / 3600000 >= 24 ? 'overdue' : null;
 }
 
-// ── Tag extraction ──────────────────────────────────────────────────────────
-// formatLeadTags is unchanged from the previous version — same content, same
-// prioritization. The Figma shows the pills as a uniform light-gray style so
-// we drop icons and variants at the render step below.
+// ── Key-point → chip extraction (logic unchanged from previous versions) ───
 const JOB_TYPE_PATTERNS = [
   [/water heater/i,                'Water heater'],
   [/oil burner|oil boiler/i,       'Oil burner'],
@@ -118,8 +107,6 @@ function isUrgentValue(value) {
   return /urgent|immediate|prompt|critical|asap|emergency|frustrat|worse|serious|right away/i.test(value);
 }
 
-// Returns a flat array of tag strings for the pill row. Order matches the
-// previous priority: problem → location → urgency → other context.
 function formatLeadTags(lead) {
   if (!lead.key_points || lead.key_points.length === 0) return [];
 
@@ -154,11 +141,10 @@ function formatLeadTags(lead) {
   return [problemTag, locationTag, urgencyTag, ...otherTags].filter(Boolean);
 }
 
-// Uniform light-gray key-point tag pill — matches the Figma "Water Leak"
-// treatment exactly (no icons, no variant tinting, single style).
-function TagPill({ text }) {
+// Chip — Figma spec: bg #F3F4F6, 1px #E5E7EB border, radius 40, h 26.
+function Chip({ text }) {
   return (
-    <span className="inline-flex items-center px-3 py-1 rounded-full bg-ink-800 text-ink-300 text-xs font-medium whitespace-nowrap">
+    <span className="inline-flex items-center h-[26px] px-3 rounded-full bg-[#F3F4F6] border border-[#E5E7EB] text-[13px] text-[#344054] whitespace-nowrap">
       {text}
     </span>
   );
@@ -176,7 +162,7 @@ function KebabIcon() {
   );
 }
 
-function ChevronDown({ className = 'w-3.5 h-3.5' }) {
+function ChevronDown({ className = 'w-4 h-4' }) {
   return (
     <svg className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true">
       <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
@@ -184,9 +170,9 @@ function ChevronDown({ className = 'w-3.5 h-3.5' }) {
   );
 }
 
-function PencilIcon({ className = 'w-4 h-4' }) {
+function PencilIcon({ className = 'w-[18px] h-[18px]' }) {
   return (
-    <svg className={className} fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24" aria-hidden="true">
+    <svg className={className} fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24" aria-hidden="true">
       <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 11l10-10 4 4-10 10H9v-4z" />
     </svg>
   );
@@ -215,14 +201,12 @@ export default function LeadCard({
   const [menuOpen, setMenuOpen]                 = useState(false);
   const [statusMenuOpen, setStatusMenuOpen]     = useState(false);
   const [actionSheetPhone, setActionSheetPhone] = useState(null);
-  // Translation state
   const [translatedText, setTranslatedText]         = useState(null);
   const [showingTranslation, setShowingTranslation] = useState(false);
   const [isTranslating, setIsTranslating]           = useState(false);
   const menuRef = useRef(null);
   const statusRef = useRef(null);
 
-  // Close menus on outside click
   useEffect(() => {
     if (!menuOpen && !statusMenuOpen) return;
     const handler = (e) => {
@@ -266,7 +250,7 @@ export default function LeadCard({
   const handleSend = async () => {
     const to = lead.callback_number || lead.phone_number;
     const text = showingTranslation ? translatedText : displayedFollowUp;
-    if (!to)          { alert('No phone number available for this lead.'); return; }
+    if (!to)           { alert('No phone number available for this lead.'); return; }
     if (!text?.trim()) { alert('Follow-up text is empty.'); return; }
     setIsSending(true);
     try {
@@ -335,209 +319,200 @@ export default function LeadCard({
     }
   };
 
-  // ── Derived render values ────────────────────────────────────────────────
+  // ── Derived render values ─────────────────────────────────────────────────
   const formattedDate = parseTimestamp(lead.created_at).toLocaleDateString('en-US', {
     month: 'short', day: 'numeric', year: 'numeric'
   });
 
-  const urgency        = getUrgency(lead.created_at, lead.status);
-  const isOverdue      = !isArchived && urgency === 'overdue';
-  const rawText        = lead.raw_text || lead.transcript;
-  const primaryPhone   = lead.callback_number || lead.phone_number;
+  const urgency      = getUrgency(lead.created_at, lead.status);
+  const isOverdue    = !isArchived && urgency === 'overdue';
+  const rawText      = lead.raw_text || lead.transcript;
+  const primaryPhone = lead.callback_number || lead.phone_number;
   const showCallerIdSecondary = lead.callback_number && lead.phone_number
     && lead.callback_number !== lead.phone_number;
 
-  // Status pill + glow — OVERDUE overrides the underlying status so
-  // urgency wins at-a-glance even though the lead is technically still "New".
-  const pill = isOverdue ? OVERDUE_PILL : (STATUS_PILL[lead.status] || STATUS_PILL.New);
+  const pill = isArchived
+    ? ARCHIVE_PILL
+    : isOverdue
+      ? OVERDUE_PILL
+      : (STATUS_PILL[lead.status] || STATUS_PILL.New);
+
+  // Archived cards get no glow, just a hairline ring so they don't float
+  // shapeless on the gray canvas.
   const glow = isArchived
-    ? ''
-    : (isOverdue ? OVERDUE_GLOW : (STATUS_GLOW[lead.status] || STATUS_GLOW.New));
+    ? 'ring-1 ring-[#EAECF0]'
+    : (isOverdue ? OVERDUE_GLOW : (STATUS_GLOW[lead.status] ?? STATUS_GLOW.New)) || 'ring-1 ring-[#EAECF0]';
 
   const tags = formatLeadTags(lead);
 
-  return (
-    <div className={`w-full bg-ink-900 rounded-3xl ${glow} transition-shadow duration-200`}>
-      {/* Inner content — the Figma has a very generous inner box so every
-           row inside gets its own breathing room. 20px matches the visible
-           padding in the design. */}
-      <div className="px-5 py-5">
+  // Inline "… Read more" truncation for the follow-up preview.
+  const activeFollowUp = showingTranslation && translatedText ? translatedText : displayedFollowUp;
+  const needsTruncate  = !readMoreExpanded && (activeFollowUp?.length ?? 0) > FOLLOWUP_PREVIEW_CHARS;
+  const previewText    = needsTruncate
+    ? activeFollowUp.slice(0, FOLLOWUP_PREVIEW_CHARS).trimEnd() + '…'
+    : activeFollowUp;
 
-        {/* ── 1. Title row ─────────────────────────────────────────────── */}
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0 flex-1 flex-wrap">
+  return (
+    <div className={`w-full bg-white rounded-3xl ${glow} transition-shadow duration-200`}>
+      <div className="px-5 pt-[18px] pb-5">
+
+        {/* ── Title row: name · status pill · phone · kebab ─────────────── */}
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={() => onContactClick && onContactClick(normalizePhone(primaryPhone))}
+            className="font-bold text-[18px] leading-tight text-[#101828] truncate tracking-tight text-left shrink min-w-0"
+          >
+            {lead.contact_name}
+          </button>
+
+          {/* Status pill — tap to change status (preserves the old select) */}
+          <div className="relative shrink-0" ref={statusRef}>
             <button
-              onClick={() => onContactClick && onContactClick(normalizePhone(primaryPhone))}
-              className="font-semibold text-[17px] leading-tight text-ink-50 truncate tracking-tight text-left"
+              type="button"
+              onClick={() => !isArchived && setStatusMenuOpen(o => !o)}
+              disabled={updating || isArchived}
+              className={`inline-flex items-center gap-1.5 pl-2.5 pr-3 h-[26px] rounded-full ${pill.cls}
+                          text-[12px] font-semibold tracking-wide uppercase
+                          ${!isArchived ? 'cursor-pointer active:opacity-80' : ''} disabled:opacity-70`}
             >
-              {lead.contact_name}
-              {lead.company_name && (
-                <span className="text-ink-400 font-normal"> · {lead.company_name}</span>
-              )}
+              <span className={`w-2 h-2 rounded-full ${pill.dot}`} aria-hidden="true" />
+              <span>{pill.label}</span>
             </button>
 
-            {/* Status pill — click to open a small menu that changes status.
-                 Preserves the existing status-change workflow but wears the
-                 Figma's dot+label pill treatment. */}
-            <div className="relative shrink-0" ref={statusRef}>
-              <button
-                type="button"
-                onClick={() => !isArchived && setStatusMenuOpen(o => !o)}
-                disabled={updating || isArchived}
-                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full ${pill.bg} ${pill.text}
-                            text-[10px] font-semibold uppercase tracking-wider
-                            transition-opacity ${!isArchived ? 'cursor-pointer hover:opacity-90' : ''}
-                            disabled:opacity-60`}
-              >
-                <span className={`w-1.5 h-1.5 rounded-full ${pill.dot}`} aria-hidden="true" />
-                <span>{pill.label}</span>
-              </button>
-
-              {statusMenuOpen && (
-                <div className="absolute left-0 top-7 z-20 min-w-[140px] py-1 rounded-xl bg-white
-                                shadow-card border border-ink-700">
-                  {STATUSES.map(s => (
-                    <button
-                      key={s}
-                      onClick={() => handleStatusChange(s)}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-ink-800 transition-colors
-                                  ${lead.status === s ? 'text-ink-50 font-semibold' : 'text-ink-300'}`}
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            {statusMenuOpen && (
+              <div className="absolute left-0 top-8 z-20 min-w-[150px] py-1 rounded-xl bg-white
+                              shadow-card border border-[#EAECF0]">
+                {STATUSES.map(s => (
+                  <button
+                    key={s}
+                    onClick={() => handleStatusChange(s)}
+                    className={`w-full text-left px-3.5 py-2 text-sm hover:bg-[#F3F4F6] transition-colors
+                                ${lead.status === s ? 'text-[#101828] font-semibold' : 'text-[#475467]'}`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* Right side — phone (top) + kebab (top-right) */}
-          <div className="flex items-start gap-2 shrink-0">
-            {primaryPhone && (
-              <button
-                onClick={() => setActionSheetPhone(primaryPhone)}
-                className="text-[14px] font-medium text-accent-500 hover:text-accent-600 tabular-nums whitespace-nowrap"
-              >
-                {primaryPhone}
-              </button>
-            )}
+          <div className="flex-1" />
 
-            <div className="relative" ref={menuRef}>
-              <button
-                onClick={() => setMenuOpen(o => !o)}
-                disabled={updating}
-                className="text-ink-500 hover:text-ink-100 transition-colors disabled:cursor-wait -mr-1 -mt-1 p-1"
-                aria-label="More options"
-              >
-                <KebabIcon />
-              </button>
-              {menuOpen && (
-                <div className="absolute right-0 top-8 z-20 glass rounded-xl shadow-card py-1 min-w-[140px]">
-                  {isArchived ? (
-                    <button
-                      onClick={handleUnarchive}
-                      className="w-full text-left px-3.5 py-2 text-sm text-ink-100 hover:bg-black/[0.04] transition-colors"
-                    >
-                      {t.leadUnarchive}
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleArchive}
-                      className="w-full text-left px-3.5 py-2 text-sm text-ink-100 hover:bg-black/[0.04] transition-colors"
-                    >
-                      {t.leadArchive}
-                    </button>
-                  )}
+          {primaryPhone && (
+            <button
+              onClick={() => setActionSheetPhone(primaryPhone)}
+              className="text-[15px] font-medium text-accent-500 tabular-nums whitespace-nowrap shrink-0"
+            >
+              {primaryPhone}
+            </button>
+          )}
+
+          <div className="relative shrink-0" ref={menuRef}>
+            <button
+              onClick={() => setMenuOpen(o => !o)}
+              disabled={updating}
+              className="p-1 -mr-1 text-[#98A2B3] hover:text-[#344054] transition-colors disabled:cursor-wait"
+              aria-label="More options"
+            >
+              <KebabIcon />
+            </button>
+            {menuOpen && (
+              <div className="absolute right-0 top-8 z-20 glass rounded-xl shadow-card py-1 min-w-[140px]">
+                {isArchived ? (
                   <button
-                    onClick={handleDelete}
-                    className="w-full text-left px-3.5 py-2 text-sm text-status-urgent hover:bg-red-50 transition-colors"
+                    onClick={handleUnarchive}
+                    className="w-full text-left px-3.5 py-2 text-sm text-[#101828] hover:bg-black/[0.04] transition-colors"
                   >
-                    {t.leadDelete}
+                    {t.leadUnarchive}
                   </button>
-                </div>
-              )}
-            </div>
+                ) : (
+                  <button
+                    onClick={handleArchive}
+                    className="w-full text-left px-3.5 py-2 text-sm text-[#101828] hover:bg-black/[0.04] transition-colors"
+                  >
+                    {t.leadArchive}
+                  </button>
+                )}
+                <button
+                  onClick={handleDelete}
+                  className="w-full text-left px-3.5 py-2 text-sm text-[#D92D20] hover:bg-[#FEF3F2] transition-colors"
+                >
+                  {t.leadDelete}
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* ── 2. Date row ─────────────────────────────────────────────── */}
-        <p className="mt-1 text-[13px] text-ink-500">
-          {formattedDate}
-        </p>
-        {showCallerIdSecondary && (
-          <p className="mt-0.5 text-[11px] text-ink-500">
-            {t.leadCalledFrom} <span className="tabular-nums">{lead.phone_number}</span>
-          </p>
-        )}
+        {/* ── Date ───────────────────────────────────────────────────────── */}
+        <p className="mt-1.5 text-[15px] text-[#667085]">{formattedDate}</p>
 
-        {/* ── 3. Tag pills ─────────────────────────────────────────────── */}
+        {/* ── Key-point chips ───────────────────────────────────────────── */}
         {tags.length > 0 && (
           <div className="mt-4 flex flex-wrap gap-2">
-            {tags.map((tag, i) => <TagPill key={i} text={tag} />)}
+            {tags.map((tag, i) => <Chip key={i} text={tag} />)}
           </div>
         )}
 
-        {/* ── 4. More details — reveals the AI summary + raw message ──── */}
-        {(lead.summary || rawText) && (
-          <button
-            onClick={() => setDescExpanded(v => !v)}
-            className="mt-4 inline-flex items-center gap-1 text-[13px] font-medium text-accent-500 hover:text-accent-600"
-          >
-            {t.leadMoreDetails || 'More details'}
-            <span className={`transition-transform ${descExpanded ? 'rotate-180' : ''}`}>
-              <ChevronDown />
-            </span>
-          </button>
-        )}
-        {descExpanded && lead.summary && (
-          <p className="mt-2 text-[14px] text-ink-300 leading-relaxed">
-            {lead.summary}
-          </p>
+        {/* ── More details — quiet gray toggle, reveals summary + metadata ─ */}
+        {(lead.summary || showCallerIdSecondary || lead.message_count > 0 || lead.company_name) && (
+          <>
+            <button
+              onClick={() => setDescExpanded(v => !v)}
+              className="mt-3.5 inline-flex items-center gap-1 text-[15px] text-[#475467] font-medium"
+            >
+              {t.leadMoreDetails || 'More details'}
+              <span className={`transition-transform text-[#667085] ${descExpanded ? 'rotate-180' : ''}`}>
+                <ChevronDown />
+              </span>
+            </button>
+            {descExpanded && (
+              <div className="mt-2.5 space-y-1.5">
+                {lead.summary && (
+                  <p className="text-[14px] text-[#475467] leading-relaxed">{lead.summary}</p>
+                )}
+                {lead.company_name && (
+                  <p className="text-[13px] text-[#667085]">{lead.company_name}</p>
+                )}
+                {showCallerIdSecondary && (
+                  <p className="text-[13px] text-[#667085]">
+                    {t.leadCalledFrom} <span className="tabular-nums">{lead.phone_number}</span>
+                  </p>
+                )}
+                {lead.message_count > 0 && (
+                  <p className="text-[13px] text-[#667085] tabular-nums">
+                    {lead.message_count} {lead.message_count === 1 ? t.leadText : t.leadTexts}
+                  </p>
+                )}
+              </div>
+            )}
+          </>
         )}
 
-        {/* ── 5. Suggested follow-up panel ─────────────────────────────── */}
+        {/* ── Suggested follow-up panel — gray bg, blue heading ─────────── */}
         {baseFollowUp && !isArchived && (
-          <div className="mt-5 rounded-2xl bg-brand-50 px-4 py-4">
-            {/* Heading row */}
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[14px] font-semibold text-brand-600">
-                {t.leadSuggestedFollowup || 'Suggested follow-up'}
-              </p>
-              {!editingFollowUp ? (
-                <button
-                  onClick={handleEditClick}
-                  className="text-[12px] text-ink-500 hover:text-ink-100 transition-colors"
-                >
-                  {t.leadFollowupEdit || 'Edit'}
-                </button>
-              ) : (
-                <button
-                  onClick={() => setEditingFollowUp(false)}
-                  className="text-[12px] text-brand-600 hover:text-brand-700 font-medium transition-colors"
-                >
-                  {t.leadFollowupDone || 'Done'}
-                </button>
-              )}
-            </div>
+          <div className="mt-4 rounded-2xl bg-[#F3F4F6] px-4 pt-3.5 pb-4">
+            <p className="text-[16px] font-medium text-accent-500">
+              {t.leadSuggestedFollowup || 'Suggested follow-up'}
+            </p>
 
-            {/* Body */}
             {editingFollowUp ? (
               <textarea
                 value={displayedFollowUp}
                 onChange={e => setFollowUpDraft(e.target.value)}
                 rows={4}
-                className="mt-2 w-full text-[13px] text-ink-100 border border-ink-700 rounded-lg px-3 py-2
-                           focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none bg-white"
+                className="mt-2 w-full text-[14px] text-[#101828] border border-[#D0D5DD] rounded-xl px-3 py-2.5
+                           focus:outline-none focus:ring-2 focus:ring-accent-500 resize-none bg-white"
               />
             ) : (
-              <p className={`mt-2 text-[13px] text-ink-300 leading-relaxed ${!readMoreExpanded ? 'line-clamp-2' : ''}`}>
-                {showingTranslation && translatedText ? translatedText : displayedFollowUp}
-                {!readMoreExpanded && (
+              <p className="mt-1.5 text-[15px] text-[#475467] leading-[1.5]">
+                {previewText}
+                {needsTruncate && (
                   <>
                     {' '}
                     <button
                       onClick={() => setReadMoreExpanded(true)}
-                      className="text-brand-600 font-medium hover:text-brand-700"
+                      className="text-accent-500 font-medium"
                     >
                       {t.leadReadMore || 'Read more'}
                     </button>
@@ -546,14 +521,14 @@ export default function LeadCard({
               </p>
             )}
 
-            {/* Translation controls */}
+            {/* Translation controls — preserved feature, quiet styling */}
             {replyTranslation && !editingFollowUp && (
               <div className="mt-2 flex items-center gap-3">
                 {!translatedText ? (
                   <button
                     onClick={handleTranslate}
                     disabled={isTranslating}
-                    className="text-xs text-status-vendor hover:text-violet-800 font-medium transition-colors disabled:opacity-50"
+                    className="text-[13px] text-[#7A5AF8] font-medium transition-colors disabled:opacity-50"
                   >
                     {isTranslating ? t.translating : t.translateTo}
                   </button>
@@ -561,15 +536,15 @@ export default function LeadCard({
                   <>
                     <button
                       onClick={() => setShowingTranslation(p => !p)}
-                      className="text-xs text-status-vendor hover:text-violet-800 font-medium transition-colors"
+                      className="text-[13px] text-[#7A5AF8] font-medium transition-colors"
                     >
                       {showingTranslation ? t.showOriginal : t.showTranslation}
                     </button>
-                    <span className="text-ink-500 text-xs">·</span>
+                    <span className="text-[#98A2B3] text-[13px]">·</span>
                     <button
                       onClick={handleTranslate}
                       disabled={isTranslating}
-                      className="text-xs text-ink-500 hover:text-ink-100 transition-colors disabled:opacity-50"
+                      className="text-[13px] text-[#667085] transition-colors disabled:opacity-50"
                     >
                       {isTranslating ? t.translating : t.leadRetranslate}
                     </button>
@@ -578,22 +553,29 @@ export default function LeadCard({
               </div>
             )}
 
-            {/* Actions row — original message link · edit disc · Send pill */}
-            <div className="mt-4 flex items-center justify-between gap-2">
+            {/* Actions row — dark underlined link left · pencil disc + Send right */}
+            <div className="mt-3.5 flex items-center justify-between gap-3">
               {rawText ? (
                 <button
                   onClick={() => setShowRaw(p => !p)}
-                  className="text-[13px] font-medium text-brand-600 hover:text-brand-700 underline underline-offset-2"
+                  className="text-[15px] font-medium text-[#101828] underline underline-offset-[3px] decoration-[#101828]"
                 >
                   {showRaw ? (t.leadHideOriginal || 'Hide original message') : (t.leadViewOriginal || 'View original message')}
                 </button>
               ) : <span />}
 
-              <div className="flex items-center gap-2 shrink-0">
-                {!editingFollowUp && (
+              <div className="flex items-center gap-2.5 shrink-0">
+                {editingFollowUp ? (
+                  <button
+                    onClick={() => setEditingFollowUp(false)}
+                    className="text-[15px] font-medium text-accent-500"
+                  >
+                    {t.leadFollowupDone || 'Done'}
+                  </button>
+                ) : (
                   <button
                     onClick={handleEditClick}
-                    className="w-9 h-9 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center hover:bg-brand-200 transition-colors"
+                    className="w-10 h-10 rounded-full bg-[#DCEAE2] text-[#065F46] flex items-center justify-center active:opacity-80 transition-opacity"
                     aria-label={t.leadFollowupEdit || 'Edit'}
                   >
                     <PencilIcon />
@@ -602,22 +584,20 @@ export default function LeadCard({
                 <button
                   onClick={handleSend}
                   disabled={isSending || hasSent}
-                  className={`h-9 px-5 rounded-full text-[14px] font-semibold transition-colors
+                  className={`h-9 px-[18px] rounded-full text-[15px] font-semibold transition-colors
                               ${hasSent
-                                ? 'bg-ink-700 text-ink-400 cursor-not-allowed'
-                                : 'bg-brand-800 hover:bg-brand-700 text-white disabled:opacity-50'}`}
+                                ? 'bg-[#D0D5DD] text-white cursor-not-allowed'
+                                : 'bg-[#065F46] active:bg-[#054C38] text-white disabled:opacity-60'}`}
                 >
                   {hasSent ? t.leadSent : isSending ? t.leadSending : (t.leadSend || 'Send')}
                 </button>
               </div>
             </div>
 
-            {/* Raw original message reveal — sits inside the follow-up panel
-                 so it's contextually attached to the "View original message"
-                 link above. */}
+            {/* Raw original message reveal */}
             {showRaw && rawText && (
-              <div className="mt-3 pt-3 border-t border-brand-100">
-                <p className="text-[12px] text-ink-400 leading-relaxed whitespace-pre-wrap">
+              <div className="mt-3 pt-3 border-t border-[#E5E7EB]">
+                <p className="text-[13px] text-[#667085] leading-relaxed whitespace-pre-wrap">
                   {rawText}
                 </p>
               </div>

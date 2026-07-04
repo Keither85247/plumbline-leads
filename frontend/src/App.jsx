@@ -563,56 +563,56 @@ export default function App() {
            preserved as a subtle indicator between the wordmark and the
            action buttons. */}
       <header
-        className="bg-ink-900 border-b border-ink-800 px-4 md:px-6 sticky top-0 z-30"
+        className="bg-white px-4 md:px-6 sticky top-0 z-30"
         style={{ paddingTop: 'env(safe-area-inset-top)' }}
       >
-        <div className="h-14 flex items-center justify-between w-full gap-4">
-          {/* Wordmark */}
+        <div className="h-[60px] flex items-center justify-between w-full gap-4">
+          {/* Wordmark — "PlumbLine" near-black bold, "Leads" muted gray-green */}
           <div className="leading-tight">
-            <span className="text-ink-50 font-bold text-[20px] tracking-tight">PlumbLine</span>
-            <span className="text-ink-500 font-medium text-[20px] tracking-tight"> Leads</span>
+            <span className="text-[#101828] font-bold text-[21px] tracking-tight">PlumbLine</span>
+            <span className="text-[#98A29B] font-semibold text-[21px] tracking-tight"> Leads</span>
           </div>
 
           {/* Right cluster: status-dot + circular icon buttons */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             <div
-              className="flex items-center gap-1.5 mr-1"
+              className="flex items-center gap-1.5 mr-0.5"
               title={backendStatus === 'up' ? 'Backend online' : 'Deploying update…'}
             >
               <span className={`w-2 h-2 rounded-full ${
                 backendStatus === 'up'
-                  ? 'bg-brand-500 shadow-[0_0_8px_rgba(3,152,85,0.55)]'
-                  : 'bg-ink-500 animate-pulse'
+                  ? 'bg-[#12B76A]'
+                  : 'bg-[#98A2B3] animate-pulse'
               }`} />
               <span className={`text-[11px] font-medium hidden sm:inline ${
-                backendStatus === 'up' ? 'text-brand-600' : 'text-ink-500'
+                backendStatus === 'up' ? 'text-[#067647]' : 'text-[#667085]'
               }`}>
                 {backendStatus === 'up' ? t.appOnline : t.appUpdating}
               </span>
             </div>
 
-            {/* Settings — gray circle */}
+            {/* Settings — light gray circle, per Figma top bar */}
             <button
               onClick={() => setSettingsOpen(true)}
-              className="w-9 h-9 rounded-full bg-ink-800 text-ink-400 hover:text-ink-50 hover:bg-ink-700
+              className="w-11 h-11 rounded-full bg-[#F3F4F6] text-[#344054] active:bg-[#E5E7EB]
                          flex items-center justify-center transition-colors"
               aria-label="Settings"
             >
-              <svg className="w-4.5 h-4.5" style={{ width: 18, height: 18 }} fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+              <svg style={{ width: 19, height: 19 }} fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
             </button>
 
-            {/* Log out — gray circle */}
+            {/* Log out — light gray circle */}
             <button
               onClick={handleLogout}
-              className="w-9 h-9 rounded-full bg-ink-800 text-ink-400 hover:text-ink-50 hover:bg-ink-700
+              className="w-11 h-11 rounded-full bg-[#F3F4F6] text-[#344054] active:bg-[#E5E7EB]
                          flex items-center justify-center transition-colors"
               aria-label="Log out"
               title={`Log out (${currentUser.email})`}
             >
-              <svg style={{ width: 16, height: 16 }} fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+              <svg style={{ width: 17, height: 17 }} fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
               </svg>
             </button>
@@ -647,14 +647,19 @@ export default function App() {
         </nav>
 
         {/* Main content */}
-        {/* Inbox needs overflow-hidden + no padding so it can manage its own scroll internally */}
+        {/* Inbox needs overflow-hidden + no padding so it can manage its own
+             scroll internally. Leads needs NO horizontal padding because its
+             tab strip runs edge-to-edge (white surface on the gray canvas);
+             LeadList owns its own gutters. */}
         <main className={`flex-1 flex flex-col ${
           activeNav === 'text' || activeNav === 'email'
             ? 'overflow-hidden'
-            : 'overflow-auto px-4 md:px-6 pt-6 pb-[calc(80px+env(safe-area-inset-bottom))] md:pb-6'
+            : isLeadsView
+              ? 'overflow-auto pb-[calc(96px+env(safe-area-inset-bottom))] md:pb-6'
+              : 'overflow-auto px-4 md:px-6 pt-6 pb-[calc(80px+env(safe-area-inset-bottom))] md:pb-6'
         }`}>
           {isLeadsView && (
-            <div className="flex-1 flex flex-col max-w-4xl w-full">
+            <div className="flex-1 flex flex-col w-full md:max-w-4xl md:mx-auto">
               <div className="hidden">
                 <TranscriptForm onLeadCreated={handleLeadCreated} language={language} />
                 <AudioUploadForm onLeadCreated={handleLeadCreated} language={language} />
@@ -715,7 +720,7 @@ export default function App() {
           height: 'calc(96px + env(safe-area-inset-bottom))',
           zIndex: 39,
           pointerEvents: 'none',
-          background: 'linear-gradient(to bottom, rgba(249,250,251,0) 0%, rgba(249,250,251,0.7) 50%, rgba(249,250,251,0.95) 100%)',
+          background: 'linear-gradient(to bottom, rgba(243,244,246,0) 0%, rgba(243,244,246,0.7) 50%, rgba(243,244,246,0.95) 100%)',
         }}
       />
 
@@ -849,23 +854,21 @@ export default function App() {
         />
       )}
 
-      {/* ── Bottom navigation — matches the Figma spec.
-           Outer container: light-gray fully-rounded pill (via .nav-pill).
-           Active tab: brand-green pill nested inside, with the icon + label
-           on tinted green text. Inactive tabs: quiet gray icon + label with
-           the tab body transparent. Admin keeps its violet identity. */}
+      {/* ── Bottom navigation — Figma spec.
+           WHITE fully-rounded container (hairline border + soft shadow).
+           Inactive tabs are bare gray icons. The active tab expands into a
+           sage-green pill with icon + title-case label side by side. */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex justify-center pointer-events-none"
            style={{
              paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)',
-             paddingLeft: '14px',
-             paddingRight: '14px',
+             paddingLeft: '16px',
+             paddingRight: '16px',
              paddingTop: '8px',
            }}>
-        <nav className="pointer-events-auto w-full max-w-sm nav-pill rounded-full flex items-stretch px-1.5 py-1.5">
-          {/* Admin lives in Settings, not the bottom nav. Six items is the layout
-               budget for the floating pill — adding a seventh squashes icons and
-               labels below readable size. Owners reach Admin via Settings → Admin
-               row (see SettingsModal). */}
+        {/* Figma "Nav bar": 358×54, white, 1px #ECECEC border, 2px padding */}
+        <nav className="pointer-events-auto w-full max-w-[358px] h-[54px] nav-pill rounded-full flex items-center justify-between px-1">
+          {/* Admin lives in Settings, not the bottom nav. Six items is the
+               layout budget — the expanding active pill needs the room. */}
           {BOTTOM_NAV_ICONS.map(item => {
             const isActive = item.id === 'leads'
               ? activeNav === 'leads' || activeNav === 'overview'
@@ -879,41 +882,38 @@ export default function App() {
               item.id === 'email'  ? remoteCounts.emails  :
               0;
 
-            // Admin keeps the violet identity so it's visually distinct
-            // from the default brand-green active state.
-            const isAdmin = item.id === 'admin';
-            const activeIconColor  = isAdmin ? 'text-status-vendor' : 'text-brand-800';
-            const activeLabelColor = isAdmin ? 'text-status-vendor' : 'text-brand-800';
-            const activeBg         = isAdmin ? 'bg-status-vendor/12' : 'bg-brand-100';
+            // Title-case label for the active pill ("Leads", not "LEADS")
+            const rawLabel = t[item.id] || item.id;
+            const label = rawLabel.charAt(0).toUpperCase() + rawLabel.slice(1);
 
             return (
               <button
                 key={item.id}
                 onClick={() => handleNavChange(item.id)}
-                className={`group flex-1 flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-full
-                  transition-all duration-200 ease-out active:scale-[0.94]
+                className={`relative flex items-center justify-center transition-all duration-200 ease-out active:scale-[0.94]
                   ${isActive
-                    ? `${activeIconColor} ${activeBg}`
-                    : 'text-ink-500 hover:text-ink-100'
+                    ? 'gap-2 h-[46px] px-5 rounded-full bg-[#D6E4DC] text-[#065F46]'
+                    : 'w-[46px] h-[46px] rounded-full text-[#344054]'
                   }`}
               >
-                <div className="relative">
+                <div className="relative shrink-0">
                   {item.icon(isActive)}
                   {badgeCount > 0 && (
                     <span
                       className="absolute -top-1.5 -right-2.5 min-w-[18px] h-[18px] px-1
-                                 bg-status-urgent text-white text-[10px] font-bold rounded-full
+                                 bg-[#F04438] text-white text-[10px] font-bold rounded-full
                                  flex items-center justify-center leading-none pointer-events-none
-                                 ring-2 ring-ink-800 tabular-nums"
+                                 ring-2 ring-white tabular-nums"
                     >
                       {badgeCount > 99 ? '99+' : badgeCount}
                     </span>
                   )}
                 </div>
-                <span className={`text-[10px] leading-none font-semibold tracking-wider transition-colors
-                  ${isActive ? activeLabelColor : 'text-ink-500 group-hover:text-ink-300'}`}>
-                  {(t[item.id] || item.id).toUpperCase()}
-                </span>
+                {isActive && (
+                  <span className="text-[15px] leading-none font-semibold whitespace-nowrap">
+                    {label}
+                  </span>
+                )}
               </button>
             );
           })}

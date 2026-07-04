@@ -22,9 +22,10 @@
   }
 
   body {
-    /* Near-white body — matches the Figma. Cards sit on top with a soft
-       colored halo (shadow-glow-*) providing all the state signaling. */
-    background-color: #f9fafb;                   /* ink-950 — near-white canvas */
+    /* Light-gray canvas per the Figma: the top bar and tab strip are white
+       surfaces sitting on top; the content area behind the cards is this
+       gray. Cards carry their own status halo (shadow-glow-*). */
+    background-color: #f3f4f6;
     color: #3a403e;                              /* ink-300 — default body text */
     font-feature-settings: "cv11", "ss01", "ss03"; /* tabular numerals + alt forms when supported */
     overscroll-behavior-y: none;                  /* no rubber-band on scroll */
@@ -56,15 +57,14 @@
     border: 1px solid rgba(15, 35, 25, 0.06);
   }
 
-  /* Solid pill container for the bottom nav — matches the Figma spec.
-     The nav is a fully-rounded light-gray pill floating above the content
-     with a soft drop shadow. Active-tab treatment is handled inline (a
-     nested brand-green pill). */
+  /* Bottom-nav container — Figma "Nav bar": white fill, 1px outline/low_em
+     border (#ECECEC), 358px wide × 54px tall, fully rounded. The active tab
+     renders its own sage-green pill inside; inactive tabs are bare icons. */
   .nav-pill {
-    background-color: #f3f4f6;                    /* ink-800 — same as tag pill bg */
-    border: 1px solid rgba(15, 35, 25, 0.04);
+    background-color: #ffffff;
+    border: 1px solid #ececec;
     box-shadow:
-      0 8px 24px rgba(15, 35, 25, 0.08),
-      0 2px 6px rgba(15, 35, 25, 0.04);
+      0 8px 24px rgba(16, 24, 40, 0.08),
+      0 2px 6px rgba(16, 24, 40, 0.04);
   }
 }

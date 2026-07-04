@@ -6,39 +6,21 @@ import { useInvalidate } from '../refreshBus';
 import { translations } from '../i18n';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LeadList — matches the approved Figma spec.
+// LeadList — approved Figma layout.
 //
-// Figma layout removes the previous wrapper card. The tabs sit directly on
-// the body surface with a single-pixel underline for the active state (no
-// pills), followed by a large section header ("Leads · 13 total"), then the
-// cards themselves floating on the near-white body with their own halos.
+// Structure (top → bottom):
+//   1. Tab strip  — full-bleed WHITE surface, active tab = near-black text
+//      with a thick black underline; inactive = gray. Hairline border under
+//      the whole strip separates it from the gray content area.
+//   2. Header row — "Leads" (26px bold) left, "13 total" plain gray right.
+//      Sits on the gray canvas.
+//   3. Cards     — stacked directly with even gaps. The Figma has NO date
+//      group headers on this screen (each card carries its own date).
+//
+// The component owns its horizontal padding because the tab strip must run
+// edge-to-edge while the content below keeps a 16px gutter — App.jsx renders
+// the Leads view without main-level padding for this reason.
 // ─────────────────────────────────────────────────────────────────────────────
-
-function getDateLabel(dateStr, t) {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterdayStart = new Date(todayStart);
-  yesterdayStart.setDate(todayStart.getDate() - 1);
-
-  if (date >= todayStart) return t.timeToday;
-  if (date >= yesterdayStart) return t.timeYesterday;
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-function groupLeadsByDate(leads, t) {
-  const groups = [];
-  const seen = new Map();
-  for (const lead of leads) {
-    const label = getDateLabel(lead.created_at, t);
-    if (!seen.has(label)) {
-      seen.set(label, groups.length);
-      groups.push({ label, leads: [] });
-    }
-    groups[seen.get(label)].leads.push(lead);
-  }
-  return groups;
-}
 
 export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved, contractorName, language, replyTranslation }) {
   const t = translations[language] || translations.en;
@@ -58,7 +40,6 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
   const [loadingArchived, setLoadingArchived] = useState(false);
   const invalidate = useInvalidate();
 
-  // Fetch archived leads when that tab is activated
   useEffect(() => {
     if (activeTab !== '__archived__') return;
     setLoadingArchived(true);
@@ -73,7 +54,7 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
     ? archivedLeads
     : leads.filter(l => (l.category || 'Lead') === activeTab);
 
-  // Unread counts for active (non-archived) tabs
+  // New-lead counts per category tab (badge shown only when > 0)
   const unreadCounts = TABS.reduce((acc, tab) => {
     if (tab.category === '__archived__') return acc;
     acc[tab.category] = leads.filter(
@@ -92,92 +73,82 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex flex-col">
-        <p className="text-sm text-ink-500 animate-pulse mt-8">{t.leadListLoading}</p>
-      </div>
-    );
-  }
-
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* ── Category tabs ────────────────────────────────────────────────
-           Directly on the body, no wrapper card. Active tab uses a black
-           underline; inactive tabs use quiet gray text. Horizontal scroll
-           on overflow keeps all six accessible on narrow screens. */}
-      <div className="flex items-center border-b border-ink-700 overflow-x-auto no-scrollbar">
-        {TABS.map(tab => {
-          const unread = unreadCounts[tab.category] || 0;
-          const isActive = activeTab === tab.category;
-          return (
-            <button
-              key={tab.category}
-              onClick={() => setActiveTab(tab.category)}
-              className={`flex items-center gap-1.5 px-4 py-3 text-sm whitespace-nowrap shrink-0 transition-colors
-                ${isActive
-                  ? 'font-semibold text-ink-50 border-b-2 border-ink-50 -mb-px'
-                  : 'font-normal text-ink-500 border-b-2 border-transparent hover:text-ink-100'
-                }`}
-            >
-              {tab.label}
-              {unread > 0 && (
-                <span className={`inline-flex items-center justify-center rounded-full text-[11px] font-bold min-w-[18px] h-[18px] px-1 leading-none tabular-nums
+
+      {/* ── Tab strip — full-bleed white, black underline for active ───── */}
+      <div className="bg-white border-b border-[#EAECF0]">
+        <div className="flex items-center overflow-x-auto no-scrollbar px-2">
+          {TABS.map(tab => {
+            const unread = unreadCounts[tab.category] || 0;
+            const isActive = activeTab === tab.category;
+            return (
+              <button
+                key={tab.category}
+                onClick={() => setActiveTab(tab.category)}
+                className={`relative flex items-center gap-1.5 px-4 py-3.5 text-[16px] whitespace-nowrap shrink-0 transition-colors
                   ${isActive
-                    ? 'bg-brand-800 text-white'
-                    : 'bg-ink-800 text-ink-500'}`}>
-                  {unread}
-                </span>
-              )}
-            </button>
-          );
-        })}
+                    ? 'font-semibold text-[#101828]'
+                    : 'font-normal text-[#667085]'
+                  }`}
+              >
+                {tab.label}
+                {unread > 0 && (
+                  <span className={`inline-flex items-center justify-center rounded-full text-[11px] font-bold min-w-[18px] h-[18px] px-1 leading-none tabular-nums
+                    ${isActive ? 'bg-[#065F46] text-white' : 'bg-[#F2F4F7] text-[#475467]'}`}>
+                    {unread}
+                  </span>
+                )}
+                {/* Active underline — thick black bar flush with the strip's
+                     bottom border, matching the Figma's tab treatment */}
+                {isActive && (
+                  <span className="absolute left-2 right-2 -bottom-px h-[3px] bg-[#101828] rounded-full" aria-hidden="true" />
+                )}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      {/* ── Section header — big "Leads" title + total count chip ────── */}
-      <div className="flex items-center justify-between px-1 pt-6 pb-4">
-        <h1 className="text-[26px] font-bold text-ink-50 tracking-tight leading-none">
+      {/* ── Header row — big title + plain total, on the gray canvas ───── */}
+      <div className="flex items-baseline justify-between px-4 pt-5 pb-4">
+        <h1 className="text-[26px] font-bold text-[#101828] tracking-tight leading-none">
           {TABS.find(t => t.category === activeTab)?.label}
         </h1>
-        <span className="text-[13px] text-ink-500 tabular-nums">
+        <span className="text-[16px] text-[#667085] tabular-nums">
           {filtered.length} {t.leadListTotal}
         </span>
       </div>
 
-      {/* ── Content ─────────────────────────────────────────────────── */}
-      {loadingArchived ? (
-        <p className="text-sm text-ink-500 animate-pulse text-center py-12">{t.leadListLoadingArchived}</p>
+      {/* ── Cards ──────────────────────────────────────────────────────── */}
+      {loading ? (
+        <p className="text-sm text-[#667085] animate-pulse text-center py-12">{t.leadListLoading}</p>
+      ) : loadingArchived ? (
+        <p className="text-sm text-[#667085] animate-pulse text-center py-12">{t.leadListLoadingArchived}</p>
       ) : filtered.length === 0 ? (
-        <p className="text-sm text-ink-500 text-center py-12">
+        <p className="text-sm text-[#667085] text-center py-12">
           {isArchivedTab ? t.leadListNoArchived : t.leadListNoneYet}
         </p>
       ) : (
-        <div className="flex-1 overflow-y-auto no-scrollbar">
-          {groupLeadsByDate(filtered, t).map(group => (
-            <div key={group.label}>
-              <p className="text-[11px] font-semibold text-ink-500 uppercase tracking-[0.08em] mt-6 mb-3 first:mt-0 px-1">
-                {group.label}
-              </p>
-              <div className="space-y-4">
-                {group.leads.map(lead => (
-                  <LeadCard
-                    key={lead.id}
-                    lead={lead}
-                    onLeadUpdated={onLeadUpdated}
-                    onLeadRemoved={isArchivedTab
-                      ? (id) => setArchivedLeads(prev => prev.filter(l => l.id !== id))
-                      : onLeadRemoved
-                    }
-                    contractorName={contractorName}
-                    onContactClick={setSelectedPhone}
-                    isArchived={isArchivedTab}
-                    language={language}
-                    replyTranslation={replyTranslation}
-                  />
-                ))}
-              </div>
-            </div>
-          ))}
+        <div className="flex-1 overflow-y-auto no-scrollbar px-4 pb-4">
+          <div className="space-y-6">
+            {filtered.map(lead => (
+              <LeadCard
+                key={lead.id}
+                lead={lead}
+                onLeadUpdated={onLeadUpdated}
+                onLeadRemoved={isArchivedTab
+                  ? (id) => setArchivedLeads(prev => prev.filter(l => l.id !== id))
+                  : onLeadRemoved
+                }
+                contractorName={contractorName}
+                onContactClick={setSelectedPhone}
+                isArchived={isArchivedTab}
+                language={language}
+                replyTranslation={replyTranslation}
+              />
+            ))}
+          </div>
         </div>
       )}
 

@@ -134,14 +134,17 @@ export default {
         'inset-soft':    'inset 0 1px 0 rgba(255,255,255,0.6)',
         'badge-glow':    '0 0 0 2px #ffffff, 0 0 12px rgba(220, 38, 38, 0.45)',
 
-        // State-glow halos — Figma spec: 0 0 11px 0 <status>@60%
-        'glow-new':       '0 0 11px 0 rgba(3, 152, 85, 0.6)',    // brand green
-        'glow-qualified': '0 0 11px 0 rgba(3, 152, 85, 0.6)',    // brand green (same as new)
-        'glow-contacted': '0 0 11px 0 rgba(217, 119, 6, 0.6)',   // amber
-        'glow-scheduled': '0 0 11px 0 rgba(217, 119, 6, 0.6)',   // amber (legacy alias)
-        'glow-overdue':   '0 0 11px 0 rgba(220, 38, 38, 0.6)',   // red
-        'glow-urgent':    '0 0 11px 0 rgba(220, 38, 38, 0.6)',   // red (legacy alias)
-        'glow-closed':    '0 0 11px 0 rgba(107, 114, 128, 0.35)',// muted gray
+        // State-glow halos — Figma spec: 0 0 11px 0 <status>@60%.
+        // Colors verified against the Figma status-variant frames:
+        //   NEW green, OVERDUE red, CONTACTED orange, QUALIFIED purple,
+        //   ARCHIVE/CLOSED no glow (faint gray fallback).
+        'glow-new':       '0 0 11px 0 rgba(3, 152, 85, 0.6)',    // #039855 — confirmed in dev panel
+        'glow-overdue':   '0 0 11px 0 rgba(240, 68, 56, 0.6)',   // #F04438
+        'glow-urgent':    '0 0 11px 0 rgba(240, 68, 56, 0.6)',   // legacy alias
+        'glow-contacted': '0 0 11px 0 rgba(247, 144, 9, 0.6)',   // #F79009
+        'glow-scheduled': '0 0 11px 0 rgba(247, 144, 9, 0.6)',   // legacy alias
+        'glow-qualified': '0 0 11px 0 rgba(122, 90, 248, 0.6)',  // #7A5AF8 — QUALIFIED is purple per Figma
+        'glow-closed':    '0 0 11px 0 rgba(152, 162, 179, 0.3)', // muted gray
       },
 
       // ── Border radius scale (slightly larger than default for premium feel) ─
