@@ -654,7 +654,7 @@ export default function App() {
         <main className={`flex-1 flex flex-col ${
           activeNav === 'text' || activeNav === 'email'
             ? 'overflow-hidden'
-            : isLeadsView
+            : (isLeadsView || activeNav === 'calls')
               ? 'overflow-auto pb-[calc(96px+env(safe-area-inset-bottom))] md:pb-6'
               : 'overflow-auto px-4 md:px-6 pt-6 pb-[calc(80px+env(safe-area-inset-bottom))] md:pb-6'
         }`}>

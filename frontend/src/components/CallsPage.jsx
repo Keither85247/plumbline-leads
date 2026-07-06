@@ -41,6 +41,71 @@ function formatDuration(seconds) {
   return m === 0 ? `${s}s` : `${m}m ${s}s`;
 }
 
+// Player-style duration — "1:15" per the Figma voicemail card (vs the
+// verbose "1m 15s" used on Recent rows).
+function formatClock(seconds) {
+  if (!seconds || !isFinite(seconds)) return null;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// Voicemail day-group label — Figma shows the short "May 23" form (unlike
+// Recent's weekday-first labels).
+function vmDayLabel(dateStr) {
+  return parseTimestamp(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function groupVmsByShortDay(items) {
+  const groups = [];
+  const seen = new Map();
+  for (const item of items) {
+    const label = vmDayLabel(item.created_at);
+    if (!seen.has(label)) { seen.set(label, groups.length); groups.push({ label, items: [] }); }
+    groups[seen.get(label)].items.push(item);
+  }
+  return groups;
+}
+
+// Voicemail avatar — 32×32 disc, white semibold initial, background color
+// hashed from the caller identity so the same caller always gets the same
+// hue (matches the comp's orange/blue/green variety).
+const VM_AVATAR_COLORS = ['#F79009', '#2E90FA', '#12B76A', '#7A5AF8', '#0D9488', '#F04438', '#DD2590'];
+
+function VmAvatar({ name, phone }) {
+  const key = (name && name !== 'Unknown' ? name : phone) || '?';
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  const bg = VM_AVATAR_COLORS[hash % VM_AVATAR_COLORS.length];
+  const initial = (name && name !== 'Unknown' ? name : phone || '?').trim().charAt(0).toUpperCase();
+  return (
+    <div
+      className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-white text-[13px] font-semibold"
+      style={{ backgroundColor: bg }}
+      aria-hidden="true"
+    >
+      {initial}
+    </div>
+  );
+}
+
+// Static decorative waveform — deterministic bar heights so it doesn't
+// shimmer on re-render. Purely visual (the audio element handles playback).
+function Waveform() {
+  const bars = [];
+  for (let i = 0; i < 36; i++) {
+    const h = 8 + Math.abs(Math.sin(i * 1.7) + 0.35 * Math.sin(i * 0.53)) * 20;
+    bars.push(
+      <span
+        key={i}
+        className="inline-block w-[2.5px] rounded-full bg-[#4B5563]"
+        style={{ height: `${Math.round(Math.min(32, Math.max(6, h)))}px` }}
+      />
+    );
+  }
+  return <div className="flex-1 h-9 flex items-center justify-between gap-[2px] min-w-0 overflow-hidden">{bars}</div>;
+}
+
 // Recency label used inline on each row's metadata line.
 //
 // The section header (Today / Yesterday / Saturday) already supplies the day,
@@ -334,18 +399,38 @@ function RecentRow({ call, t, expanded, onToggle, onOpenActions, onCallback, onJ
   );
 }
 
-// ─── Voicemail row ──────────────────────────────────────────────────────────
-// Richer than a Recent row: prominent play CTA + transcript-first hierarchy +
-// key-points pills. Tap anywhere to expand into the full transcript + recording.
+// ─── Voicemail card ─────────────────────────────────────────────────────────
+// Figma spec: standalone white card (radius 24, padding 12, content 334) with
+// NO status glow. The expanded card carries a thin green border and reveals a
+// custom player row (green play disc + static waveform + m:ss duration).
+// Collapsed cards show avatar + name/phone + time + a two-line quoted
+// transcript. Key-point pills are gone from this surface per the comp.
 
-function VoicemailRow({ vm, t, expanded, onToggle, onCallback, onOpenActions, highlighted }) {
-  const keyPoints = Array.isArray(vm.key_points) ? vm.key_points : [];
+function VoicemailRow({ vm, t, expanded, onToggle, onCallback, highlighted }) {
   const phone = vm.callback_number || vm.phone_number;
   const displayName = vm.contact_name && vm.contact_name !== 'Unknown' ? vm.contact_name : formatPhone(vm.phone_number);
-  const time = rowTime(vm.created_at);
+  const time = parseTimestamp(vm.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+  // Quote the raw transcript (falls back to the AI summary when the raw text
+  // isn't stored). The comp renders the caller's words in quotes.
+  const quote = vm.transcript || vm.raw_text || vm.summary || '';
+
+  const src = vm.recording_url ? recordingUrl(`${API_BASE}/leads/${vm.id}/voicemail`) : null;
+  const audioRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [clock, setClock]     = useState(null);
+
+  function togglePlay(e) {
+    e.stopPropagation();
+    const el = audioRef.current;
+    if (!el || !src) return;
+    if (playing) el.pause(); else el.play().catch(() => {});
+  }
 
   return (
     <SwipeableRow
+      className="rounded-3xl"
+      surfaceClass="bg-transparent"
       leftAction={{
         icon: <PhoneArrow direction="outbound" />,
         label: t.callsSwipeCallBack || 'Call back',
@@ -356,72 +441,67 @@ function VoicemailRow({ vm, t, expanded, onToggle, onCallback, onOpenActions, hi
       <div
         id={`vm-${vm.id}`}
         onClick={onToggle}
-        className={`flex flex-col gap-2 px-4 py-3 cursor-pointer transition-colors
-          ${highlighted ? 'bg-status-vendor/8' : 'hover:bg-ink-800/60 active:bg-ink-800'}`}
+        className={`bg-white rounded-3xl px-3 pt-3 pb-3 cursor-pointer shadow-card transition-colors
+          ${expanded ? 'border-[1.5px] border-[#065F46]' : 'border border-transparent'}
+          ${highlighted ? 'ring-2 ring-[#7A5AF8]/40' : ''}`}
       >
-        {/* Top row — play CTA + name + time */}
+        {/* Caller info — Figma: Fill 334 × 42, gap 12 */}
         <div className="flex items-center gap-3">
-          {/* Prominent play button — black pill (primary CTA per row) */}
-          <div className="shrink-0 w-10 h-10 rounded-full bg-ink-50 text-white flex items-center justify-center">
-            <svg className="w-4 h-4 ml-0.5" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          </div>
+          <VmAvatar name={vm.contact_name} phone={phone} />
           <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-sm font-semibold text-ink-50 truncate">{displayName}</p>
-              <span className="shrink-0 text-[11px] text-ink-400 tabular-nums whitespace-nowrap">{time}</span>
-            </div>
-            <p className="text-[11px] text-ink-400 truncate mt-0.5 tabular-nums">{formatPhone(phone)}</p>
+            <p className="text-[17px] font-bold text-[#101828] leading-tight truncate">{displayName}</p>
+            <p className="text-[14px] text-[#667085] tabular-nums leading-tight mt-0.5 truncate">
+              {formatPhone(phone)}
+            </p>
           </div>
+          <span className="shrink-0 text-[15px] text-[#667085] tabular-nums self-start">{time}</span>
         </div>
 
-        {/* Transcript preview — front-and-center, the thing you actually want to read */}
-        {vm.summary && (
-          <p className={`text-xs text-ink-300 leading-relaxed ${expanded ? '' : 'line-clamp-2'}`}>
-            {vm.summary}
+        {/* Quoted transcript */}
+        {quote && (
+          <p className={`mt-2.5 text-[15px] text-[#475467] leading-[1.45] ${expanded ? '' : 'line-clamp-2'}`}>
+            &ldquo;{quote}{expanded ? '”' : ''}
           </p>
         )}
 
-        {/* Key-points pills — quick context tags inline (no avatar/bullet noise) */}
-        {keyPoints.length > 0 && !expanded && (
-          <div className="flex flex-wrap gap-1.5">
-            {keyPoints.slice(0, 3).map((pt, i) => (
-              <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-ink-800 text-ink-300 ring-1 ring-ink-700">
-                {pt.length > 28 ? pt.slice(0, 26) + '…' : pt}
-              </span>
-            ))}
-            {keyPoints.length > 3 && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-ink-800 text-ink-400 ring-1 ring-ink-700">
-                +{keyPoints.length - 3}
-              </span>
+        {/* Player row — expanded only. Green disc + waveform + duration. */}
+        {expanded && (
+          <div className="mt-3 flex items-center gap-3">
+            <button
+              onClick={togglePlay}
+              disabled={!src}
+              className="shrink-0 w-11 h-11 rounded-full bg-[#065F46] text-white flex items-center justify-center
+                         active:opacity-85 transition-opacity disabled:opacity-40"
+              aria-label={playing ? 'Pause' : 'Play'}
+            >
+              {playing ? (
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="5" width="4" height="14" rx="1" />
+                  <rect x="14" y="5" width="4" height="14" rx="1" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4 ml-0.5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              )}
+            </button>
+            <Waveform />
+            <span className="shrink-0 text-[15px] text-[#667085] tabular-nums">
+              {clock || (src ? '·' : '—')}
+            </span>
+            {src && (
+              <audio
+                ref={audioRef}
+                preload="metadata"
+                src={src}
+                onLoadedMetadata={e => setClock(formatClock(e.target.duration))}
+                onPlay={() => setPlaying(true)}
+                onPause={() => setPlaying(false)}
+                onEnded={() => setPlaying(false)}
+                className="hidden"
+              />
             )}
           </div>
-        )}
-
-        {/* Expanded: full key points list + audio player */}
-        {expanded && keyPoints.length > 0 && (
-          <ul className="space-y-1 mt-1">
-            {keyPoints.map((pt, i) => (
-              <li key={i} className="text-xs text-ink-300 flex gap-1.5">
-                <span className="text-ink-500 shrink-0">•</span>
-                <span>{pt}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {expanded && vm.recording_url && (
-          <audio
-            controls
-            preload="metadata"
-            src={recordingUrl(`${API_BASE}/leads/${vm.id}/voicemail`)}
-            onClick={e => e.stopPropagation()}
-            className="w-full h-9 mt-1"
-            style={{ colorScheme: 'light' }}
-          >
-            {t.callsAudioNotSupported}
-          </audio>
         )}
       </div>
     </SwipeableRow>
@@ -571,46 +651,56 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
     [calls, t]
   );
   const vmGroups = useMemo(
-    () => groupByDay(voicemails, v => v.created_at, t),
-    [voicemails, t]
+    () => groupVmsByShortDay(voicemails),
+    [voicemails]
   );
 
-  // ── Tab strip — segmented control, near-black active ─────────────────────
+  // Figma shows the newest voicemail expanded (green border + player) by
+  // default; the rest collapsed. Runs once per voicemail-list load.
+  useEffect(() => {
+    if (voicemails.length > 0 && expandedVmId === null) {
+      setExpandedVmId(voicemails[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voicemails]);
+
+  // ── Tab strip — Figma: white full-bleed row, active tab in brand green
+  //    with a green underline; inactive tabs quiet gray. Mirrors the Leads
+  //    category-tab treatment but with the green accent this section owns.
   function TabStrip() {
     return (
-      <div className="bg-ink-800 rounded-full p-1 flex items-center mb-5">
-        {TABS.map(tab => {
-          const isActive = activeTab === tab.key;
-          return (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className={`flex-1 py-1.5 rounded-full text-xs font-semibold tracking-wide transition-all duration-150
-                ${isActive
-                  ? 'bg-ink-50 text-white shadow-sm'
-                  : 'text-ink-400 hover:text-ink-200'
-                }`}
-            >
-              {tab.label}
-            </button>
-          );
-        })}
+      <div className="bg-white border-b border-[#EAECF0]">
+        <div className="flex items-center">
+          {TABS.map(tab => {
+            const isActive = activeTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className={`relative flex-1 py-3.5 text-[16px] text-center whitespace-nowrap transition-colors
+                  ${isActive ? 'font-semibold text-[#065F46]' : 'font-normal text-[#667085]'}`}
+              >
+                {tab.label}
+                {isActive && (
+                  <span className="absolute left-4 right-4 -bottom-px h-[2.5px] bg-[#065F46] rounded-full" aria-hidden="true" />
+                )}
+              </button>
+            );
+          })}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className={`w-full mx-auto pt-2 ${activeTab === 'Dialer' ? 'max-w-xs' : 'max-w-lg'}`}>
+    <div className="w-full flex-1 flex flex-col min-h-0">
 
-      {/* Page title */}
-      <h1 className="text-xl font-bold text-ink-50 tracking-tight mb-4">{t.callsPageTitle}</h1>
-
-      {/* Segmented tabs */}
+      {/* Tabs — full-bleed white strip directly under the app top bar */}
       <TabStrip />
 
       {/* ── DIALER ─────────────────────────────────────────────────────────── */}
       {activeTab === 'Dialer' && (
-        <div className="flex flex-col items-center">
+        <div className="flex flex-col items-center max-w-xs w-full mx-auto px-4 pt-8">
           {/* Number display / call status */}
           <div className="relative w-full flex flex-col items-center justify-center mb-6 min-h-[56px]">
             {isConnected ? (
@@ -713,7 +803,7 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
 
       {/* ── RECENT ─────────────────────────────────────────────────────────── */}
       {activeTab === 'Recent' && (
-        <>
+        <div className="px-4 pt-4 md:max-w-lg md:mx-auto w-full">
           {loadingCalls && calls.length === 0 ? (
             <CallsSkeleton />
           ) : calls.length === 0 ? (
@@ -751,12 +841,25 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
               ))}
             </div>
           )}
-        </>
+        </div>
       )}
 
-      {/* ── VOICEMAIL ──────────────────────────────────────────────────────── */}
+      {/* ── VOICEMAIL — Figma layout ────────────────────────────────────────
+           "Voicemails · N total" header on the gray canvas, short-day labels
+           ("May 23") with a hairline rule, standalone white cards (gap 8)
+           with the newest expanded. */}
       {activeTab === 'Voicemail' && (
-        <>
+        <div className="px-4 md:max-w-lg md:mx-auto w-full">
+          {/* Header row — mirrors the Leads header treatment */}
+          <div className="flex items-baseline justify-between pt-5 pb-2">
+            <h1 className="text-[26px] font-bold text-[#101828] tracking-tight leading-none">
+              {t.callsVoicemailsTitle || 'Voicemails'}
+            </h1>
+            <span className="text-[15px] text-[#667085] tabular-nums">
+              {voicemails.length} {t.leadListTotal || 'total'}
+            </span>
+          </div>
+
           {loadingCalls && voicemails.length === 0 ? (
             <CallsSkeleton />
           ) : voicemails.length === 0 ? (
@@ -766,30 +869,32 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
               subtitle={t.callsNoVoicemailsHint || 'Missed calls with a voicemail will appear here.'}
             />
           ) : (
-            <div className="space-y-6 pb-24">
+            <div className="pb-24">
               {vmGroups.map(group => (
-                <GroupedListSection
-                  key={group.label}
-                  label={group.label}
-                  count={group.items.length}
-                >
-                  {group.items.map(vm => (
-                    <VoicemailRow
-                      key={vm.id}
-                      vm={vm}
-                      t={t}
-                      expanded={expandedVmId === vm.id}
-                      onToggle={() => setExpandedVmId(prev => prev === vm.id ? null : vm.id)}
-                      onCallback={handleCallback}
-                      onOpenActions={(phone) => setActionSheetPhone(phone)}
-                      highlighted={highlightedVmId === vm.id}
-                    />
-                  ))}
-                </GroupedListSection>
+                <div key={group.label}>
+                  {/* Day label — quiet "May 23" + hairline rule per comp */}
+                  <div className="flex items-center gap-3 pt-4 pb-2">
+                    <span className="text-[15px] text-[#667085] whitespace-nowrap">{group.label}</span>
+                    <div className="flex-1 h-px bg-[#E5E7EB]" />
+                  </div>
+                  <div className="space-y-2">
+                    {group.items.map(vm => (
+                      <VoicemailRow
+                        key={vm.id}
+                        vm={vm}
+                        t={t}
+                        expanded={expandedVmId === vm.id}
+                        onToggle={() => setExpandedVmId(prev => prev === vm.id ? null : vm.id)}
+                        onCallback={handleCallback}
+                        highlighted={highlightedVmId === vm.id}
+                      />
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           )}
-        </>
+        </div>
       )}
 
       {/* Floating dial CTA — visible on Recent / Voicemail, swaps the tab to
