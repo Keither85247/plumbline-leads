@@ -111,11 +111,11 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
       </div>
 
       {/* ── Header row — big title + plain total, on the gray canvas ───── */}
-      <div className="flex items-baseline justify-between px-4 pt-5 pb-4">
+      <div className="flex items-baseline justify-between px-4 pt-5 pb-2">
         <h1 className="text-[26px] font-bold text-[#101828] tracking-tight leading-none">
           {TABS.find(t => t.category === activeTab)?.label}
         </h1>
-        <span className="text-[16px] text-[#667085] tabular-nums">
+        <span className="text-[15px] text-[#667085] tabular-nums">
           {filtered.length} {t.leadListTotal}
         </span>
       </div>
@@ -130,7 +130,9 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
           {isArchivedTab ? t.leadListNoArchived : t.leadListNoneYet}
         </p>
       ) : (
-        <div className="flex-1 overflow-y-auto no-scrollbar px-4 pb-4">
+        // pt-3 keeps the first card's 11px glow halo inside the scroll clip
+        // box — without it the top of the halo gets sheared off.
+        <div className="flex-1 overflow-y-auto no-scrollbar px-4 pt-3 pb-6">
           <div className="space-y-6">
             {filtered.map(lead => (
               <LeadCard

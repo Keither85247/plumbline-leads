@@ -49,7 +49,10 @@ const STATUSES = ['New', 'Contacted', 'Qualified', 'Closed'];
 // Follow-up preview truncation. The Figma shows the body cut mid-word with an
 // inline "… Read more" link, which a CSS line-clamp can't do (the link would
 // get clipped with the text). Character-based truncation matches the comp.
-const FOLLOWUP_PREVIEW_CHARS = 90;
+// 72 chars ≈ two lines at 14px inside the panel's ~294px text column, leaving
+// room for the inline "… Read more" on line two (matching the Figma's
+// two-line preview exactly).
+const FOLLOWUP_PREVIEW_CHARS = 72;
 
 function getUrgency(createdAt, status) {
   if (status !== 'New') return null;
@@ -170,10 +173,13 @@ function ChevronDown({ className = 'w-4 h-4' }) {
   );
 }
 
-function PencilIcon({ className = 'w-[18px] h-[18px]' }) {
+function PencilIcon({ className = 'w-4 h-4' }) {
+  // Clean pen-with-underline glyph (feather "edit-3" shape). The previous
+  // hand-rolled path rendered as an unreadable squiggle at 16px.
   return (
-    <svg className={className} fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24" aria-hidden="true">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 11l10-10 4 4-10 10H9v-4z" />
+    <svg className={className} fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 20h9" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
     </svg>
   );
 }
@@ -354,13 +360,17 @@ export default function LeadCard({
 
   return (
     <div className={`w-full bg-white rounded-3xl ${glow} transition-shadow duration-200`}>
-      <div className="px-5 pt-[18px] pb-5">
+      <div className="px-4 pt-4 pb-4">
 
-        {/* ── Title row: name · status pill · phone · kebab ─────────────── */}
-        <div className="flex items-center gap-2.5">
+        {/* ── Title row: name · status pill · phone · kebab ───────────────
+             The name is the only shrinkable element; the fixed elements are
+             kept tight (13px phone, compact pill, slim kebab) so the natural
+             flex squeeze still leaves ~100px of readable name width even
+             with the widest pill (CONTACTED) + a full US phone number. */}
+        <div className="flex items-center gap-1.5">
           <button
             onClick={() => onContactClick && onContactClick(normalizePhone(primaryPhone))}
-            className="font-bold text-[18px] leading-tight text-[#101828] truncate tracking-tight text-left shrink min-w-0"
+            className="font-bold text-[17px] leading-tight text-[#101828] truncate tracking-tight text-left shrink min-w-0"
           >
             {lead.contact_name}
           </button>
@@ -371,11 +381,11 @@ export default function LeadCard({
               type="button"
               onClick={() => !isArchived && setStatusMenuOpen(o => !o)}
               disabled={updating || isArchived}
-              className={`inline-flex items-center gap-1.5 pl-2.5 pr-3 h-[26px] rounded-full ${pill.cls}
-                          text-[12px] font-semibold tracking-wide uppercase
+              className={`inline-flex items-center gap-1 px-2 h-6 rounded-full ${pill.cls}
+                          text-[11px] font-semibold tracking-wide uppercase
                           ${!isArchived ? 'cursor-pointer active:opacity-80' : ''} disabled:opacity-70`}
             >
-              <span className={`w-2 h-2 rounded-full ${pill.dot}`} aria-hidden="true" />
+              <span className={`w-1.5 h-1.5 rounded-full ${pill.dot}`} aria-hidden="true" />
               <span>{pill.label}</span>
             </button>
 
@@ -401,7 +411,7 @@ export default function LeadCard({
           {primaryPhone && (
             <button
               onClick={() => setActionSheetPhone(primaryPhone)}
-              className="text-[15px] font-medium text-accent-500 tabular-nums whitespace-nowrap shrink-0"
+              className="text-[13px] font-medium text-accent-500 tabular-nums whitespace-nowrap shrink-0"
             >
               {primaryPhone}
             </button>
@@ -411,7 +421,7 @@ export default function LeadCard({
             <button
               onClick={() => setMenuOpen(o => !o)}
               disabled={updating}
-              className="p-1 -mr-1 text-[#98A2B3] hover:text-[#344054] transition-colors disabled:cursor-wait"
+              className="p-0.5 -mr-1 text-[#98A2B3] hover:text-[#344054] transition-colors disabled:cursor-wait"
               aria-label="More options"
             >
               <KebabIcon />
@@ -445,11 +455,11 @@ export default function LeadCard({
         </div>
 
         {/* ── Date ───────────────────────────────────────────────────────── */}
-        <p className="mt-1.5 text-[15px] text-[#667085]">{formattedDate}</p>
+        <p className="mt-1 text-[14px] text-[#667085]">{formattedDate}</p>
 
         {/* ── Key-point chips ───────────────────────────────────────────── */}
         {tags.length > 0 && (
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             {tags.map((tag, i) => <Chip key={i} text={tag} />)}
           </div>
         )}
@@ -459,11 +469,11 @@ export default function LeadCard({
           <>
             <button
               onClick={() => setDescExpanded(v => !v)}
-              className="mt-3.5 inline-flex items-center gap-1 text-[15px] text-[#475467] font-medium"
+              className="mt-3 inline-flex items-center gap-1 text-[14px] text-[#475467] font-medium"
             >
               {t.leadMoreDetails || 'More details'}
               <span className={`transition-transform text-[#667085] ${descExpanded ? 'rotate-180' : ''}`}>
-                <ChevronDown />
+                <ChevronDown className="w-3.5 h-3.5" />
               </span>
             </button>
             {descExpanded && (
@@ -491,8 +501,8 @@ export default function LeadCard({
 
         {/* ── Suggested follow-up panel — gray bg, blue heading ─────────── */}
         {baseFollowUp && !isArchived && (
-          <div className="mt-4 rounded-2xl bg-[#F3F4F6] px-4 pt-3.5 pb-4">
-            <p className="text-[16px] font-medium text-accent-500">
+          <div className="mt-3 rounded-xl bg-[#F3F4F6] px-3.5 pt-3 pb-3.5">
+            <p className="text-[15px] font-medium text-accent-500">
               {t.leadSuggestedFollowup || 'Suggested follow-up'}
             </p>
 
@@ -505,7 +515,7 @@ export default function LeadCard({
                            focus:outline-none focus:ring-2 focus:ring-accent-500 resize-none bg-white"
               />
             ) : (
-              <p className="mt-1.5 text-[15px] text-[#475467] leading-[1.5]">
+              <p className="mt-1 text-[14px] text-[#475467] leading-[1.45]">
                 {previewText}
                 {needsTruncate && (
                   <>
@@ -554,28 +564,28 @@ export default function LeadCard({
             )}
 
             {/* Actions row — dark underlined link left · pencil disc + Send right */}
-            <div className="mt-3.5 flex items-center justify-between gap-3">
+            <div className="mt-3 flex items-center justify-between gap-2">
               {rawText ? (
                 <button
                   onClick={() => setShowRaw(p => !p)}
-                  className="text-[15px] font-medium text-[#101828] underline underline-offset-[3px] decoration-[#101828]"
+                  className="text-[14px] font-medium text-[#101828] underline underline-offset-[3px] decoration-[#101828]"
                 >
                   {showRaw ? (t.leadHideOriginal || 'Hide original message') : (t.leadViewOriginal || 'View original message')}
                 </button>
               ) : <span />}
 
-              <div className="flex items-center gap-2.5 shrink-0">
+              <div className="flex items-center gap-2 shrink-0">
                 {editingFollowUp ? (
                   <button
                     onClick={() => setEditingFollowUp(false)}
-                    className="text-[15px] font-medium text-accent-500"
+                    className="text-[14px] font-medium text-accent-500"
                   >
                     {t.leadFollowupDone || 'Done'}
                   </button>
                 ) : (
                   <button
                     onClick={handleEditClick}
-                    className="w-10 h-10 rounded-full bg-[#DCEAE2] text-[#065F46] flex items-center justify-center active:opacity-80 transition-opacity"
+                    className="w-9 h-9 rounded-full bg-[#DCEAE2] text-[#065F46] flex items-center justify-center active:opacity-80 transition-opacity"
                     aria-label={t.leadFollowupEdit || 'Edit'}
                   >
                     <PencilIcon />
@@ -584,7 +594,7 @@ export default function LeadCard({
                 <button
                   onClick={handleSend}
                   disabled={isSending || hasSent}
-                  className={`h-9 px-[18px] rounded-full text-[15px] font-semibold transition-colors
+                  className={`h-9 px-4 rounded-full text-[14px] font-semibold transition-colors
                               ${hasSent
                                 ? 'bg-[#D0D5DD] text-white cursor-not-allowed'
                                 : 'bg-[#065F46] active:bg-[#054C38] text-white disabled:opacity-60'}`}
