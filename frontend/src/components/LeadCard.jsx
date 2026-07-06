@@ -174,12 +174,12 @@ function ChevronDown({ className = 'w-4 h-4' }) {
 }
 
 function PencilIcon({ className = 'w-4 h-4' }) {
-  // Clean pen-with-underline glyph (feather "edit-3" shape). The previous
-  // hand-rolled path rendered as an unreadable squiggle at 16px.
+  // Figma spec: icon "edit-04" — a pen with a WAVY underline (not straight).
+  // The wave is two gentle humps sitting under the pen's lower half.
   return (
     <svg className={className} fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24" aria-hidden="true">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 20h9" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4.5 1 1-4.5L16.5 3.5z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M11.5 20.6c1.4-1.2 2.8-1.2 4.2 0s2.8 1.2 4.2 0" />
     </svg>
   );
 }
