@@ -1,33 +1,62 @@
 // Single row in the conversation list. The outer element is a `role="button"`
 // div (not a real <button>) so we can nest the per-row overflow-menu button
 // inside it without producing invalid HTML.
+//
+// Figma spec (Message row): Fill 342 × 46 Hug · gap 16 · avatar 32×32 vivid
+// disc with white initials · name 17 bold · time "5 min" 15 gray · preview
+// 15 gray · unread badge 20×20, 1px #065F46 border on #ECFDF3, green count.
 import { useEffect, useRef, useState } from 'react';
 import { parseTimestamp } from '../../utils/phone';
 import { translations } from '../../i18n';
 import SwipeableRow from '../ui/SwipeableRow';
-import Avatar from '../ui/Avatar';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+// Comp shows "5 min" style relative times on rows.
 function formatTimestamp(iso) {
   if (!iso) return '';
   const lang = localStorage.getItem('language') || 'en';
   const t = translations[lang] || translations.en;
   const date = parseTimestamp(iso);
   const now = new Date();
-  const diffMs = now - date;
-  const diffMins = Math.floor(diffMs / 60000);
+  const diffMins = Math.floor((now - date) / 60000);
   if (diffMins < 1)  return t.timeJustNow;
-  if (diffMins < 60) return `${diffMins}m`;
+  if (diffMins < 60) return `${diffMins} min`;
   const diffHours = Math.floor(diffMins / 60);
   if (diffHours < 24) return `${diffHours}h`;
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const yestStart  = new Date(todayStart); yestStart.setDate(todayStart.getDate() - 1);
   if (date >= yestStart) return t.timeYesterday;
-  if (diffHours < 24 * 7) {
-    return date.toLocaleDateString(lang === 'es' ? 'es-MX' : 'en-US', { weekday: 'short' });
-  }
   return date.toLocaleDateString(lang === 'es' ? 'es-MX' : 'en-US', { month: 'short', day: 'numeric' });
+}
+
+// Vivid identity disc — same palette + hash as the Voicemail avatars so a
+// caller keeps one color across surfaces.
+const AVATAR_COLORS = ['#F79009', '#2E90FA', '#12B76A', '#7A5AF8', '#0D9488', '#F04438', '#DD2590'];
+
+function initialsOf(name, phone) {
+  const src = (name && name !== phone ? name : '').trim();
+  if (!src) return (phone || '?').replace(/\D/g, '').slice(-2) || '?';
+  const parts = src.split(/\s+/);
+  return (parts.length === 1
+    ? parts[0].charAt(0)
+    : parts[0].charAt(0) + parts[parts.length - 1].charAt(0)
+  ).toUpperCase();
+}
+
+function HashAvatar({ name, phone }) {
+  const key = (name && name !== phone ? name : phone) || '?';
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return (
+    <div
+      className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-white text-[13px] font-semibold"
+      style={{ backgroundColor: AVATAR_COLORS[hash % AVATAR_COLORS.length] }}
+      aria-hidden="true"
+    >
+      {initialsOf(name, phone)}
+    </div>
+  );
 }
 
 // ─── Icons ──────────────────────────────────────────────────────────────────
@@ -57,18 +86,16 @@ export default function ConversationItem({
 }) {
   const lang = localStorage.getItem('language') || 'en';
   const t = translations[lang] || translations.en;
-  const { name, phone, lastMessage, lastMessageDir, timestamp, unread } = conversation;
+  const { name, phone, lastMessage, timestamp, unread } = conversation;
   const hasUnread = unread > 0;
 
-  // CRM enrichment — derive everything the row knows from the lead overlay.
-  const category   = lead?.category || 'Lead';
+  // AI-draft indicator — a queued suggested reply on the matching New lead.
   const hasAIDraft = !!(lead?.follow_up_text && lead.status === 'New');
 
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
   const triggerRef = useRef(null);
 
-  // Close the dropdown on outside click or Escape (unchanged from previous version).
   useEffect(() => {
     if (!menuOpen) return;
     function handleOutside(e) {
@@ -104,9 +131,6 @@ export default function ConversationItem({
     onDelete?.(conversation);
   }
 
-  // Swipe-right callback — only enabled when we have a voice device that
-  // can actually make calls. Otherwise the swipe is a no-op (still scrolls
-  // visually but doesn't trigger anything misleading).
   const canCall = !!(voiceDevice?.makeCall && voiceDevice?.status !== 'connected' && voiceDevice?.status !== 'dialing');
   const handleSwipeCall = () => {
     if (!canCall) return;
@@ -135,61 +159,41 @@ export default function ConversationItem({
         onClick={onClick}
         onKeyDown={handleRowKey}
         className={`
-          relative w-full text-left px-4 py-3 flex items-start gap-3
+          relative w-full text-left pl-2.5 pr-2 py-[9px] flex items-center gap-4
           transition-colors duration-100 outline-none cursor-pointer
-          ${selected
-            ? 'bg-ink-800'
-            : hasUnread
-              ? 'bg-ink-800/40 hover:bg-ink-800/60 active:bg-ink-800'
-              : 'hover:bg-ink-800/40 active:bg-ink-800/60'
-          }
+          ${selected ? 'bg-[#F3F4F6]' : 'active:bg-[#F7F8F9]'}
         `}
       >
-        {/* Unread accent rail — left edge. The 2px ink-50 bar is THE
-             visual signal that this conversation has new content. Combined
-             with the bolded name and subtle row tint above, it's hard to
-             miss in a scan. */}
-        {hasUnread && !selected && (
-          <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r-full bg-ink-50" aria-hidden="true" />
-        )}
+        <HashAvatar name={name} phone={phone} />
 
-        {/* Avatar — tinted by the matched lead's category when we have one */}
-        <Avatar name={name || phone} category={category} size="md" />
-
-        {/* Content */}
-        <div className="flex-1 min-w-0 pr-7">
-          <div className="flex items-baseline justify-between gap-2 mb-0.5">
-            <span className={`text-sm leading-snug truncate
-              ${hasUnread ? 'font-bold text-ink-50' : selected ? 'font-semibold text-ink-50' : 'font-medium text-ink-100'}`}>
+        {/* Content — two stacked lines per the comp */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-[17px] leading-tight font-bold text-[#101828] truncate">
               {name || phone}
             </span>
-            <span className="shrink-0 text-[11px] text-ink-400 leading-none tabular-nums">
+            <span className="shrink-0 text-[15px] text-[#667085] leading-none tabular-nums pr-6">
               {formatTimestamp(timestamp)}
             </span>
           </div>
 
-          <div className="flex items-center justify-between gap-2">
-            <p className={`text-xs truncate leading-snug
-              ${hasUnread ? 'text-ink-200 font-medium' : 'text-ink-400'}`}>
-              {lastMessageDir === 'outbound' && (
-                <span className="text-ink-500 mr-0.5">↑</span>
-              )}
+          <div className="flex items-center justify-between gap-2 mt-1">
+            <p className="text-[15px] truncate leading-snug text-[#667085]">
               {lastMessage}
             </p>
             <div className="flex items-center gap-1.5 shrink-0">
-              {/* AI draft chip — only shown when a follow-up text is queued
-                   on the matching lead AND the lead is still New (i.e. the
-                   suggested reply hasn't been used yet). */}
               {hasAIDraft && !hasUnread && (
                 <span
-                  className="text-[10px] font-semibold tracking-wide px-1.5 py-0.5 rounded-full bg-status-vendor/12 text-status-vendor ring-1 ring-status-vendor/25 whitespace-nowrap"
+                  className="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-[#ECFDF3] text-[#065F46] border border-[#065F46]/30 whitespace-nowrap"
                   title={t.inboxAIDraftTooltip || 'AI reply ready'}
                 >
-                  ✨ {t.inboxAIDraft || 'Draft'}
+                  {t.inboxAIDraft || 'Draft'}
                 </span>
               )}
+              {/* Unread badge — Figma: 20×20, radius-full, 1px #065F46 border
+                   on #ECFDF3, green count */}
               {hasUnread && (
-                <span className="shrink-0 min-w-[18px] h-[18px] px-1 bg-ink-50 text-white rounded-full text-[10px] font-bold flex items-center justify-center leading-none tabular-nums">
+                <span className="shrink-0 w-5 h-5 bg-[#ECFDF3] border border-[#065F46] text-[#065F46] rounded-full text-[12px] font-semibold flex items-center justify-center leading-none tabular-nums">
                   {unread > 9 ? '9+' : unread}
                 </span>
               )}
@@ -197,9 +201,7 @@ export default function ConversationItem({
           </div>
         </div>
 
-        {/* Overflow menu trigger — pr-7 above prevents overlap with the
-             rightmost timestamp/preview. Hover-revealed on desktop, always
-             visible (small) on mobile — mobile users also have swipe-delete. */}
+        {/* Overflow menu trigger — sits to the right of the time, per comp */}
         <button
           ref={triggerRef}
           type="button"
@@ -207,14 +209,13 @@ export default function ConversationItem({
           aria-label={t.inboxConvOptions || 'Conversation options'}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
-          className="absolute top-2.5 right-2 w-6 h-6 rounded-md flex items-center justify-center text-ink-400 hover:text-ink-100 hover:bg-black/[0.04] focus:outline-none focus:ring-2 focus:ring-ink-50 transition-colors"
+          className="absolute top-2 right-0.5 w-6 h-6 rounded-md flex items-center justify-center text-[#98A2B3] hover:text-[#344054] focus:outline-none focus:ring-2 focus:ring-[#065F46]/40 transition-colors"
         >
           <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
             <path d="M10 6a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm0 5.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm0 5.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3z" />
           </svg>
         </button>
 
-        {/* Dropdown menu */}
         {menuOpen && (
           <div
             ref={menuRef}

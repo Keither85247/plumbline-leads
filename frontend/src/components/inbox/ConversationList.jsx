@@ -1,6 +1,5 @@
 import { useState, useMemo } from 'react';
 import ConversationItem from './ConversationItem';
-import GroupedListSection from '../ui/GroupedListSection';
 import FloatingActionButton from '../ui/FloatingActionButton';
 import EmptyState from '../ui/EmptyState';
 import { translations } from '../../i18n';
@@ -24,49 +23,30 @@ function PencilIcon({ className = 'w-4 h-4' }) {
   );
 }
 
-// Conversation buckets matched to messaging-app vocabulary. Granularity
-// stops at "Earlier" because past a couple weeks the exact day matters less
-// than "old vs new" — the timestamp on the row covers precision.
-function bucketLabel(iso, t) {
+// Day buckets per the Figma comp: "Today", "Yesterday", then short dates
+// ("May 23") for anything older — the same vocabulary the Voicemail list
+// uses. The conversation list arrives newest-first, so preserving encounter
+// order keeps the groups sorted without an explicit pass.
+function bucketLabel(iso, t, lang) {
   if (!iso) return t.timeOlder || 'Earlier';
   const date = parseTimestamp(iso);
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const yestStart  = new Date(todayStart); yestStart.setDate(todayStart.getDate() - 1);
-  const weekStart  = new Date(todayStart); weekStart.setDate(todayStart.getDate() - 7);
   if (date >= todayStart) return t.timeToday;
   if (date >= yestStart)  return t.timeYesterday;
-  if (date >= weekStart)  return t.timeThisWeek || 'This week';
-  return t.timeOlder || 'Earlier';
+  return date.toLocaleDateString(lang === 'es' ? 'es-MX' : 'en-US', { month: 'short', day: 'numeric' });
 }
 
-// Groups conversations into ordered date buckets. Stable order:
-// Today → Yesterday → This week → Earlier.
-const BUCKET_ORDER = ['Today', 'Yesterday', 'This week', 'Earlier'];
-
-function bucketConversations(conversations, t) {
-  const map = new Map();
+function bucketConversations(conversations, t, lang) {
+  const groups = [];
+  const seen = new Map();
   for (const conv of conversations) {
-    const label = bucketLabel(conv.timestamp, t);
-    if (!map.has(label)) map.set(label, []);
-    map.get(label).push(conv);
+    const label = bucketLabel(conv.timestamp, t, lang);
+    if (!seen.has(label)) { seen.set(label, groups.length); groups.push({ label, items: [] }); }
+    groups[seen.get(label)].items.push(conv);
   }
-  // Resolve to the localized labels for stable ordering. We sort by the
-  // canonical English label order, then re-emit in the user's language so
-  // ordering is consistent across locales.
-  const englishOf = {
-    [t.timeToday]:     'Today',
-    [t.timeYesterday]: 'Yesterday',
-    [t.timeThisWeek || 'This week']: 'This week',
-    [t.timeOlder    || 'Earlier']:   'Earlier',
-  };
-  const ordered = [];
-  for (const en of BUCKET_ORDER) {
-    for (const [label, items] of map.entries()) {
-      if (englishOf[label] === en) ordered.push({ label, items });
-    }
-  }
-  return ordered;
+  return groups;
 }
 
 // ─── Skeleton ───────────────────────────────────────────────────────────────
@@ -152,40 +132,42 @@ export default function ConversationList({
     : conversations;
 
   const unreadCount = conversations.reduce((n, c) => n + (c.unread || 0), 0);
-  const groups = bucketConversations(filtered, t);
+  const groups = bucketConversations(filtered, t, lang);
 
   return (
-    <div className="flex flex-col h-full bg-ink-950">
+    <div className="flex flex-col h-full bg-[#F3F4F6]">
 
-      {/* Header — proper Inbox identity. The h1 + unread chip gives the
-           page somewhere to anchor while the list loads or is empty,
-           replacing the old sterile bg-white parent. */}
-      <div className="shrink-0 px-4 pt-4 pb-3">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-baseline gap-2">
-            <h1 className="text-xl font-bold text-ink-50 tracking-tight">{t.inboxTitle}</h1>
+      {/* Header — Figma: "Inbox" 26px bold + green outlined unread badge,
+           "N total" plain gray on the right. */}
+      <div className="shrink-0 px-4 pt-5 pb-3">
+        <div className="flex items-center justify-between mb-3.5">
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-[26px] font-bold text-[#101828] tracking-tight leading-none">{t.inboxTitle}</h1>
             {unreadCount > 0 && (
-              <span className="text-xs font-bold tabular-nums text-white bg-ink-50 rounded-full min-w-[20px] h-5 px-1.5 inline-flex items-center justify-center">
+              <span className="w-[26px] h-[26px] bg-[#ECFDF3] border border-[#065F46] text-[#065F46] rounded-full text-[13px] font-semibold tabular-nums inline-flex items-center justify-center">
                 {unreadCount > 99 ? '99+' : unreadCount}
               </span>
             )}
           </div>
-          {/* Desktop compose — visible only on md+. Mobile gets the FAB
-               below. The two cover their respective ergonomics without
-               doubling up on the same surface. */}
-          <button
-            onClick={onCompose}
-            className="hidden md:inline-flex items-center gap-1.5 bg-ink-50 text-white text-xs font-semibold rounded-full px-3 py-1.5 hover:bg-ink-100 active:scale-[0.97] transition-all"
-            aria-label={t.inboxComposeAria || 'New conversation'}
-          >
-            <PencilIcon className="w-3.5 h-3.5" />
-            {t.inboxCompose || 'New'}
-          </button>
+          <div className="flex items-center gap-3">
+            <span className="text-[15px] text-[#667085] tabular-nums">
+              {conversations.length} {t.leadListTotal || 'total'}
+            </span>
+            {/* Desktop compose — mobile uses the FAB below */}
+            <button
+              onClick={onCompose}
+              className="hidden md:inline-flex items-center gap-1.5 bg-[#065F46] text-white text-xs font-semibold rounded-full px-3 py-1.5 active:scale-[0.97] transition-all"
+              aria-label={t.inboxComposeAria || 'New conversation'}
+            >
+              <PencilIcon className="w-3.5 h-3.5" />
+              {t.inboxCompose || 'New'}
+            </button>
+          </div>
         </div>
 
-        {/* Search — leading icon, soft inset feel, near-black focus ring */}
+        {/* Search — Figma: white full-radius pill, magnifier, quiet placeholder */}
         <div className="relative">
-          <div className="pointer-events-none absolute inset-y-0 left-3.5 flex items-center">
+          <div className="pointer-events-none absolute inset-y-0 left-5 flex items-center">
             <SearchIcon />
           </div>
           <input
@@ -193,13 +175,13 @@ export default function ConversationList({
             value={query}
             onChange={e => setQuery(e.target.value)}
             placeholder={t.inboxSearchPH}
-            className="w-full bg-ink-900 ring-1 ring-ink-700 rounded-xl pl-10 pr-9 py-2.5 text-sm text-ink-100 placeholder-ink-400 focus:outline-none focus:ring-2 focus:ring-ink-50 transition-all"
+            className="w-full bg-white rounded-full h-[52px] pl-12 pr-11 text-[16px] text-[#101828] placeholder-[#98A2B3] focus:outline-none focus:ring-2 focus:ring-[#065F46]/30 transition-shadow"
           />
           {query && (
             <button
               type="button"
               onClick={() => setQuery('')}
-              className="absolute inset-y-0 right-3 my-auto text-ink-400 hover:text-ink-100 transition-colors"
+              className="absolute inset-y-0 right-4 my-auto text-[#98A2B3] hover:text-[#344054] transition-colors"
               aria-label="Clear search"
             >
               <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
@@ -230,29 +212,36 @@ export default function ConversationList({
             } : undefined}
           />
         ) : (
-          <div className="space-y-6 px-4 pt-2">
+          <div className="px-4">
             {groups.map(group => (
-              <GroupedListSection
-                key={group.label}
-                label={group.label}
-                count={group.items.length}
-              >
-                {group.items.map(conv => {
-                  const norm = normalizePhone(conv.phone) || conv.phone;
-                  const lead = leadByPhone.get(norm);
-                  return (
-                    <ConversationItem
-                      key={conv.id}
-                      conversation={conv}
-                      lead={lead}
-                      voiceDevice={voiceDevice}
-                      selected={conv.id === selectedId}
-                      onClick={() => onSelect(conv.id)}
-                      onDelete={onDelete}
-                    />
-                  );
-                })}
-              </GroupedListSection>
+              <div key={group.label}>
+                {/* Day label — quiet "Today" / "May 23" + hairline, matching
+                     the Voicemail groups */}
+                <div className="flex items-center gap-3 pt-3 pb-2">
+                  <span className="text-[15px] text-[#667085] whitespace-nowrap">{group.label}</span>
+                  <div className="flex-1 h-px bg-[#E5E7EB]" />
+                </div>
+                {/* One white rounded card per day, rows divided by hairlines */}
+                <div className="bg-white rounded-3xl overflow-hidden px-2 py-1">
+                  {group.items.map((conv, idx) => {
+                    const norm = normalizePhone(conv.phone) || conv.phone;
+                    const lead = leadByPhone.get(norm);
+                    return (
+                      <div key={conv.id}>
+                        {idx > 0 && <div className="h-px bg-[#F2F4F5] mx-2" />}
+                        <ConversationItem
+                          conversation={conv}
+                          lead={lead}
+                          voiceDevice={voiceDevice}
+                          selected={conv.id === selectedId}
+                          onClick={() => onSelect(conv.id)}
+                          onDelete={onDelete}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             ))}
           </div>
         )}

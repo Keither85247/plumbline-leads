@@ -408,7 +408,7 @@ export const translations = {
 
     // Inbox — ConversationList
     inboxTitle:           'Inbox',
-    inboxSearchPH:        'Search conversations…',
+    inboxSearchPH:        'search here...',
     inboxNoResults:       'No results.',
     inboxNoConversations: 'No conversations yet.',
 
