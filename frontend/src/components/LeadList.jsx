@@ -111,7 +111,7 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
       </div>
 
       {/* ── Header row — big title + plain total, on the gray canvas ───── */}
-      <div className="flex items-baseline justify-between px-4 pt-5 pb-2">
+      <div className="flex items-baseline justify-between px-4 pt-5 pb-0">
         <h1 className="text-[26px] font-bold text-[#101828] tracking-tight leading-none">
           {TABS.find(t => t.category === activeTab)?.label}
         </h1>
@@ -130,10 +130,12 @@ export default function LeadList({ leads, loading, onLeadUpdated, onLeadRemoved,
           {isArchivedTab ? t.leadListNoArchived : t.leadListNoneYet}
         </p>
       ) : (
-        // pt-3 keeps the first card's 11px glow halo inside the scroll clip
-        // box — without it the top of the halo gets sheared off.
-        <div className="flex-1 overflow-y-auto no-scrollbar px-4 pt-3 pb-6">
-          <div className="space-y-6">
+        // Figma content frame: Gap 8 between cards. pt-[11px] keeps the first
+        // card's 11px glow halo inside the scroll clip box (browsers clip
+        // shadows at the scroll edge; Figma doesn't) — 3px over the comp's
+        // 8px header gap, the minimum that doesn't shear the halo.
+        <div className="flex-1 overflow-y-auto no-scrollbar px-4 pt-[11px] pb-6">
+          <div className="space-y-2">
             {filtered.map(lead => (
               <LeadCard
                 key={lead.id}
