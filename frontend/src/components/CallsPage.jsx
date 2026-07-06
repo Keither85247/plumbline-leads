@@ -89,21 +89,88 @@ function VmAvatar({ name, phone }) {
   );
 }
 
-// Static decorative waveform — deterministic bar heights so it doesn't
-// shimmer on re-render. Purely visual (the audio element handles playback).
-function Waveform() {
+// Interactive waveform — deterministic bar heights (no shimmer on
+// re-render), with two live behaviors:
+//   • progress sweep — bars left of the playhead render brand green, the
+//     rest stay gray, so the listener always sees where they are.
+//   • scrubbing — tap or drag anywhere on the waveform to seek. Handlers
+//     are attached NATIVELY at the waveform element (not via React) and
+//     call stopPropagation() at the target so the parent SwipeableRow's
+//     own native touch listeners never see the gesture — otherwise a
+//     horizontal scrub would trigger swipe-to-callback.
+const WAVE_BARS = 36;
+
+function Waveform({ progress = 0, onScrub }) {
+  const ref = useRef(null);
+  const dragging = useRef(false);
+  const scrubRef = useRef(onScrub);
+  scrubRef.current = onScrub;
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    const fracAt = (clientX) => {
+      const r = el.getBoundingClientRect();
+      return Math.min(1, Math.max(0, (clientX - r.left) / r.width));
+    };
+    const start = (x) => { dragging.current = true; scrubRef.current?.(fracAt(x)); };
+    const move  = (x) => { if (dragging.current) scrubRef.current?.(fracAt(x)); };
+    const end   = () => { dragging.current = false; };
+
+    const ts = (e) => { e.stopPropagation(); start(e.touches[0].clientX); };
+    const tm = (e) => { e.stopPropagation(); if (e.cancelable) e.preventDefault(); move(e.touches[0].clientX); };
+    const te = (e) => { e.stopPropagation(); end(); };
+    const md = (e) => {
+      e.stopPropagation();
+      start(e.clientX);
+      const mm = (ev) => move(ev.clientX);
+      const mu = () => { end(); window.removeEventListener('mousemove', mm); window.removeEventListener('mouseup', mu); };
+      window.addEventListener('mousemove', mm);
+      window.addEventListener('mouseup', mu);
+    };
+    const ck = (e) => e.stopPropagation();   // keep card expand/collapse out of it
+
+    el.addEventListener('touchstart', ts, { passive: false });
+    el.addEventListener('touchmove',  tm, { passive: false });
+    el.addEventListener('touchend',   te);
+    el.addEventListener('mousedown',  md);
+    el.addEventListener('click',      ck);
+    return () => {
+      el.removeEventListener('touchstart', ts);
+      el.removeEventListener('touchmove',  tm);
+      el.removeEventListener('touchend',   te);
+      el.removeEventListener('mousedown',  md);
+      el.removeEventListener('click',      ck);
+    };
+  }, []);
+
   const bars = [];
-  for (let i = 0; i < 36; i++) {
+  for (let i = 0; i < WAVE_BARS; i++) {
     const h = 8 + Math.abs(Math.sin(i * 1.7) + 0.35 * Math.sin(i * 0.53)) * 20;
+    const played = (i + 0.5) / WAVE_BARS <= progress;
     bars.push(
       <span
         key={i}
-        className="inline-block w-[2.5px] rounded-full bg-[#4B5563]"
+        className={`inline-block w-[2.5px] rounded-full transition-colors duration-75 ${played ? 'bg-[#065F46]' : 'bg-[#8E98A8]'}`}
         style={{ height: `${Math.round(Math.min(32, Math.max(6, h)))}px` }}
       />
     );
   }
-  return <div className="flex-1 h-9 flex items-center justify-between gap-[2px] min-w-0 overflow-hidden">{bars}</div>;
+  return (
+    <div
+      ref={ref}
+      className="flex-1 h-9 flex items-center justify-between gap-[2px] min-w-0 overflow-hidden cursor-pointer select-none"
+      style={{ touchAction: 'none' }}
+      role="slider"
+      aria-label="Seek"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(progress * 100)}
+    >
+      {bars}
+    </div>
+  );
 }
 
 // Recency label used inline on each row's metadata line.
@@ -417,14 +484,42 @@ function VoicemailRow({ vm, t, expanded, onToggle, onCallback, highlighted }) {
 
   const src = vm.recording_url ? recordingUrl(`${API_BASE}/leads/${vm.id}/voicemail`) : null;
   const audioRef = useRef(null);
-  const [playing, setPlaying] = useState(false);
-  const [clock, setClock]     = useState(null);
+  const [playing, setPlaying]   = useState(false);
+  const [clock, setClock]       = useState(null);  // total duration, "1:15"
+  const [progress, setProgress] = useState(0);     // 0..1 playhead fraction
+  const [elapsed, setElapsed]   = useState(0);     // seconds into playback
 
   function togglePlay(e) {
     e.stopPropagation();
     const el = audioRef.current;
     if (!el || !src) return;
     if (playing) el.pause(); else el.play().catch(() => {});
+  }
+
+  // Scrub target from the waveform (fraction 0..1). Updates both the audio
+  // element and the visual state immediately so the sweep tracks the finger
+  // even before the next timeupdate tick.
+  function handleScrub(frac) {
+    const el = audioRef.current;
+    if (!el || !src || !isFinite(el.duration) || el.duration === 0) return;
+    el.currentTime = frac * el.duration;
+    setProgress(frac);
+    setElapsed(el.currentTime);
+  }
+
+  function handleTimeUpdate(e) {
+    const el = e.target;
+    if (!isFinite(el.duration) || el.duration === 0) return;
+    setProgress(el.currentTime / el.duration);
+    setElapsed(el.currentTime);
+  }
+
+  function handleEnded(e) {
+    // Voice-note convention: snap back to the start, ready to replay.
+    setPlaying(false);
+    setProgress(0);
+    setElapsed(0);
+    e.target.currentTime = 0;
   }
 
   return (
@@ -485,9 +580,10 @@ function VoicemailRow({ vm, t, expanded, onToggle, onCallback, highlighted }) {
                 </svg>
               )}
             </button>
-            <Waveform />
+            <Waveform progress={progress} onScrub={src ? handleScrub : undefined} />
+            {/* Elapsed time while listening / scrubbed; total duration at rest */}
             <span className="shrink-0 text-[15px] text-[#667085] tabular-nums">
-              {clock || (src ? '·' : '—')}
+              {progress > 0 ? formatClock(elapsed) || '0:00' : (clock || (src ? '·' : '—'))}
             </span>
             {src && (
               <audio
@@ -495,9 +591,10 @@ function VoicemailRow({ vm, t, expanded, onToggle, onCallback, highlighted }) {
                 preload="metadata"
                 src={src}
                 onLoadedMetadata={e => setClock(formatClock(e.target.duration))}
+                onTimeUpdate={handleTimeUpdate}
                 onPlay={() => setPlaying(true)}
                 onPause={() => setPlaying(false)}
-                onEnded={() => setPlaying(false)}
+                onEnded={handleEnded}
                 className="hidden"
               />
             )}
