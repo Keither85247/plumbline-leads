@@ -360,7 +360,9 @@ export default function LeadCard({
 
   return (
     <div className={`w-full bg-white rounded-3xl ${glow} transition-shadow duration-200`}>
-      <div className="px-4 pt-4 pb-4">
+      {/* 12px interior padding — Figma: content fills 334px inside the 358px
+           card (28px from screen edge = 16 margin + 12 padding). */}
+      <div className="px-3 pt-3 pb-3">
 
         {/* ── Title row: name · status pill · phone · kebab ───────────────
              The name is the only shrinkable element; the fixed elements are
@@ -457,9 +459,9 @@ export default function LeadCard({
         {/* ── Date ───────────────────────────────────────────────────────── */}
         <p className="mt-1 text-[14px] text-[#667085]">{formattedDate}</p>
 
-        {/* ── Key-point chips ───────────────────────────────────────────── */}
+        {/* ── Key-point chips — 4px gap per Figma chips row ─────────────── */}
         {tags.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap gap-1">
             {tags.map((tag, i) => <Chip key={i} text={tag} />)}
           </div>
         )}
@@ -467,9 +469,11 @@ export default function LeadCard({
         {/* ── More details — quiet gray toggle, reveals summary + metadata ─ */}
         {(lead.summary || showCallerIdSecondary || lead.message_count > 0 || lead.company_name) && (
           <>
+            {/* Figma "Frame 4": 97×18, 6px side padding (text sits 6px right
+                 of the chips), 4px gap to the chevron, 8px above. */}
             <button
               onClick={() => setDescExpanded(v => !v)}
-              className="mt-3 inline-flex items-center gap-1 text-[14px] text-[#475467] font-medium"
+              className="mt-2 inline-flex items-center gap-1 h-[18px] px-1.5 text-[14px] leading-none text-[#475467] font-medium"
             >
               {t.leadMoreDetails || 'More details'}
               <span className={`transition-transform text-[#667085] ${descExpanded ? 'rotate-180' : ''}`}>
@@ -502,7 +506,9 @@ export default function LeadCard({
         {/* ── Suggested follow-up panel — gray bg, blue heading ─────────── */}
         {baseFollowUp && !isArchived && (
           <div className="mt-3 rounded-xl bg-[#F3F4F6] px-3.5 pt-3 pb-3.5">
-            <p className="text-[15px] font-medium text-accent-500">
+            {/* Heading row is 22px tall with a 4px gap to the body (Figma
+                 "Note Header" = Hug 22px, marker "4" between). */}
+            <p className="text-[15px] leading-[22px] font-medium text-accent-500">
               {t.leadSuggestedFollowup || 'Suggested follow-up'}
             </p>
 
@@ -585,7 +591,7 @@ export default function LeadCard({
                 ) : (
                   <button
                     onClick={handleEditClick}
-                    className="w-9 h-9 rounded-full bg-[#DCEAE2] text-[#065F46] flex items-center justify-center active:opacity-80 transition-opacity"
+                    className="w-9 h-9 rounded-full bg-[#065E46]/10 text-[#065F46] flex items-center justify-center active:opacity-70 transition-opacity"
                     aria-label={t.leadFollowupEdit || 'Edit'}
                   >
                     <PencilIcon />
