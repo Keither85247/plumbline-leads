@@ -169,7 +169,9 @@ export default function ConversationItem({
         {/* Content — two stacked lines per the comp */}
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-[17px] leading-tight font-bold text-[#101828] truncate">
+            {/* Figma: name is Body/Medium/Medium — 16px, weight 500, 24px
+                 line box (NOT bold; the earlier bold read was wrong). */}
+            <span className="text-[16px] leading-6 font-medium text-[#101828] truncate">
               {name || phone}
             </span>
             <span className="shrink-0 text-[15px] text-[#667085] leading-none tabular-nums pr-6">
