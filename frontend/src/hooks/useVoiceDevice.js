@@ -10,6 +10,25 @@ function toE164(num) {
   return num.trim();
 }
 
+// Microphone-permission failures, unified across every surface they can
+// come from:
+//   • Twilio SDK error 31401 (UserMediaError / "PermissionDeniedError") —
+//     fired on the Call or Device when getUserMedia fails inside connect/accept
+//   • Browser getUserMedia rejections — NotAllowedError (standard) or
+//     PermissionDeniedError (legacy Chrome), sometimes nested in originalError
+//   • Message-only variants ("Permission denied", "denied permission to
+//     user media") from older WebViews
+// Anything else — token fetch, transport, backend, signaling — must NOT
+// match, so those failures keep their existing generic handling.
+export function isMicPermissionError(err) {
+  if (!err) return false;
+  if (err.code === 31401) return true;
+  const names = [err.name, err.originalError?.name, err.cause?.name];
+  if (names.some(n => n === 'NotAllowedError' || n === 'PermissionDeniedError')) return true;
+  const msg = `${err.message || ''} ${err.originalError?.message || ''}`;
+  return /PermissionDeniedError|NotAllowedError|Permission denied|denied permission to user media|microphone (access|permission)/i.test(msg);
+}
+
 async function fetchToken() {
   const storedToken = typeof localStorage !== 'undefined'
     ? localStorage.getItem('plumbline_token')
@@ -40,6 +59,14 @@ export function useVoiceDevice() {
   // Post-call note prompt — set to { phone } when an outbound call ends, null otherwise.
   // App.jsx watches this and renders the OutboundNoteModal.
   const [pendingPostCallNote, setPendingPostCallNote] = useState(null);
+
+  // True when a call attempt failed because microphone access is denied.
+  // Drives the single MicPermissionCard in App.jsx. Deliberately separate
+  // from `error`/`status: failed` so the raw Twilio message (31401 /
+  // PermissionDeniedError) is never rendered and the generic failure toast
+  // never doubles up with the mic card.
+  const [micBlocked, setMicBlocked] = useState(false);
+  const micBlockedRef = useRef(false); // mirror for event handlers/effects
 
   const deviceRef   = useRef(null);
   const ringtoneRef = useRef(null);
@@ -104,6 +131,33 @@ export function useVoiceDevice() {
     stopTitleFlash();
   }
 
+  function setMicBlockedState(value) {
+    micBlockedRef.current = value;
+    setMicBlocked(value);
+  }
+
+  // Central handling for a mic-permission failure, wherever it surfaced
+  // (call error, device error, makeCall catch). Tears the attempt down the
+  // same way the generic error path does, but raises micBlocked instead of
+  // `error` — the Device itself is usually still registered and healthy, so
+  // the dialer returns to ready and the mic card is the only warning shown.
+  function reportMicBlocked(source, err) {
+    console.warn('[VoiceDevice] Microphone permission denied — showing mic warning', {
+      source,
+      code: err?.code,
+      name: err?.name || err?.originalError?.name,
+      message: err?.message,
+      at: Date.now(),
+    });
+    stopAllAlerts();
+    setActiveCall(null);
+    setIncomingCall(null);
+    callInFlightRef.current = false;
+    setMicBlockedState(true);
+    setError(null); // never render the raw 31401 / PermissionDeniedError text
+    setStatus(deviceRef.current ? 'ready' : 'idle');
+  }
+
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   // Wire all lifecycle events onto a call object.
@@ -154,6 +208,10 @@ export function useVoiceDevice() {
         acceptedAt,
       });
       stopAllAlerts();
+      // Media was acquired, so the microphone demonstrably works — retire a
+      // stale mic warning (e.g. permission fixed via the browser UI without
+      // ever tapping Try Again).
+      if (micBlockedRef.current) setMicBlockedState(false);
       setActiveCall(call);
       callInFlightRef.current = true;
       setStatus('connected');
@@ -226,7 +284,11 @@ export function useVoiceDevice() {
           durationMs: duration,
           reason: !acceptedAt ? 'never_accepted' : 'too_short',
         });
-        setError('Call did not connect. Please try again.');
+        // When the setup died because mic access is denied, the mic card is
+        // already up — don't layer a second generic message on top of it.
+        if (!micBlockedRef.current) {
+          setError('Call did not connect. Please try again.');
+        }
       }
 
       // Brief "ended" display, then back to ready
@@ -261,6 +323,10 @@ export function useVoiceDevice() {
         solutions: err.solutions,
         at: Date.now(),
       });
+      if (isMicPermissionError(err)) {
+        reportMicBlocked('call_error', err);
+        return;
+      }
       setError(err.message);
       setActiveCall(null);
       setIncomingCall(null);
@@ -335,6 +401,12 @@ export function useVoiceDevice() {
         explanation: err.explanation,
         solutions: err.solutions,
       });
+      // 31401 / NotAllowedError = the user denied microphone access. Not a
+      // transport or token problem — route to the mic-permission card.
+      if (isMicPermissionError(err)) {
+        reportMicBlocked('device_error', err);
+        return;
+      }
       // 20104 = AccessTokenExpired. Soft recovery via updateToken when
       // possible.
       if (err.code === 20104) {
@@ -559,6 +631,76 @@ export function useVoiceDevice() {
     }
   }, [createDevice]);
 
+  // ── Microphone-permission recovery ─────────────────────────────────────────
+
+  // "Try Again" on the mic card. Probes getUserMedia directly:
+  //   • permission now granted (user changed it in Settings, or grants the
+  //     re-prompt) → probe resolves → clear the card, make sure the Device
+  //     is healthy. The previously attempted call is NOT re-placed — the
+  //     user returns to a ready dialer.
+  //   • still denied ("Don't ask again" / browser block) → probe rejects
+  //     immediately → the card stays up; Open Settings is the way out.
+  // The probe stream is stopped right away — we only need the answer.
+  const retryMicPermission = useCallback(async () => {
+    console.log('[VoiceDevice] retryMicPermission — probing getUserMedia');
+    if (!navigator.mediaDevices?.getUserMedia) {
+      console.warn('[VoiceDevice] getUserMedia unavailable — cannot probe mic permission');
+      return false;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(track => track.stop());
+    } catch (err) {
+      console.warn('[VoiceDevice] mic still blocked after retry', {
+        name: err?.name,
+        message: err?.message,
+      });
+      setMicBlockedState(true); // card stays up (idempotent — never duplicates)
+      return false;
+    }
+    console.log('[VoiceDevice] mic access granted — clearing warning');
+    setMicBlockedState(false);
+    setError(null);
+    // Recover the voice session without ever creating a duplicate Device:
+    // initialize() no-ops when a Device exists, recoverVoiceTransport is
+    // deduped by refreshingRef and destroys before recreating.
+    if (!deviceRef.current) {
+      await initialize();
+    } else if (deviceRef.current.state !== 'registered') {
+      recoverVoiceTransport('manual_retry');
+    } else if (!callInFlightRef.current) {
+      // Don't stomp 'incoming'/'connected' if a call arrived while the
+      // card was up — only settle back to ready when the line is idle.
+      setStatus('ready');
+    }
+    return true;
+  }, [initialize, recoverVoiceTransport]);
+
+  // "Not now" on the mic card — hide it until the next failed attempt.
+  const dismissMicWarning = useCallback(() => {
+    setMicBlockedState(false);
+  }, []);
+
+  // Silent re-check when the app returns to the foreground (e.g. the user
+  // flipped the permission in Android Settings and switched back). Uses the
+  // Permissions API only — never getUserMedia — so it can NEVER pop a
+  // permission prompt or start any media. No call is auto-placed.
+  const recheckMicPermission = useCallback(async (reason) => {
+    if (!micBlockedRef.current) return;
+    if (!navigator.permissions?.query) return; // no silent check possible; Try Again still works
+    try {
+      const result = await navigator.permissions.query({ name: 'microphone' });
+      if (result.state === 'granted') {
+        console.log('[VoiceDevice] mic permission granted while away — clearing warning', { reason });
+        setMicBlockedState(false);
+        // Device health is handled by the refreshVoiceSession that runs on
+        // the same visibility/focus event.
+      }
+    } catch {
+      // Some browsers don't support querying 'microphone' — ignore.
+    }
+  }, []);
+
   // ── App-resume / visibility recovery ───────────────────────────────────────
   // Browsers throttle background timers heavily, so a token that should
   // refresh at 55min can quietly pass its expiry while the app is hidden.
@@ -568,10 +710,12 @@ export function useVoiceDevice() {
     function onVisible() {
       if (document.visibilityState === 'visible') {
         refreshVoiceSession('visibility_visible');
+        recheckMicPermission('visibility_visible');
       }
     }
     function onFocus() {
       refreshVoiceSession('window_focus');
+      recheckMicPermission('window_focus');
     }
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onFocus);
@@ -579,7 +723,7 @@ export function useVoiceDevice() {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onFocus);
     };
-  }, [refreshVoiceSession]);
+  }, [refreshVoiceSession, recheckMicPermission]);
 
   // Manual retry surface for the UI — clears the error and triggers a
   // refresh. Bound at module scope so the Dialer / failure card can wire
@@ -653,6 +797,12 @@ export function useVoiceDevice() {
         message: err.message,
         twilioError: err.twilioError,
       });
+      // Mic denied while connect() was acquiring media — show the mic card,
+      // not the raw error.
+      if (isMicPermissionError(err)) {
+        reportMicBlocked('makecall', err);
+        return;
+      }
       // A 31009/31005/53000 here means the transport was dead when the user
       // pressed Call. The device.on('error') handler will also fire and kick
       // off recovery, but we trigger it explicitly so a slow event delivery
@@ -736,5 +886,11 @@ export function useVoiceDevice() {
     // shows when refresh has failed several times. Cleared error first then
     // routes through the standard refresh pipeline.
     retryVoiceSession,
+    // Microphone-permission surface — drives the single MicPermissionCard
+    // in App.jsx. `micBlocked` raises the card; retry probes getUserMedia
+    // and recovers the Device on grant; dismiss hides until the next attempt.
+    micBlocked,
+    retryMicPermission,
+    dismissMicWarning,
   };
 }

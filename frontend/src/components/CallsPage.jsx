@@ -674,13 +674,16 @@ export default function CallsPage({ onContactClick, voiceDevice = {}, onCallsSee
     remoteIdentity,
     makeCall,
     hangUp,
+    micBlocked = false,
   } = voiceDevice;
 
   const isDialing   = deviceStatus === 'dialing';
   const isRinging   = deviceStatus === 'ringing';
   const isConnected = deviceStatus === 'connected';
   const isEnded     = deviceStatus === 'ended';
-  const isFailed    = deviceStatus === 'failed';
+  // Mic-permission failures are announced ONLY by the global
+  // MicPermissionCard — the dialer must not add a second warning line.
+  const isFailed    = deviceStatus === 'failed' && !micBlocked;
   const isBusy      = isDialing || isRinging || isConnected || isEnded;
 
   // Re-fetch on tab switch + on callsRefreshKey bump. Background refreshes

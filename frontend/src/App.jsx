@@ -11,6 +11,7 @@ import SettingsModal from './components/SettingsModal';
 import FirstRunOnboarding from './components/onboarding/FirstRunOnboarding';
 import ContactHistoryModal from './components/ContactHistoryModal';
 import OutboundNoteModal from './components/OutboundNoteModal';
+import MicPermissionCard from './components/MicPermissionCard';
 import InboxLayout from './components/inbox/InboxLayout';
 import EmailPage from './components/EmailPage';
 import AdminPage from './components/AdminPage';
@@ -724,11 +725,25 @@ export default function App() {
         }}
       />
 
+      {/* Microphone-permission card — the single warning shown when a call
+          failed because mic access is denied (Twilio 31401 / NotAllowedError).
+          The hook never sets status 'failed' for that class, so this card and
+          the generic toast below are mutually exclusive by construction; the
+          extra !micBlocked guard is belt-and-braces. The card also yields the
+          top slot to the incoming/connected call banner (same fixed position)
+          — if that call's audio fails on mic permission, the error path
+          re-raises micBlocked and the card returns once the banner clears. */}
+      {voiceDevice.micBlocked &&
+        voiceDevice.status !== 'incoming' &&
+        voiceDevice.status !== 'connected' && (
+        <MicPermissionCard voiceDevice={voiceDevice} t={t} />
+      )}
+
       {/* Voice call error toast — shown when a call attempt fails from any page.
           Includes a Retry button so the user is never stuck after a Twilio
           token expires or a transient device error — refreshVoiceSession is
           deduplicated + active-call-safe so tapping Retry is always safe. */}
-      {voiceDevice.status === 'failed' && voiceDevice.error && (
+      {voiceDevice.status === 'failed' && voiceDevice.error && !voiceDevice.micBlocked && (
         <div className="fixed inset-x-0 top-16 z-50 flex justify-center px-4 pointer-events-none">
           <div className="w-full max-w-sm bg-red-50 border border-red-200 rounded-xl shadow-lg px-4 py-3 flex items-center gap-3 pointer-events-auto">
             <svg className="w-5 h-5 text-red-500 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">

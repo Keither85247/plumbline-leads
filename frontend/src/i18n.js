@@ -85,6 +85,12 @@ export const translations = {
     callsNoAnswer:          'No Answer',
     callsYouLeftMessage:    'You Left a Message',
     callsAudioNotSupported: 'Your browser does not support audio playback.',
+    callsMicTitle:          'Microphone access needed',
+    callsMicBody:           'Plumbline Leads needs microphone access to make and answer calls. Allow microphone access in your phone settings, then try again.',
+    callsMicOpenSettings:   'Open Settings',
+    callsMicTryAgain:       'Try Again',
+    callsMicNotNow:         'Not now',
+    callsMicBrowserHint:    'Use the lock or microphone icon in your browser\'s address bar to allow access.',
 
     // ContactHistoryModal
     contactHistoryInteraction:    'interaction',
@@ -649,6 +655,12 @@ export const translations = {
     callsNoAnswer:          'Sin respuesta',
     callsYouLeftMessage:    'Dejaste un mensaje',
     callsAudioNotSupported: 'Tu navegador no admite la reproducción de audio.',
+    callsMicTitle:          'Se necesita acceso al micrófono',
+    callsMicBody:           'Plumbline Leads necesita acceso al micrófono para hacer y recibir llamadas. Permite el acceso al micrófono en la configuración de tu teléfono y vuelve a intentarlo.',
+    callsMicOpenSettings:   'Abrir configuración',
+    callsMicTryAgain:       'Reintentar',
+    callsMicNotNow:         'Ahora no',
+    callsMicBrowserHint:    'Usa el ícono de candado o micrófono en la barra de direcciones de tu navegador para permitir el acceso.',
 
     // ContactHistoryModal
     contactHistoryInteraction:    'interacción',
