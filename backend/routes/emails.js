@@ -243,7 +243,14 @@ router.patch('/:id', (req, res) => {
       `UPDATE emails SET ${setClause} WHERE id = ? AND user_id = ?`
     ).run(...values, req.params.id, req.userId);
 
-    const row = db.prepare('SELECT * FROM emails WHERE id = ?').get(req.params.id);
+    // Re-fetch MUST be scoped to the authenticated user, not just the id.
+    // Without `AND user_id = ?` this returned another account's email row
+    // even though the UPDATE above changed nothing (DEF-1). A missing id and
+    // an id owned by another account both fall through to the same 404, so
+    // the response never reveals whether a foreign id exists.
+    const row = db.prepare(
+      'SELECT * FROM emails WHERE id = ? AND user_id = ?'
+    ).get(req.params.id, req.userId);
     if (!row) return res.status(404).json({ error: 'Email not found' });
     res.json(row);
   } catch (err) {
