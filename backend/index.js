@@ -226,10 +226,12 @@ app.get('/api/health/owner', (_req, res) => {
 // reachable when logged in, which is sufficient protection in Phase 1.
 app.use('/auth', authRouter);
 
-// Twilio webhook routes — these come from Twilio's servers, NOT from the browser.
-// They must stay public; do not put requireAuth in front of them.
-// This covers: /api/twilio/voice, /api/twilio/sms, /api/twilio/recording-status,
-//              /api/twilio/outbound, and the Voice SDK token endpoint.
+// Twilio routes — mounted before the session-cookie requireAuth because Twilio's
+// servers have no session. Auth is enforced PER ROUTE inside the router instead
+// (DEF-2): genuine webhooks (/voice, /missed-call, /sms, /voicemail, /recording,
+// /voice-client, /outbound-bridge) validate X-Twilio-Signature; /diag requires an
+// owner session; /token issues the Voice SDK token behind requireAuth; the
+// tokenized greeting-audio route stays public by design; /outbound is retired (410).
 app.use('/api/twilio',       twilioRouter);
 app.use('/api/twilio/token', tokenRouter);
 

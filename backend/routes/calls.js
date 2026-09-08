@@ -1,6 +1,8 @@
 const express = require('express');
+const https = require('https');
 const router = express.Router();
 const db = require('../db');
+const { assertSafeRecordingUrl } = require('../utils/twilioRecording');
 
 function normalizePhone(num) {
   if (!num) return null;
@@ -153,16 +155,21 @@ router.get('/:id/recording', (req, res) => {
     return res.status(500).json({ error: 'Twilio credentials not configured' });
   }
 
-  const audioUrl = call.recording_url.endsWith('.mp3')
-    ? call.recording_url
-    : `${call.recording_url}.mp3`;
+  // DEF-2: validate the stored URL points at Twilio for THIS account before
+  // attaching credentials. Never send Basic auth to an arbitrary host.
+  let audioUrl;
+  try {
+    audioUrl = assertSafeRecordingUrl(call.recording_url);
+  } catch (err) {
+    console.warn('[Calls] Refusing to proxy unsafe recording_url', { id: req.params.id, reason: err.message });
+    return res.status(502).json({ error: 'Recording unavailable' });
+  }
 
   const credentials     = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
-  const protocol        = audioUrl.startsWith('https') ? require('https') : require('http');
   const upstreamHeaders = { Authorization: `Basic ${credentials}` };
   if (req.headers.range) upstreamHeaders['Range'] = req.headers.range;
 
-  protocol.get(audioUrl, { headers: upstreamHeaders }, (twilioRes) => {
+  https.get(audioUrl, { headers: upstreamHeaders }, (twilioRes) => {
     const status = twilioRes.statusCode;
     if (status !== 200 && status !== 206) {
       twilioRes.resume();

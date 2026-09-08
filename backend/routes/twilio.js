@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const log = require('../logger').for('Twilio');
 const https = require('https');
-const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -14,6 +13,10 @@ const { createLeadFromTranscript, isDuplicate, hasLeadToday } = require('./leads
 const { sendPush } = require('../services/pushService');
 const { DEFAULT_GREETING, userGreetingDir, getGreetingRow } = require('./settings');
 const { getDataDir } = require('../utils/dataDir');
+const verifyTwilioSignature = require('../middleware/verifyTwilioSignature');
+const requireAuth = require('../middleware/requireAuth');
+const requireOwner = require('../middleware/requireOwner');
+const { resolveSafeRecordingUrl } = require('../utils/twilioRecording');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -105,23 +108,33 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function attemptDownload(url, destPath) {
+// `safeUrl` MUST already have passed resolveSafeRecordingUrl — this function
+// attaches Twilio Basic credentials, so it must only ever be handed a URL
+// proven to point at api.twilio.com for the configured account. We assert https
+// as a second belt: the validator guarantees it, and node's http/https .get
+// does NOT follow redirects, so credentials can never be re-sent to a 3xx
+// Location target (a non-200/redirect is simply treated as a failed attempt).
+function attemptDownload(safeUrl, destPath) {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
 
   if (!accountSid || !authToken) {
     return Promise.reject(new Error('TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN is not set in .env'));
   }
+  if (!safeUrl.startsWith('https://')) {
+    return Promise.reject(new Error('refusing to attach credentials to non-https url'));
+  }
 
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath);
-    const protocol = url.startsWith('https') ? https : http;
     const credentials = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
 
     const options = { headers: { Authorization: `Basic ${credentials}` } };
 
-    protocol.get(url, options, (res) => {
+    https.get(safeUrl, options, (res) => {
       if (res.statusCode !== 200) {
+        // Includes 3xx redirects — we never follow them, so credentials are
+        // never forwarded to a redirect target.
         res.resume();
         file.close(() => { try { fs.unlinkSync(destPath); } catch {} });
         return reject(new Error(`HTTP ${res.statusCode}`));
@@ -137,16 +150,16 @@ function attemptDownload(url, destPath) {
 
 // Twilio occasionally returns 404 right after the webhook fires because
 // the recording hasn't finished processing. Retry with backoff.
-async function downloadToTemp(url, destPath) {
+// `safeUrl` is the validated .mp3 media URL from resolveSafeRecordingUrl.
+async function downloadToTemp(safeUrl, destPath) {
   const MAX_ATTEMPTS = 5;
   const RETRY_DELAY_MS = 2000;
-  const audioUrl = url.endsWith('.mp3') ? url : `${url}.mp3`;
   let lastError;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    log.info(`Recording download attempt ${attempt}/${MAX_ATTEMPTS}`, { url: audioUrl });
+    log.info(`Recording download attempt ${attempt}/${MAX_ATTEMPTS}`, { url: safeUrl });
     try {
-      await attemptDownload(audioUrl, destPath);
+      await attemptDownload(safeUrl, destPath);
       log.info(`Recording download succeeded`, { attempt });
       return destPath;
     } catch (err) {
@@ -279,7 +292,7 @@ function buildVoicemailTwiml(twiml, baseUrl, userId) {
 //       voicemail if the call goes unanswered.
 //   3b. If no contractor phone configured: go straight to voicemail greeting.
 // ---------------------------------------------------------------------------
-router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
+router.post('/voice', express.urlencoded({ extended: true }), verifyTwilioSignature, (req, res) => {
   const { From, To, Called, CallSid } = req.body;
   const twiml = new VoiceResponse();
 
@@ -338,7 +351,7 @@ router.post('/voice', express.urlencoded({ extended: true }), (req, res) => {
 // Only 'completed' means the contractor picked up — everything else falls
 // through to voicemail.
 // ---------------------------------------------------------------------------
-router.post('/missed-call', express.urlencoded({ extended: true }), (req, res) => {
+router.post('/missed-call', express.urlencoded({ extended: true }), verifyTwilioSignature, (req, res) => {
   const { DialCallStatus, To, Called } = req.body;
   const twiml = new VoiceResponse();
 
@@ -364,7 +377,7 @@ router.post('/missed-call', express.urlencoded({ extended: true }), (req, res) =
 // ---------------------------------------------------------------------------
 // POST /api/twilio/sms
 // ---------------------------------------------------------------------------
-router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => {
+router.post('/sms', express.urlencoded({ extended: true }), verifyTwilioSignature, async (req, res) => {
   const { From, To, Body } = req.body;
   const numMedia = parseInt(req.body.NumMedia || '0', 10);
   const assignedUserId = getAssignedUserForNumber(To);
@@ -472,25 +485,35 @@ router.post('/sms', express.urlencoded({ extended: true }), async (req, res) => 
 // Called by Twilio after a recording completes.
 // Responds immediately with TwiML, then async: download → transcribe → lead.
 // ---------------------------------------------------------------------------
-router.post('/voicemail', express.urlencoded({ extended: true }), async (req, res) => {
-  const { RecordingUrl, From, CallSid } = req.body;
+router.post('/voicemail', express.urlencoded({ extended: true }), verifyTwilioSignature, async (req, res) => {
+  const { RecordingUrl, RecordingSid, From, CallSid } = req.body;
   // user_id injected by buildVoicemailTwiml into the action URL as a query param
   const userId = req.query.user_id ? parseInt(req.query.user_id, 10) : getOwnerUserId();
 
   res.setHeader('Content-Type', 'text/xml');
   res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
 
-  if (!RecordingUrl) {
-    log.error('Voicemail webhook: missing RecordingUrl', { from: From });
+  if (!RecordingUrl && !RecordingSid) {
+    log.error('Voicemail webhook: missing RecordingUrl/RecordingSid', { from: From });
     return;
   }
 
-  log.info('Voicemail received', { from: From || 'unknown', recordingUrl: RecordingUrl, userId });
+  // Derive a credential-safe URL from the trusted RecordingSid (preferred) or
+  // strictly validate the supplied URL. Never attach credentials otherwise.
+  let safeUrl;
+  try {
+    safeUrl = resolveSafeRecordingUrl({ recordingSid: RecordingSid, recordingUrl: RecordingUrl });
+  } catch (err) {
+    log.error('Voicemail webhook: unsafe recording reference rejected', { from: From, reason: err.message });
+    return;
+  }
+
+  log.info('Voicemail received', { from: From || 'unknown', userId });
 
   const tempPath = path.join(os.tmpdir(), `twilio-vm-${Date.now()}.mp3`);
 
   try {
-    await downloadToTemp(RecordingUrl, tempPath);
+    await downloadToTemp(safeUrl, tempPath);
 
     const transcription = await openai.audio.transcriptions.create({
       model: 'whisper-1',
@@ -516,7 +539,7 @@ router.post('/voicemail', express.urlencoded({ extended: true }), async (req, re
       rawText: transcript,
       contactNameFallback: From || 'Unknown',
       phoneNumber: From || null,
-      recordingUrl: RecordingUrl || null,
+      recordingUrl: safeUrl,      // store the validated canonical Twilio URL
       userId,
       callSid: CallSid || null,   // lets the vendor-routing path enrich the
                                   // originating call row with transcript +
@@ -548,18 +571,28 @@ router.post('/voicemail', express.urlencoded({ extended: true }), async (req, re
 // Downloads the audio, transcribes it, generates call notes, stores on the
 // calls row so it appears in the contact history.
 // ---------------------------------------------------------------------------
-router.post('/recording', express.urlencoded({ extended: true }), async (req, res) => {
+router.post('/recording', express.urlencoded({ extended: true }), verifyTwilioSignature, async (req, res) => {
   // Respond immediately — processing happens async
   res.status(204).send();
 
-  const { CallSid, RecordingUrl, RecordingDuration } = req.body;
+  const { CallSid, RecordingUrl, RecordingSid, RecordingDuration } = req.body;
 
-  if (!RecordingUrl) {
-    log.error('/recording webhook: missing RecordingUrl', { callSid: CallSid });
+  if (!RecordingUrl && !RecordingSid) {
+    log.error('/recording webhook: missing RecordingUrl/RecordingSid', { callSid: CallSid });
     return;
   }
 
-  log.info('Answered-call recording ready', { callSid: CallSid, recordingUrl: RecordingUrl, duration: RecordingDuration });
+  // Derive a credential-safe URL from the trusted RecordingSid (preferred) or
+  // strictly validate the supplied URL. Never attach credentials otherwise.
+  let safeUrl;
+  try {
+    safeUrl = resolveSafeRecordingUrl({ recordingSid: RecordingSid, recordingUrl: RecordingUrl });
+  } catch (err) {
+    log.error('/recording webhook: unsafe recording reference rejected', { callSid: CallSid, reason: err.message });
+    return;
+  }
+
+  log.info('Answered-call recording ready', { callSid: CallSid, duration: RecordingDuration });
 
   // Look up the original call to get the caller's number
   const callRow = db.prepare('SELECT * FROM calls WHERE call_sid = ?').get(CallSid);
@@ -568,7 +601,7 @@ router.post('/recording', express.urlencoded({ extended: true }), async (req, re
   const tempPath = path.join(os.tmpdir(), `twilio-call-${Date.now()}.mp3`);
 
   try {
-    await downloadToTemp(RecordingUrl, tempPath);
+    await downloadToTemp(safeUrl, tempPath);
 
     const transcription = await openai.audio.transcriptions.create({
       model: 'whisper-1',
@@ -611,11 +644,11 @@ Return a JSON object with exactly these fields:
     if (callRow) {
       db.prepare(
         'UPDATE calls SET recording_url = ?, duration = ?, transcript = ?, summary = ?, key_points = ? WHERE call_sid = ?'
-      ).run(RecordingUrl, parseInt(RecordingDuration) || null, transcript, summary, JSON.stringify(keyPoints), CallSid);
+      ).run(safeUrl, parseInt(RecordingDuration) || null, transcript, summary, JSON.stringify(keyPoints), CallSid);
     } else {
       db.prepare(
         'INSERT INTO calls (from_number, call_sid, classification, recording_url, duration, transcript, summary, key_points) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).run(fromNumber, CallSid, 'Unknown', RecordingUrl, parseInt(RecordingDuration) || null, transcript, summary, JSON.stringify(keyPoints));
+      ).run(fromNumber, CallSid, 'Unknown', safeUrl, parseInt(RecordingDuration) || null, transcript, summary, JSON.stringify(keyPoints));
     }
 
     log.info('Call notes saved', { callSid: CallSid, from: fromNumber || 'unknown', summaryLen: summary.length });
@@ -630,7 +663,7 @@ Return a JSON object with exactly these fields:
 // Diagnostic endpoint — verifies the full call-flow configuration without
 // placing an actual call. Hit this in a browser to see exactly what is wrong.
 // ---------------------------------------------------------------------------
-router.get('/diag', async (req, res) => {
+router.get('/diag', requireAuth, requireOwner, async (req, res) => {
   const accountSid      = process.env.TWILIO_ACCOUNT_SID;
   const authToken       = process.env.TWILIO_AUTH_TOKEN;
   const apiKeySid       = process.env.TWILIO_API_KEY_SID   || process.env.TWILIO_API_KEY;
@@ -703,7 +736,7 @@ router.get('/diag', async (req, res) => {
 // The browser stays the audio endpoint in both cases.
 // Records the answered leg via the existing /recording webhook.
 // ---------------------------------------------------------------------------
-router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) => {
+router.post('/voice-client', express.urlencoded({ extended: true }), verifyTwilioSignature, (req, res) => {
   const { To, From, CallSid } = req.body;
   log.info('/voice-client received', { to: To, from: From, callSid: CallSid });
 
@@ -787,66 +820,33 @@ router.post('/voice-client', express.urlencoded({ extended: true }), (req, res) 
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/twilio/outbound  (LEGACY — click-to-call bridge, kept for reference)
-// Initiates a click-to-call from the app:
-//   1. Twilio calls CONTRACTOR_PHONE_NUMBER (the user's own phone)
-//   2. When they answer, /outbound-bridge TwiML dials the target customer
-//   3. The answered leg is recorded → /recording saves call notes
-// Body: { to: string }  (customer's phone number)
+// POST /api/twilio/outbound  (RETIRED — DEF-2)
+//
+// This legacy REST endpoint was publicly mounted (before the global auth
+// middleware) and called client.calls.create() using the GLOBAL
+// CONTRACTOR_PHONE_NUMBER — i.e. any unauthenticated caller could make the
+// server place a paid Twilio call on the business's behalf.
+//
+// It has NO callers: the app places outbound calls through the Twilio Voice
+// SDK (device.connect → the TwiML App voice URL /api/twilio/voice-client),
+// never through this route. It is retired with HTTP 410 and NO LONGER calls
+// client.calls.create() — there is no code path here that can initiate a call.
 // ---------------------------------------------------------------------------
-router.post('/outbound', express.json(), async (req, res) => {
-  const { to } = req.body;
-  if (!to || !to.trim()) {
-    return res.status(400).json({ error: '"to" phone number is required' });
-  }
-
-  const baseUrl = process.env.TWILIO_BASE_URL;
-  const fromNumber = process.env.TWILIO_PHONE_NUMBER;
-  const contractorPhone = process.env.CONTRACTOR_PHONE_NUMBER;
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-
-  if (!baseUrl || !fromNumber || !contractorPhone || !accountSid || !authToken) {
-    log.error('/outbound: missing required env vars', { hasBaseUrl: !!baseUrl, hasFrom: !!fromNumber, hasContractor: !!contractorPhone });
-    return res.status(500).json({ error: 'Twilio is not fully configured' });
-  }
-
-  // Normalize to E.164 — strip formatting, prepend +1 for 10-digit US numbers
-  const digits = to.replace(/\D/g, '');
-  const e164 = digits.length === 10 ? `+1${digits}` : digits.length === 11 && digits[0] === '1' ? `+${digits}` : to.trim();
-
-  log.info('/outbound: initiating call', { contractor: contractorPhone, customer: e164 });
-
-  try {
-    const client = twilio(accountSid, authToken);
-
-    // Twilio calls the contractor first. When they answer, outbound-bridge dials the customer.
-    const call = await client.calls.create({
-      from: fromNumber,
-      to: contractorPhone,
-      url: `${baseUrl}/api/twilio/outbound-bridge?customer=${encodeURIComponent(e164)}`,
-      method: 'POST',
-    });
-
-    // Log the outbound attempt so it appears in the call timeline
-    logCall(contractorPhone, call.sid, 'Outbound');
-    log.info('/outbound: call initiated', { sid: call.sid, status: call.status });
-
-    return res.json({ sid: call.sid, status: call.status });
-  } catch (err) {
-    log.error('/outbound: call failed', { err: err.message, to: e164 });
-    return res.status(500).json({ error: err.message });
-  }
+router.post('/outbound', express.json(), (req, res) => {
+  log.warn('/outbound: rejected — endpoint retired (DEF-2)');
+  return res.status(410).json({
+    error: 'This endpoint has been retired. Outbound calls are placed through the in-app Voice SDK.',
+  });
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/twilio/outbound-bridge
-// Legacy: TwiML served after the contractor's personal phone answers.
-// Updated to route back to the browser client (identity: 'contractor') instead
-// of dialing a PSTN number, so all audio stays inside the app.
-// Query param: customer (E.164 number — kept for logging/context only)
+// POST /api/twilio/outbound-bridge  (part of the retired /outbound flow)
+// Only ever reached from the retired /outbound endpoint above, so it is now
+// unreachable in normal operation. Kept and signature-protected so that a
+// forged request is rejected (403) rather than served TwiML. Contains no paid
+// action (returns TwiML only).
 // ---------------------------------------------------------------------------
-router.post('/outbound-bridge', express.urlencoded({ extended: true }), (req, res) => {
+router.post('/outbound-bridge', express.urlencoded({ extended: true }), verifyTwilioSignature, (req, res) => {
   const customer = req.query.customer;
   const twiml = new VoiceResponse();
   const baseUrl = process.env.TWILIO_BASE_URL;

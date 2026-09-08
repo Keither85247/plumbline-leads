@@ -3,6 +3,7 @@ const router = express.Router();
 const OpenAI = require('openai');
 const db = require('../db');
 const { classifyVoicemailIntent } = require('../utils/voicemailClassifier');
+const { assertSafeRecordingUrl } = require('../utils/twilioRecording');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -373,12 +374,18 @@ router.get('/:id/voicemail', (req, res) => {
     return res.status(500).json({ error: 'Twilio credentials not configured' });
   }
 
-  const audioUrl = lead.recording_url.endsWith('.mp3')
-    ? lead.recording_url
-    : `${lead.recording_url}.mp3`;
+  // DEF-2: validate the stored URL points at Twilio for THIS account before
+  // attaching credentials. Never send Basic auth to an arbitrary host.
+  let audioUrl;
+  try {
+    audioUrl = assertSafeRecordingUrl(lead.recording_url);
+  } catch (err) {
+    console.warn('[Leads] Refusing to proxy unsafe recording_url', { id: req.params.id, reason: err.message });
+    return res.status(502).json({ error: 'Recording unavailable' });
+  }
 
   const credentials  = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
-  const protocol     = audioUrl.startsWith('https') ? require('https') : require('http');
+  const protocol     = require('https');
   const upstreamHeaders = { Authorization: `Basic ${credentials}` };
   if (req.headers.range) upstreamHeaders['Range'] = req.headers.range;
 

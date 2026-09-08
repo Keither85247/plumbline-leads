@@ -319,15 +319,10 @@ export async function getVoicemailLeads() {
   return res.json();
 }
 
-export async function initiateCall(to) {
-  const res = await apiFetch(`${API_BASE}/twilio/outbound`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to }),
-  });
-  if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Call failed'); }
-  return res.json(); // { sid, status }
-}
+// NOTE: initiateCall() (POST /api/twilio/outbound) was removed with DEF-2.
+// That legacy REST endpoint is retired (HTTP 410); outbound calls are placed
+// via the Twilio Voice SDK in useVoiceDevice.js (device.connect → the TwiML
+// App voice URL /api/twilio/voice-client). It had no callers.
 
 export async function translateText(text, targetLang) {
   const res = await apiFetch(`${API_BASE}/translate`, {
