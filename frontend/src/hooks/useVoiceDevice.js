@@ -68,6 +68,17 @@ export function useVoiceDevice() {
   const [micBlocked, setMicBlocked] = useState(false);
   const micBlockedRef = useRef(false); // mirror for event handlers/effects
 
+  // Monotonic count of microphone denials. A call snapshots this when it is
+  // wired and compares on disconnect, so a mic denial suppresses the duplicate
+  // generic error for THAT call only — a stale warning left on screen from an
+  // earlier attempt can never swallow a later, unrelated "Call did not
+  // connect".
+  const micDenialCountRef = useRef(0);
+
+  // Guards the shared getUserMedia probe so overlapping triggers
+  // (visibilitychange + focus fire together) never run two at once.
+  const micProbeInFlightRef = useRef(false);
+
   const deviceRef   = useRef(null);
   const ringtoneRef = useRef(null);
 
@@ -149,6 +160,7 @@ export function useVoiceDevice() {
       message: err?.message,
       at: Date.now(),
     });
+    micDenialCountRef.current += 1;
     stopAllAlerts();
     setActiveCall(null);
     setIncomingCall(null);
@@ -180,6 +192,10 @@ export function useVoiceDevice() {
     // Captured in closure so the disconnect handler can compute call duration
     // without racing the React state setter for `status`.
     let acceptedAt = null;
+    // Denials recorded before this call began. If the count is still the same
+    // at disconnect, no microphone denial belongs to THIS call and the generic
+    // failure message must be shown as normal.
+    const micDenialsAtCallStart = micDenialCountRef.current;
     const initialCallSid =
       call.parameters?.CallSid ||
       call.customParameters?.get?.('CallSid') ||
@@ -284,9 +300,12 @@ export function useVoiceDevice() {
           durationMs: duration,
           reason: !acceptedAt ? 'never_accepted' : 'too_short',
         });
-        // When the setup died because mic access is denied, the mic card is
-        // already up — don't layer a second generic message on top of it.
-        if (!micBlockedRef.current) {
+        // Suppress the generic message ONLY when this call's own failure was
+        // the microphone denial — the card already says it, and saying it
+        // twice is the bug we fixed. Any other failure still reports normally,
+        // even while an older mic warning happens to be on screen.
+        const micDeniedThisCall = micDenialCountRef.current > micDenialsAtCallStart;
+        if (!micDeniedThisCall) {
           setError('Call did not connect. Please try again.');
         }
       }
@@ -633,73 +652,112 @@ export function useVoiceDevice() {
 
   // ── Microphone-permission recovery ─────────────────────────────────────────
 
-  // "Try Again" on the mic card. Probes getUserMedia directly:
-  //   • permission now granted (user changed it in Settings, or grants the
-  //     re-prompt) → probe resolves → clear the card, make sure the Device
-  //     is healthy. The previously attempted call is NOT re-placed — the
-  //     user returns to a ready dialer.
-  //   • still denied ("Don't ask again" / browser block) → probe rejects
-  //     immediately → the card stays up; Open Settings is the way out.
-  // The probe stream is stopped right away — we only need the answer.
-  const retryMicPermission = useCallback(async () => {
-    console.log('[VoiceDevice] retryMicPermission — probing getUserMedia');
+  // The single source of truth for "does this app actually have the
+  // microphone right now?".
+  //
+  // navigator.permissions.query({name:'microphone'}) is NOT usable here: in an
+  // Android WebView it reports the WEB-ORIGIN grant, which Capacitor hands out
+  // once, so it can read 'granted' while the OS RECORD_AUDIO runtime
+  // permission is still denied — and it can stay 'prompt' after the user turns
+  // the permission on in App Info. getUserMedia is the only honest answer on
+  // Android, so every check goes through this probe.
+  //
+  // Scope is deliberately minimal: audio only, every track stopped the instant
+  // we have the answer (in `finally`, so a throw can't leak a live track), no
+  // recorder, no retained stream, nothing written anywhere. The boolean is the
+  // only thing that escapes.
+  //
+  // Returns true (granted) | false (denied) | null (can't tell — no
+  // getUserMedia, or a probe is already running).
+  const probeMicPermission = useCallback(async (reason) => {
     if (!navigator.mediaDevices?.getUserMedia) {
-      console.warn('[VoiceDevice] getUserMedia unavailable — cannot probe mic permission');
-      return false;
+      console.warn('[VoiceDevice] getUserMedia unavailable — cannot probe mic permission', { reason });
+      return null;
     }
+    if (micProbeInFlightRef.current) {
+      console.log('[VoiceDevice] mic probe already in flight — skipping', { reason });
+      return null;
+    }
+
+    micProbeInFlightRef.current = true;
+    let stream = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(track => track.stop());
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log('[VoiceDevice] mic probe granted', { reason });
+      return true;
     } catch (err) {
-      console.warn('[VoiceDevice] mic still blocked after retry', {
+      console.warn('[VoiceDevice] mic probe denied', {
+        reason,
         name: err?.name,
         message: err?.message,
       });
-      setMicBlockedState(true); // card stays up (idempotent — never duplicates)
       return false;
+    } finally {
+      try { stream?.getTracks()?.forEach(track => track.stop()); } catch { /* noop */ }
+      micProbeInFlightRef.current = false;
     }
-    console.log('[VoiceDevice] mic access granted — clearing warning');
+  }, []);
+
+  // Permission is back: retire the single warning and return the dialer to a
+  // usable state. Never places or repeats a call, and never builds a second
+  // Device — initialize() no-ops when one exists, and recoverVoiceTransport is
+  // deduped by refreshingRef and destroys before it recreates, so no listener
+  // is ever attached twice.
+  const clearMicWarningAndReady = useCallback(async (reason) => {
+    console.log('[VoiceDevice] mic access granted — clearing warning', { reason });
     setMicBlockedState(false);
     setError(null);
-    // Recover the voice session without ever creating a duplicate Device:
-    // initialize() no-ops when a Device exists, recoverVoiceTransport is
-    // deduped by refreshingRef and destroys before recreating.
+
     if (!deviceRef.current) {
       await initialize();
     } else if (deviceRef.current.state !== 'registered') {
-      recoverVoiceTransport('manual_retry');
+      await recoverVoiceTransport(`mic_granted_${reason}`);
     } else if (!callInFlightRef.current) {
       // Don't stomp 'incoming'/'connected' if a call arrived while the
       // card was up — only settle back to ready when the line is idle.
       setStatus('ready');
     }
-    return true;
   }, [initialize, recoverVoiceTransport]);
+
+  // "Try Again" on the mic card.
+  //   • granted → clear the card, dialer back to ready. The call that failed
+  //     is NOT re-placed; the user presses Call themselves.
+  //   • denied ("Don't ask again" / browser block) → the card stays up,
+  //     exactly one warning, Open Settings is the way out.
+  const retryMicPermission = useCallback(async (reason = 'try_again') => {
+    const granted = await probeMicPermission(reason);
+    if (granted === true) {
+      await clearMicWarningAndReady(reason);
+      return true;
+    }
+    if (granted === false) {
+      // Definitively still denied — keep exactly the one warning that is
+      // already on screen (idempotent; never stacks a second card).
+      setMicBlockedState(true);
+    }
+    // granted === null means a resume probe is already running (or the browser
+    // has no getUserMedia). Don't re-assert the warning — that would race the
+    // in-flight probe and could re-raise the card right after it cleared it.
+    return false;
+  }, [probeMicPermission, clearMicWarningAndReady]);
 
   // "Not now" on the mic card — hide it until the next failed attempt.
   const dismissMicWarning = useCallback(() => {
     setMicBlockedState(false);
   }, []);
 
-  // Silent re-check when the app returns to the foreground (e.g. the user
-  // flipped the permission in Android Settings and switched back). Uses the
-  // Permissions API only — never getUserMedia — so it can NEVER pop a
-  // permission prompt or start any media. No call is auto-placed.
+  // Re-check when the app returns to the foreground — the Open Settings →
+  // grant → Back round trip never reloads the WebView, so nothing else would
+  // notice the change. Gated on micBlockedRef, so this only ever runs while
+  // the warning is actually up: a normal resume never touches the microphone.
   const recheckMicPermission = useCallback(async (reason) => {
     if (!micBlockedRef.current) return;
-    if (!navigator.permissions?.query) return; // no silent check possible; Try Again still works
-    try {
-      const result = await navigator.permissions.query({ name: 'microphone' });
-      if (result.state === 'granted') {
-        console.log('[VoiceDevice] mic permission granted while away — clearing warning', { reason });
-        setMicBlockedState(false);
-        // Device health is handled by the refreshVoiceSession that runs on
-        // the same visibility/focus event.
-      }
-    } catch {
-      // Some browsers don't support querying 'microphone' — ignore.
+    const granted = await probeMicPermission(reason);
+    if (granted === true) {
+      await clearMicWarningAndReady(reason);
     }
-  }, []);
+    // false / null → the card is already up; leave exactly that one warning.
+  }, [probeMicPermission, clearMicWarningAndReady]);
 
   // ── App-resume / visibility recovery ───────────────────────────────────────
   // Browsers throttle background timers heavily, so a token that should

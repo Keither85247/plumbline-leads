@@ -91,6 +91,7 @@ export const translations = {
     callsMicTryAgain:       'Try Again',
     callsMicNotNow:         'Not now',
     callsMicBrowserHint:    'Use the lock or microphone icon in your browser\'s address bar to allow access.',
+    callsMicOpenSettingsFailed: 'We could not open your settings. Open the Settings app, find Plumbline Leads, and turn on Microphone.',
 
     // ContactHistoryModal
     contactHistoryInteraction:    'interaction',
@@ -661,6 +662,7 @@ export const translations = {
     callsMicTryAgain:       'Reintentar',
     callsMicNotNow:         'Ahora no',
     callsMicBrowserHint:    'Usa el ícono de candado o micrófono en la barra de direcciones de tu navegador para permitir el acceso.',
+    callsMicOpenSettingsFailed: 'No pudimos abrir la configuración. Abre la app de Configuración, busca Plumbline Leads y activa el Micrófono.',
 
     // ContactHistoryModal
     contactHistoryInteraction:    'interacción',

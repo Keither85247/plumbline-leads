@@ -16,6 +16,10 @@ import { canOpenAppSettings, isNativeAndroid, openAppSettings } from '../utils/a
 // overflows on narrow screens.
 export default function MicPermissionCard({ voiceDevice, t }) {
   const [retrying, setRetrying] = useState(false);
+  // Set when the native App Info launch fails (no Activity, or the OEM has no
+  // app-details screen). The user gets a short plain-language fallback instead
+  // of a button that appears to do nothing.
+  const [openFailed, setOpenFailed] = useState(false);
   // Three variants:
   //   new APK  → Open Settings button (plugin present)
   //   old APK  → no settings button, no browser hint (a Capacitor WebView
@@ -24,8 +28,16 @@ export default function MicPermissionCard({ voiceDevice, t }) {
   const showOpenSettings = canOpenAppSettings();
   const showBrowserHint = !isNativeAndroid() && !showOpenSettings;
 
+  async function handleOpenSettings() {
+    setOpenFailed(false);
+    const opened = await openAppSettings();
+    if (!opened) setOpenFailed(true);
+  }
+
   async function handleTryAgain() {
     if (retrying) return;
+    // A fresh attempt supersedes any stale "couldn't open settings" notice.
+    setOpenFailed(false);
     setRetrying(true);
     try {
       // The timeout only re-enables the button — if getUserMedia is still
@@ -70,11 +82,17 @@ export default function MicPermissionCard({ voiceDevice, t }) {
               </p>
             )}
 
+            {openFailed && (
+              <p role="status" className="mt-1 text-[13px] leading-5 text-[#B54708]">
+                {t.callsMicOpenSettingsFailed}
+              </p>
+            )}
+
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {showOpenSettings && (
                 <button
                   type="button"
-                  onClick={openAppSettings}
+                  onClick={handleOpenSettings}
                   className="text-[13px] font-semibold px-3.5 py-2 rounded-full bg-[#065F46] text-white active:scale-[0.97] transition-transform"
                 >
                   {t.callsMicOpenSettings}
