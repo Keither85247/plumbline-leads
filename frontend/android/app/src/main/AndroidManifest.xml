@@ -57,13 +57,5 @@
         Declared now so a future update doesn't require a new Play Store review.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-
-    <!--
-        USE_FULL_SCREEN_INTENT — enables full-screen incoming call UI on
-        lock screen. Requires special permission in Play Store listing.
-        Declared for future use; not active until a native call service exists.
-    -->
-    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
 </manifest>
