@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Privacy Policy — Plumbline Leads</title>
+<meta name="description" content="How Plumbline Leads collects, uses, and shares information.">
+<meta name="color-scheme" content="light dark">
+<style>
+  :root {
+    --bg: #f8fafc;
+    --surface: #ffffff;
+    --text: #0f172a;
+    --muted: #475569;
+    --faint: #64748b;
+    --border: #e2e8f0;
+    --accent: #2563eb;
+    --accent-soft: #eff6ff;
+    --note-bg: #fffbeb;
+    --note-border: #fde68a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1120;
+      --surface: #111827;
+      --text: #e5e7eb;
+      --muted: #cbd5e1;
+      --faint: #94a3b8;
+      --border: #1f2937;
+      --accent: #60a5fa;
+      --accent-soft: #172554;
+      --note-bg: #1c1917;
+      --note-border: #78350f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  .topbar {
+    position: sticky; top: 0; z-index: 1;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 16px;
+    padding-top: calc(12px + env(safe-area-inset-top));
+  }
+  .topbar-inner { max-width: 760px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .brand { font-weight: 700; letter-spacing: -0.01em; }
+  .brand span { color: var(--accent); }
+  .back { color: var(--accent); text-decoration: none; font-size: 14px; font-weight: 600; white-space: nowrap; }
+  .back:hover { text-decoration: underline; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 30px; line-height: 1.2; letter-spacing: -0.02em; margin: 8px 0 4px; }
+  .effective { color: var(--faint); font-size: 14px; margin: 0 0 24px; }
+  h2 { font-size: 20px; line-height: 1.3; margin: 40px 0 12px; padding-top: 8px; scroll-margin-top: 72px; }
+  h3 { font-size: 16px; margin: 24px 0 6px; }
+  p, li { color: var(--muted); }
+  ul { padding-left: 22px; }
+  li { margin: 4px 0; }
+  strong { color: var(--text); }
+  a { color: var(--accent); }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    margin: 16px 0;
+  }
+  .summary { background: var(--accent-soft); border-color: transparent; }
+  .summary ul { margin: 8px 0 0; }
+  .note { background: var(--note-bg); border-color: var(--note-border); }
+  nav.toc ol { columns: 2; column-gap: 24px; padding-left: 20px; margin: 8px 0 0; }
+  nav.toc li { break-inside: avoid; font-size: 15px; }
+  @media (max-width: 560px) { nav.toc ol { columns: 1; } h1 { font-size: 26px; } }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 12px 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 520px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text); font-weight: 600; background: var(--bg); }
+  td { color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  footer { max-width: 760px; margin: 0 auto; padding: 0 16px 40px; color: var(--faint); font-size: 13px; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">Plumbline<span> Leads</span></div>
+    <a class="back" href="/">&larr; Back to Plumbline Leads</a>
+  </div>
+</header>
+
+<main>
+  <h1>Privacy Policy</h1>
+  <p class="effective">Effective date: October 4, 2026</p>
+
+  <p>This Privacy Policy explains what information the <strong>Plumbline Leads</strong> app and website (the &ldquo;Service&rdquo;) collect, how that information is used, and who it is shared with. Plumbline Leads is a lead-management and communications tool for contractors and other businesses. It is operated by <strong>Plumbline Group</strong> (&ldquo;we,&rdquo; &ldquo;us&rdquo;).</p>
+
+  <div class="card summary">
+    <strong>The short version</strong>
+    <ul>
+      <li>We collect your account details and the business communications you handle in the app: calls, call recordings, voicemails, text messages, and (if you connect it) Gmail.</li>
+      <li>Calls are recorded once answered. Recorded calls and voicemails are transcribed and summarized by AI; voicemails and incoming texts become leads in your account.</li>
+      <li>We use service providers to run the Service, including Twilio (calls and texts), OpenAI (transcription and summaries), Google (Gmail and push notifications), Sentry (error monitoring), Render and Vercel (hosting).</li>
+      <li>We do not sell your personal information. The app shows no ads and contains no advertising or marketing-analytics software.</li>
+      <li>The app does not process payments.</li>
+    </ul>
+  </div>
+
+  <nav class="toc card" aria-label="Contents">
+    <strong>Contents</strong>
+    <ol>
+      <li><a href="#collect">Information we collect</a></li>
+      <li><a href="#use">How we use information</a></li>
+      <li><a href="#ai">AI-generated content</a></li>
+      <li><a href="#providers">Service providers</a></li>
+      <li><a href="#sharing">Selling, advertising, and sharing</a></li>
+      <li><a href="#recording">Call recording</a></li>
+      <li><a href="#retention">How long we keep information</a></li>
+      <li><a href="#choices">Your choices and deletion requests</a></li>
+      <li><a href="#security">Security</a></li>
+      <li><a href="#children">Children</a></li>
+      <li><a href="#changes">Changes to this policy</a></li>
+      <li><a href="#contact">Contact us</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="collect">1. Information we collect</h2>
+
+  <h3>Account information</h3>
+  <p>When an account is created we collect your name, email address, and password, and optionally your business name. Passwords are stored only as one-way (bcrypt) hashes, not in readable form. When you sign in, a session token is stored on your device (as a cookie and in app storage) so you stay signed in for about 30 days or until you log out. If an administrator created your account, the administrator set your initial password; the app does not currently offer a way to change or reset a password, so contact us if you want it changed. We also keep information about your account&rsquo;s status, such as your sign-up date, your role, whether you have tester, trial, or paid access, whether the account or its business number is suspended, and internal account identifiers.</p>
+
+  <h3>Business profile and settings</h3>
+  <p>Your name (used in follow-up message drafts), your business name, and your voicemail greeting. If you upload or record a voicemail greeting, the audio file is stored on our servers and played to callers who reach your voicemail. If you have not uploaded or recorded one, a standard greeting is read aloud to callers using Twilio&rsquo;s text-to-speech.</p>
+
+  <h3>Your business number</h3>
+  <p>When you choose a business number, we search Twilio&rsquo;s available numbers (for example, by the area code you enter) and obtain the number through our Twilio account. The number is assigned to your account but remains held by Plumbline Group. If your account is closed or the number is removed from it, we may release the number or assign it to another user, and calls and texts to it will no longer reach you. Until the number is released or reassigned, calls, voicemails, and texts to it are delivered to Plumbline Group&rsquo;s administrator account and are recorded, transcribed, and summarized there in the same way.</p>
+
+  <h3>Customer and lead records</h3>
+  <p>Information about your customers, leads, and vendors that you enter or that the app creates from your communications, such as names, companies, phone numbers, email addresses, street addresses, notes, lead status, and category.</p>
+
+  <h3>Calls and call recordings</h3>
+  <p>For calls made or received through your Plumbline Leads business number we collect phone numbers, call direction, status, duration, and time. Answered calls &mdash; both incoming calls and calls you place from the app &mdash; are recorded. Recordings are created and stored by our telephony provider, Twilio, and we keep a reference to each recording so you can play it back in the app. We also store a written transcript and an AI-generated summary of each recorded call in your account. After a call you place, the app asks you to choose an outcome and add an optional note, which are saved with that call. Call history, call transcripts, call summaries, and call notes cannot currently be deleted in the app.</p>
+  <p>When you place or receive a call in the app, Twilio&rsquo;s calling software also sends Twilio technical information it uses to connect calls and diagnose call quality, such as your IP address, network connection details, device and browser type, and call-quality measurements.</p>
+
+  <h3>Voicemail</h3>
+  <p>When a caller leaves a voicemail (up to 2 minutes), the audio is recorded by Twilio. We use it to create a transcript and an AI summary, which are saved as a lead in your account. For voicemails identified as coming from a supplier, the transcript and summary are saved to your call history and the supplier is added to your vendor contacts; these voicemail transcripts cannot currently be deleted in the app.</p>
+
+  <h3>Text messages (SMS and MMS)</h3>
+  <p>We store the content of text messages you send and receive through your business number so they appear in your inbox, along with phone numbers and delivery status. Photos you receive stay with Twilio and are shown to you through our servers. Photos you send are stored temporarily on our servers so Twilio can deliver them.</p>
+
+  <h3>Email (optional Gmail connection)</h3>
+  <p>Where the Gmail feature is available and you choose to connect a Gmail account, the app asks Google for permission to read and send email on your behalf. We store your connected Gmail address and the access tokens Google provides. While Gmail is connected, the Service checks your inbox and sent mail in the background about once a minute; when you first connect, it imports up to 100 inbox and 100 sent messages from the last 30 days. For these messages we store the sender, recipients, subject, a short preview (up to about 300 characters), labels, read status, and message identifiers &mdash; not full message bodies or received attachments. Emails you send from the app are delivered through your Gmail account; we store the recipients, subject, a short preview, and the names, types, and sizes of any attachments, while the attachment files pass through our servers to Gmail without being stored. Email content is <strong>not</strong> sent to OpenAI, used for AI processing or advertising, or sold. It is used only to provide the email features in your account, apart from the troubleshooting logs and error reports described under <a href="#diagnostics">Diagnostics and logs</a>.</p>
+
+  <h3>Push notifications</h3>
+  <p>If you turn on notifications, we store a notification token (from Google Firebase Cloud Messaging on Android, or your browser&rsquo;s push service on the web) so we can alert you. Notifications can include a caller&rsquo;s phone number or name and a short AI summary of a voicemail. On Android, the app registers for notifications when it starts. Logging out does not currently stop notifications on that device.</p>
+
+  <h3>Address search and location</h3>
+  <p>The Android app does not request location permission. On the web, the contact address editor may ask your browser for your location. If you allow it and address autocomplete is enabled, your device&rsquo;s location (the coordinates your browser provides) is sent to Mapbox along with the address text you type, so nearby addresses appear first. Your location is not sent to or stored on our servers. When you choose a suggestion, the address and its map coordinates are saved on that contact.</p>
+
+  <h3>Microphone</h3>
+  <p>The app uses your device microphone to place and receive calls and to record a voicemail greeting. Microphone access is used only for these features.</p>
+
+  <h3 id="diagnostics">Diagnostics and logs</h3>
+  <p>We use Sentry to detect errors and monitor performance in the app. When you are signed in, error and performance reports include your user ID and email address, the addresses of app pages and data being loaded (which may contain phone numbers), browser and device type, and recent in-app activity logs, which can include phone numbers, contact names, and voicemail summaries. Search terms you type, such as a contact&rsquo;s name or phone number, can also appear in these reports. Performance monitoring records page loads and network requests. If server-side error reporting is enabled, errors on our servers are also reported to Sentry and can include details of the request being processed, such as phone numbers and message text. Our hosting provider keeps server logs used for operation and troubleshooting; these logs can contain names of contacts and companies, email addresses, phone numbers, email subjects, and short excerpts of messages or transcripts. Our hosting, network, and communications providers (including Twilio, Sentry, and, if enabled, Mapbox) also receive standard technical information such as IP address and browser or device type when your device connects to them.</p>
+
+  <h3>Information stored on your device</h3>
+  <p>The app keeps some information in your browser or app storage: your sign-in token, your name and business name, language and display preferences, your access status, and the phone numbers of contacts you pin. Logging out removes the sign-in token; the other items remain on the device until you clear the app&rsquo;s or browser&rsquo;s site data. On Android, app data may be included in your device backup if Android backup is turned on.</p>
+
+  <h3>What we do not collect</h3>
+  <p>The app does not collect payment card or bank information and does not process payments. It does not use an advertising ID and contains no advertising or marketing-analytics software (error and performance monitoring through Sentry is described above). It does not access your device&rsquo;s contacts, call log, or text messages. Calls you place with the app&rsquo;s Call button, and texts you send from the in-app inbox, go through your Plumbline Leads business number. Some Text buttons and phone-number links instead open your device&rsquo;s own messaging or phone app; messages and calls made that way are sent from your personal number by your device and carrier, and Plumbline Leads does not record or store them.</p>
+
+  <h2 id="use">2. How we use information</h2>
+  <ul>
+    <li>To provide the Service: route and place calls, deliver and display text messages and email, create leads, and show your communication history.</li>
+    <li>To transcribe and summarize calls, voicemails, and incoming text messages, and to draft and translate follow-up messages (see <a href="#ai">AI-generated content</a>).</li>
+    <li>To send notifications you have turned on.</li>
+    <li>To sign you in and keep your account secure.</li>
+    <li>To detect, investigate, and fix errors and performance problems.</li>
+    <li>To protect the Service and the people who use it, for example to prevent spam, fraud, and abuse of calling and messaging. We check outgoing texts against sending limits (such as volume, number of different recipients, and repeated identical messages) and may restrict messaging or suspend an account or number.</li>
+    <li>To respond to your requests and communicate with you about the Service.</li>
+  </ul>
+
+  <h2 id="ai">3. AI-generated content</h2>
+  <p>Plumbline Leads uses OpenAI to produce content from <strong>your own business communications</strong>:</p>
+  <ul>
+    <li>Voicemail audio and the audio of recorded calls are sent to OpenAI to be transcribed.</li>
+    <li>Call transcripts are sent to OpenAI to produce a short call summary and key points, shown in your call history.</li>
+    <li>Voicemail transcripts and incoming text messages are sent to OpenAI to produce a contact name, company, category, short summary, key points, a callback number, and a suggested follow-up text, which become a lead (or a vendor record) in your account.</li>
+    <li>If you use the translate feature, the follow-up text as shown in the app &mdash; including your name and any edits you made &mdash; is sent to OpenAI for translation. Translations are not stored unless you send one as a text message.</li>
+  </ul>
+  <p>Content is sent as it was spoken or written, so it can include names, phone numbers, addresses, and other details your customers share. Audio files downloaded for transcription are stored only temporarily on our servers and deleted after processing. OpenAI processes this data under its own terms and data-usage settings. AI-generated summaries and drafts can be inaccurate; please review them before relying on them or sending a message. Gmail content is never sent to OpenAI.</p>
+
+  <h2 id="providers">4. Service providers</h2>
+  <p>We share information with the following providers only as needed to operate the Service. Each processes data under its own terms and privacy policy.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Provider</th><th>What it does for us</th><th>Information involved</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Twilio</strong></td><td>Phone numbers, calling, text messaging, call and voicemail recording</td><td>Phone numbers, call details, call and voicemail audio, text messages and photos, your voicemail greeting, and technical call-quality data from in-app calling</td></tr>
+        <tr><td><strong>OpenAI</strong></td><td>Transcription, summaries, lead details, follow-up drafts, translation</td><td>Call and voicemail audio, transcripts, incoming text messages, follow-up drafts you translate</td></tr>
+        <tr><td><strong>Google (Gmail API)</strong></td><td>Optional email connection</td><td>Gmail access tokens, email headers, previews, and emails you send</td></tr>
+        <tr><td><strong>Google Firebase Cloud Messaging</strong> and browser push services</td><td>Delivering push notifications</td><td>Notification tokens; notification text (caller number or name, voicemail summary)</td></tr>
+        <tr><td><strong>Mapbox</strong></td><td>Address suggestions, if enabled</td><td>Address text you type; your location on the web, if you allow it</td></tr>
+        <tr><td><strong>Sentry</strong></td><td>Error and performance monitoring</td><td>Error details, page and request addresses, search terms, recent in-app activity logs, browser and device type, your user ID and email; server request details if server-side reporting is enabled</td></tr>
+        <tr><td><strong>Render</strong></td><td>Hosting for our servers, database, and stored files</td><td>All information stored by the Service, and server logs</td></tr>
+        <tr><td><strong>Vercel</strong></td><td>Hosting for the web app</td><td>Standard web request information</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="sharing">5. Selling, advertising, and sharing</h2>
+  <p>We do not sell your personal information. We do not use it to show you ads, and the app contains no advertising or marketing-analytics software. We share information with the service providers listed above as described in this policy, and we may disclose information if required by law.</p>
+
+  <h3>Access by Plumbline Group</h3>
+  <p>We operate the Service&rsquo;s servers and the telephony account it uses, so our authorized personnel can access stored information, including recordings, messages, transcripts, and contact records, when needed to run, support, or protect the Service. Our administrators can see a list of all accounts with each account&rsquo;s name, email address, business name, assigned business number, status, and sign-up date, and can create, suspend, or remove accounts and assign or remove business numbers. Suspending or removing an account, or removing its business number, does not by itself delete the information stored for that account; to have it deleted, send a deletion request as described in <a href="#choices">section 8</a>.</p>
+
+  <h3>Information about your customers and other contacts</h3>
+  <p>When someone calls, texts, or emails a business that uses Plumbline Leads, we process their information for that business as described in this policy. If you are a customer or contact of a business that uses Plumbline Leads and have a question or request about your information, you can contact that business or <a href="#contact">contact us</a>.</p>
+
+  <h3>Where information is processed</h3>
+  <p>Plumbline Leads is provided from the United States. Our service providers may store and process information in the United States and other countries.</p>
+
+  <h2 id="recording">6. Call recording</h2>
+  <p>Incoming callers hear &ldquo;This call may be recorded for quality purposes&rdquo; before the call connects. Calls you place from the app are also recorded once answered, but the person you call does not currently hear an automated notice. Recording laws differ by location, and some require the consent of everyone on the call.</p>
+
+  <h2 id="retention">7. How long we keep information</h2>
+  <p>We keep your information until you delete it in the app, where the app allows that, or until it is deleted in response to a request (see <a href="#choices">section 8</a>). We do not automatically delete your information when you stop using the Service, and we do not currently apply automatic deletion periods. Specifically:</p>
+  <ul>
+    <li>Audio downloaded for transcription is deleted from our servers after processing.</li>
+    <li>Photos you send by text message are stored temporarily so Twilio can deliver them.</li>
+    <li>Your voicemail greeting is kept until you replace or delete it.</li>
+    <li>Call and voicemail recordings and text-message content held by Twilio, information processed by OpenAI, error reports in Sentry, and server logs are kept according to those providers&rsquo; retention settings.</li>
+  </ul>
+
+  <h2 id="choices">8. Your choices and deletion requests</h2>
+  <ul>
+    <li><strong>Profile:</strong> you can view and update your name and business name in Settings.</li>
+    <li><strong>Leads and contacts:</strong> you can delete saved contact profiles and leads created from voicemails in the app. Leads created from, or later linked to, text messages cannot currently be deleted in the app. Deleting a conversation or an email hides it from your view; the underlying record is kept. Call history cannot currently be deleted in the app. Deleting items in the app does not delete recordings or messages held by Twilio. For anything you cannot remove yourself, contact us.</li>
+    <li><strong>Gmail:</strong> disconnecting Gmail removes the stored Gmail access tokens from our database; emails already imported remain. To fully revoke access, also remove Plumbline Leads in your Google Account&rsquo;s security settings.</li>
+    <li><strong>Notifications:</strong> on the web you can turn notifications off in Settings; on Android, turn them off in your device&rsquo;s app notification settings. Logging out does not currently stop notifications on that device.</li>
+    <li><strong>Microphone:</strong> you can withdraw microphone permission in your device settings; calling will not work without it.</li>
+  </ul>
+  <div class="card note">
+    <strong>Deleting your account</strong>
+    <p style="margin:6px 0 0">The app does not yet offer self-service account deletion. To ask us to delete your account and the information associated with it, or to request a copy of your information, email <a href="mailto:tcpudp23@gmail.com?subject=Plumbline%20Leads%20privacy%20request">tcpudp23@gmail.com</a> from the email address on your account. Please include &ldquo;Plumbline Leads&rdquo; and the type of request. Deletion requests are currently handled manually by Plumbline Group. Copies held by our service providers (such as recordings and messages at Twilio, information processed by OpenAI, and error reports in Sentry), server logs, and any backups may remain until they are removed under those providers&rsquo; or systems&rsquo; retention settings.</p>
+  </div>
+
+  <h2 id="security">9. Security</h2>
+  <p>Connections between the app and our servers use HTTPS, and passwords are stored as one-way hashes. No method of transmission or storage is completely secure, and we cannot guarantee absolute security.</p>
+
+  <h2 id="children">10. Children</h2>
+  <p>Plumbline Leads is a business tool intended for adults 18 and over. It is not directed to children, and children should not use it.</p>
+
+  <h2 id="changes">11. Changes to this policy</h2>
+  <p>We may update this policy as the Service changes. When we do, we will update the effective date at the top of this page.</p>
+
+  <h2 id="contact">12. Contact us</h2>
+  <p>Questions or requests about privacy: <a href="mailto:tcpudp23@gmail.com?subject=Plumbline%20Leads%20privacy">tcpudp23@gmail.com</a></p>
+</main>
+
+<footer>
+  &copy; 2026 Plumbline Group &middot; Plumbline Leads &middot; <a href="/">Back to the app</a>
+</footer>
+</body>
+</html>

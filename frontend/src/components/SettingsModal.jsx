@@ -359,6 +359,24 @@ export default function SettingsModal({
             </div>
           </div>
 
+          {/* Privacy — opens the public policy page (static /privacy) */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+              {t.privacy}
+            </label>
+            <a
+              href="/privacy"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 font-medium hover:bg-gray-100 transition-colors"
+            >
+              {t.privacyPolicy}
+              <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </a>
+          </div>
+
         </div>
 
         {/* Save result toast */}

@@ -313,6 +313,18 @@ export default function LoginPage({ onSuccess }) {
             </button>
           )}
         </p>
+
+        {/* Public policy page — served statically from /privacy, no sign-in needed */}
+        <p className="mt-3 text-center text-xs">
+          <a
+            href="/privacy"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-gray-400 hover:text-gray-600 underline underline-offset-2"
+          >
+            {t.privacyPolicy}
+          </a>
+        </p>
       </div>
     </div>
   );

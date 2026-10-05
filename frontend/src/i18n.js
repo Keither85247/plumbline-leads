@@ -9,6 +9,8 @@ export const translations = {
     businessNamePlaceholder: 'e.g. Smith Plumbing',
     language: 'Language',
     done: 'Done',
+    privacy: 'Privacy',
+    privacyPolicy: 'Privacy Policy',
 
     // Onboarding modal
     onboardingTitle: 'Never forget a call again',
@@ -580,6 +582,8 @@ export const translations = {
     businessNamePlaceholder: 'ej. Smith Plomería',
     language: 'Idioma',
     done: 'Listo',
+    privacy: 'Privacidad',
+    privacyPolicy: 'Política de privacidad',
 
     // Onboarding modal
     onboardingTitle: 'Nunca olvides una llamada',
