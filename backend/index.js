@@ -32,6 +32,9 @@ const pushRouter       = require('./routes/push');
 const settingsRouter   = require('./routes/settings');
 const numbersRouter    = require('./routes/numbers');
 const requireAuth      = require('./middleware/requireAuth');
+const requireOwner     = require('./middleware/requireOwner');
+const healthRouters    = require('./routes/health');
+const migrateRouter    = require('./routes/migrate');
 
 const { startPolling }                                     = require('./jobs/gmailPoller');
 const { backfillMissingLabels, getAllConnectedUserIds }     = require('./services/gmailService');
@@ -185,39 +188,10 @@ app.use(cookieParser());
 app.use(express.json({ limit: '2mb' }));
 
 // ── Public routes (no authentication required) ────────────────────────────────
-// Health check — used by the frontend status indicator
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
-
-// Env-var diagnostic — safe to leave in: only reveals whether flags are set, not their values
-app.get('/api/health/env', (_req, res) => {
-  res.json({
-    ALLOW_PUBLIC_SIGNUP:  process.env.ALLOW_PUBLIC_SIGNUP  || '(not set)',
-    ENABLE_TESTER_BYPASS: process.env.ENABLE_TESTER_BYPASS || '(not set)',
-    NODE_ENV:             process.env.NODE_ENV             || '(not set)',
-  });
-});
-
-// Owner account diagnostic — confirms the account exists and has a password,
-// without exposing any sensitive data. Used to verify reset worked on Render.
-// Safe to leave in production: reveals nothing beyond "account exists / not".
-app.get('/api/health/owner', (_req, res) => {
-  try {
-    const db    = require('./db');
-    const owner = db.prepare(
-      'SELECT id, email, is_owner, (password_hash IS NOT NULL) AS has_password FROM users WHERE is_owner = 1 LIMIT 1'
-    ).get();
-    const total = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
-    res.json({
-      owner_exists:  !!owner,
-      owner_email:   owner ? owner.email  : null,
-      owner_id:      owner ? owner.id     : null,
-      has_password:  owner ? !!owner.has_password : false,
-      total_users:   total,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// Health check — liveness only ({ ok: true }). Used by Render's health check and
+// the frontend status indicator. Detailed diagnostics (/api/health/env,
+// /api/health/owner) are owner-only and mounted after requireAuth below.
+app.use('/api/health', healthRouters.publicRouter);
 
 // Auth routes: login, logout, me, Gmail OAuth callbacks
 // login / logout / me are always public by definition.
@@ -234,10 +208,6 @@ app.use('/auth', authRouter);
 // tokenized greeting-audio route stays public by design; /outbound is retired (410).
 app.use('/api/twilio',       twilioRouter);
 app.use('/api/twilio/token', tokenRouter);
-
-// Transcribe — accepts audio uploads from the browser (also used in onboarding
-// before auth was added). Kept public for now; add requireAuth in a later pass.
-app.use('/api/transcribe', transcribeRouter);
 
 // MMS delivery — Twilio's servers fetch outbound MMS media from here.
 // MUST stay public (Twilio has no session cookie). Routes use a one-time
@@ -263,28 +233,14 @@ app.use('/api/push',     pushRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/numbers',  numbersRouter);
 
-// ── TEMPORARY MIGRATION ENDPOINT — REMOVE AFTER USE ──────────────────────────
-app.post('/api/migrate', (req, res) => {
-  const db = require('./db');
-  const { leads = [], calls = [] } = req.body;
-  let leadsInserted = 0;
-  let callsInserted = 0;
-  const insertLead = db.prepare(`INSERT OR IGNORE INTO leads (id,transcript,raw_text,contact_name,company_name,phone_number,callback_number,summary,key_points,follow_up_text,category,source,recording_url,status,archived,created_at) VALUES (@id,@transcript,@raw_text,@contact_name,@company_name,@phone_number,@callback_number,@summary,@key_points,@follow_up_text,@category,@source,@recording_url,@status,@archived,@created_at)`);
-  const insertCall = db.prepare(`INSERT OR IGNORE INTO calls (id,from_number,call_sid,classification,status,recording_url,duration,transcript,summary,key_points,contractor_note,outcome,created_at) VALUES (@id,@from_number,@call_sid,@classification,@status,@recording_url,@duration,@transcript,@summary,@key_points,@contractor_note,@outcome,@created_at)`);
-  const runAll = db.transaction(() => {
-    for (const lead of leads) leadsInserted += insertLead.run(lead).changes;
-    for (const call of calls) callsInserted += insertCall.run(call).changes;
-  });
-  try {
-    runAll();
-    console.log(`[Migrate] ${leadsInserted} leads, ${callsInserted} calls`);
-    res.json({ ok: true, leadsInserted, callsInserted });
-  } catch (err) {
-    console.error('[Migrate]', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-// ── END TEMPORARY MIGRATION ENDPOINT ─────────────────────────────────────────
+// Transcribe — authenticated audio upload; leads are created for req.userId only.
+app.use('/api/transcribe', transcribeRouter);
+
+// Owner-only diagnostics (/api/health/env, /api/health/owner).
+app.use('/api/health', requireOwner, healthRouters.ownerRouter);
+
+// TEMPORARY MIGRATION ENDPOINT — REMOVE AFTER USE. Owner-only (enforced in the router).
+app.use('/api/migrate', migrateRouter);
 
 // ── Error handling — must be after all routes ─────────────────────────────────
 if (process.env.SENTRY_DSN) {

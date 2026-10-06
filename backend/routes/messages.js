@@ -182,7 +182,7 @@ router.get('/', (req, res) => {
       WHERE m.id = (
         SELECT id FROM messages m3
         WHERE m3.phone = m.phone
-          AND (m3.user_id = ? OR m3.user_id IS NULL)
+          AND m3.user_id = ?
         ORDER BY created_at DESC LIMIT 1
       )
       AND m.user_id = ?

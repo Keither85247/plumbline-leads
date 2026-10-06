@@ -46,6 +46,13 @@ async function createLeadFromTranscript({
                                  // can update the originating call row with
                                  // transcript/summary when routing to vendor
 }) {
+  // Never create a lead (or vendor contact / call update) without a verified
+  // owning account. Callers pass the session user or the Twilio-signed
+  // number owner; anything else is refused rather than stored ownerless.
+  if (!Number.isInteger(userId) || userId <= 0) {
+    throw new Error('createLeadFromTranscript requires a verified owning userId');
+  }
+
   const lang = language || process.env.LANGUAGE || 'en';
   const languageInstruction = lang === 'es'
     ? '\n- IMPORTANT: Write the "summary", all "keyPoints" strings, and "followUpText" in Spanish (Español). Keep all JSON field names in English.'
@@ -172,7 +179,7 @@ async function createLeadFromTranscript({
               key_points = COALESCE(key_points, ?),
               recording_url = COALESCE(recording_url, ?)
           WHERE call_sid = ?
-            AND (user_id = ? OR user_id IS NULL)
+            AND user_id = ?
         `).run(
           transcript,
           summary,
@@ -257,26 +264,30 @@ async function createLeadFromTranscript({
   return newLead;
 }
 
-// Duplicate check — global (prevents double-processing the same Twilio webhook)
-function isDuplicate(phoneNumber, transcript) {
+// Duplicate check scoped to the receiving account. Two testers can receive the
+// same text/voicemail without one account suppressing the other's lead.
+function isDuplicate(phoneNumber, transcript, userId = null) {
   if (!phoneNumber) return false;
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   const existing = db.prepare(
-    'SELECT id FROM leads WHERE phone_number = ? AND transcript = ? AND created_at > ?'
-  ).get(phoneNumber, transcript, fiveMinutesAgo);
+    `SELECT id FROM leads
+     WHERE phone_number = ? AND transcript = ? AND created_at > ?
+       AND user_id = ?`
+  ).get(phoneNumber, transcript, fiveMinutesAgo, userId);
   return !!existing;
 }
 
-// Same-day lead check — global (prevents repeated SMS creating duplicate leads)
-function hasLeadToday(phoneNumber) {
+// Same-day lead check scoped to the receiving account.
+function hasLeadToday(phoneNumber, userId = null) {
   if (!phoneNumber) return false;
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const existing = db.prepare(
     `SELECT id FROM leads
      WHERE (phone_number = ? OR callback_number = ?)
        AND created_at > ?
-       AND archived = 0`
-  ).get(phoneNumber, phoneNumber, oneDayAgo);
+       AND archived = 0
+       AND user_id = ?`
+  ).get(phoneNumber, phoneNumber, oneDayAgo, userId);
   return !!existing;
 }
 
@@ -318,9 +329,11 @@ router.get('/', (req, res) => {
     let query = `
       SELECT l.*,
         (SELECT COUNT(*) FROM messages m
-         WHERE m.phone = l.phone_number OR m.phone = l.callback_number) AS message_count,
+         WHERE m.user_id = l.user_id
+           AND (m.phone = l.phone_number OR m.phone = l.callback_number)) AS message_count,
         (SELECT MAX(m.created_at) FROM messages m
-         WHERE m.phone = l.phone_number OR m.phone = l.callback_number) AS last_message_at
+         WHERE m.user_id = l.user_id
+           AND (m.phone = l.phone_number OR m.phone = l.callback_number)) AS last_message_at
       FROM leads l
       WHERE l.archived = ?
         AND l.user_id = ?`;

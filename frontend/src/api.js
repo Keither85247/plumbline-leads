@@ -214,9 +214,25 @@ export async function activateTesterBypass() {
  * Log out — deletes the server-side session and clears the cookie.
  */
 export async function logout() {
+  // Identify THIS device's push registration so the backend can remove it —
+  // otherwise the device keeps receiving the account's notifications.
+  let webSub = null;
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration?.();
+    webSub = (await reg?.pushManager?.getSubscription?.()) || null;
+  } catch { /* push unsupported */ }
+  let fcmToken;
+  try { fcmToken = localStorage.getItem('plumbline_fcm_token') || undefined; } catch { /* no storage */ }
+
   // Send the request first (Bearer header attached by apiFetch) so the backend
-  // deletes the session, THEN clear localStorage so Safari cleans up too.
-  await apiFetch(`${AUTH_BASE}/logout`, { method: 'POST' }).catch(() => {});
+  // deletes the session AND this device's push rows, THEN clear localStorage
+  // so Safari cleans up too. The browser subscription itself is kept; the
+  // next sign-in re-binds it to that account (usePushNotifications).
+  await apiFetch(`${AUTH_BASE}/logout`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pushEndpoint: webSub?.endpoint, fcmToken }),
+  }).catch(() => {});
   localStorage.removeItem('plumbline_token');
 }
 

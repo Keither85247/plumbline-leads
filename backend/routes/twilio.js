@@ -24,7 +24,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // Caller classification
 // Uses prior lead history to classify an incoming number before routing.
 // ---------------------------------------------------------------------------
-function classifyIncomingCall(fromNumber) {
+function classifyIncomingCall(fromNumber, userId) {
   // Anonymous / blocked caller
   if (!fromNumber || fromNumber === 'anonymous' || fromNumber === 'blocked') {
     return 'Likely Spam';
@@ -32,8 +32,10 @@ function classifyIncomingCall(fromNumber) {
 
   // Look up all prior leads associated with this number
   const priorLeads = db.prepare(
-    'SELECT category FROM leads WHERE phone_number = ? OR callback_number = ?'
-  ).all(fromNumber, fromNumber);
+    `SELECT category FROM leads
+     WHERE (phone_number = ? OR callback_number = ?)
+       AND user_id = ?`
+  ).all(fromNumber, fromNumber, userId || null);
 
   if (priorLeads.length === 0) {
     // No history — treat as a potential new lead
@@ -300,7 +302,7 @@ router.post('/voice', express.urlencoded({ extended: true }), verifyTwilioSignat
   const toNumber       = To || Called;
   const assignedUserId = getAssignedUserForNumber(toNumber);
 
-  const classification = classifyIncomingCall(From);
+  const classification = classifyIncomingCall(From, assignedUserId);
   logCall(From, CallSid, classification, assignedUserId);
   log.info('Incoming call', { from: From || 'unknown', to: toNumber, callSid: CallSid, classification, assignedUserId });
 
@@ -387,6 +389,12 @@ router.post('/sms', express.urlencoded({ extended: true }), verifyTwilioSignatur
     return res.status(200).send('OK');
   }
 
+  // Never store a message or lead without a verified owning account.
+  if (!assignedUserId) {
+    log.warn('Inbound SMS dropped — no owning account for receiving number', { to: To });
+    return res.status(200).send('OK');
+  }
+
   // Drop inbound SMS if the receiving number is suspended
   if (To) {
     const numRow = db.prepare(
@@ -435,9 +443,10 @@ router.post('/sms', express.urlencoded({ extended: true }), verifyTwilioSignatur
     ? db.prepare(
         `SELECT id FROM leads
          WHERE (phone_number = ? OR callback_number = ?)
+           AND user_id = ?
            AND archived = 0
          ORDER BY created_at DESC LIMIT 1`
-      ).get(From, From)
+      ).get(From, From, assignedUserId || null)
     : null;
 
   if (existingLead) {
@@ -449,13 +458,13 @@ router.post('/sms', express.urlencoded({ extended: true }), verifyTwilioSignatur
         log.error('Failed to stamp lead_id on message', { err: err.message });
       }
     }
-    if (isDuplicate(From, Body) || hasLeadToday(From)) {
+    if (isDuplicate(From, Body, assignedUserId || null) || hasLeadToday(From, assignedUserId || null)) {
       log.info('SMS attached to existing lead, skipping new lead creation', { from: From, leadId: existingLead.id });
       return res.status(200).send('OK');
     }
   }
 
-  if (isDuplicate(From, Body)) {
+  if (isDuplicate(From, Body, assignedUserId || null)) {
     log.info('SMS duplicate detected, skipping lead creation', { from: From });
     return res.status(200).send('OK');
   }
@@ -498,6 +507,12 @@ router.post('/voicemail', express.urlencoded({ extended: true }), verifyTwilioSi
     return;
   }
 
+  // Never create a lead/call update without a verified owning account.
+  if (!Number.isInteger(userId) || userId <= 0) {
+    log.error('Voicemail webhook: no owning account — skipped', { callSid: CallSid });
+    return;
+  }
+
   // Derive a credential-safe URL from the trusted RecordingSid (preferred) or
   // strictly validate the supplied URL. Never attach credentials otherwise.
   let safeUrl;
@@ -529,7 +544,7 @@ router.post('/voicemail', express.urlencoded({ extended: true }), verifyTwilioSi
       return;
     }
 
-    if (isDuplicate(From, transcript)) {
+    if (isDuplicate(From, transcript, userId)) {
       log.info('Voicemail duplicate detected, skipping', { from: From });
       return;
     }
@@ -594,9 +609,15 @@ router.post('/recording', express.urlencoded({ extended: true }), verifyTwilioSi
 
   log.info('Answered-call recording ready', { callSid: CallSid, duration: RecordingDuration });
 
-  // Look up the original call to get the caller's number
+  // Look up the original call to get the caller's number. The row (created by
+  // /voice or /voice-client) carries the owning account; without it there is
+  // no verified owner, so skip rather than create an ownerless call row.
   const callRow = db.prepare('SELECT * FROM calls WHERE call_sid = ?').get(CallSid);
-  const fromNumber = callRow?.from_number || null;
+  if (!callRow || !callRow.user_id) {
+    log.warn('/recording webhook: no owned call row for CallSid — skipped', { callSid: CallSid });
+    return;
+  }
+  const fromNumber = callRow.from_number || null;
 
   const tempPath = path.join(os.tmpdir(), `twilio-call-${Date.now()}.mp3`);
 
@@ -640,16 +661,10 @@ Return a JSON object with exactly these fields:
     const summary = parsed.summary || '';
     const keyPoints = Array.isArray(parsed.keyPoints) ? parsed.keyPoints.slice(0, 3) : [];
 
-    // Update the existing calls row if we found it, otherwise insert a new one
-    if (callRow) {
-      db.prepare(
-        'UPDATE calls SET recording_url = ?, duration = ?, transcript = ?, summary = ?, key_points = ? WHERE call_sid = ?'
-      ).run(safeUrl, parseInt(RecordingDuration) || null, transcript, summary, JSON.stringify(keyPoints), CallSid);
-    } else {
-      db.prepare(
-        'INSERT INTO calls (from_number, call_sid, classification, recording_url, duration, transcript, summary, key_points) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).run(fromNumber, CallSid, 'Unknown', safeUrl, parseInt(RecordingDuration) || null, transcript, summary, JSON.stringify(keyPoints));
-    }
+    // Update the owned calls row (verified above)
+    db.prepare(
+      'UPDATE calls SET recording_url = ?, duration = ?, transcript = ?, summary = ?, key_points = ? WHERE call_sid = ? AND user_id = ?'
+    ).run(safeUrl, parseInt(RecordingDuration) || null, transcript, summary, JSON.stringify(keyPoints), CallSid, callRow.user_id);
 
     log.info('Call notes saved', { callSid: CallSid, from: fromNumber || 'unknown', summaryLen: summary.length });
   } catch (err) {

@@ -25,7 +25,9 @@ async function getPushPlugin() {
   return PushNotifications;
 }
 
-export function useCapacitorPush({ onNotification } = {}) {
+const FCM_TOKEN_KEY = 'plumbline_fcm_token';
+
+export function useCapacitorPush({ onNotification, userId } = {}) {
   const registered = useRef(false);
 
   const sendTokenToBackend = useCallback(async (token) => {
@@ -65,14 +67,16 @@ export function useCapacitorPush({ onNotification } = {}) {
           return;
         }
 
-        // Register with FCM
-        await PushNotifications.register();
-
-        // Token received — send to backend
+        // Token received — remember it for this device and send to backend.
+        // Attached before register() so the first token event is not missed.
         PushNotifications.addListener('registration', (token) => {
           console.log('[CapacitorPush] FCM token received');
+          try { localStorage.setItem(FCM_TOKEN_KEY, token.value); } catch { /* no storage */ }
           sendTokenToBackend(token.value);
         });
+
+        // Register with FCM
+        await PushNotifications.register();
 
         PushNotifications.addListener('registrationError', (err) => {
           console.error('[CapacitorPush] Registration error:', err.error);
@@ -103,4 +107,15 @@ export function useCapacitorPush({ onNotification } = {}) {
       // Listeners are cleaned up automatically when the app unloads
     };
   }, [sendTokenToBackend, onNotification]);
+
+  // (Re)attach this device's token to whichever account is now signed in.
+  // Logout removes the token server-side; a token received before login was
+  // rejected (401). Re-sending on sign-in covers both cases.
+  useEffect(() => {
+    if (!userId) return;
+    if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== 'android') return;
+    let stored = null;
+    try { stored = localStorage.getItem(FCM_TOKEN_KEY); } catch { /* no storage */ }
+    if (stored) sendTokenToBackend(stored);
+  }, [userId, sendTokenToBackend]);
 }

@@ -219,9 +219,9 @@ export default function App() {
   };
 
   const voiceDevice = useVoiceDevice();
-  const push = usePushNotifications();
+  const push = usePushNotifications({ userId: currentUser?.id });
   // Native FCM push for Android (Capacitor). No-op on web.
-  useCapacitorPush();
+  useCapacitorPush({ userId: currentUser?.id });
 
   // Dismiss state for the push permission banner — stored in localStorage so
   // it doesn't reappear after the user taps "Not now".

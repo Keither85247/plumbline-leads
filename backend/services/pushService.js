@@ -56,15 +56,20 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
 // ── sendPush ─────────────────────────────────────────────────────────────────
 
 /**
- * Send a push notification to all subscriptions for the given userId.
- * Pass userId = null to broadcast to all subscriptions.
+ * Send a push notification to the subscriptions OWNED by userId only.
+ * There is no broadcast mode: a missing/invalid userId sends nothing, and
+ * subscriptions without an owner (user_id NULL) are never targeted.
  *
  * Sends to Web Push subscriptions AND FCM tokens simultaneously.
  *
- * @param {number|null} userId
+ * @param {number} userId
  * @param {{ title: string, body: string, tag?: string, url?: string }} payload
  */
 async function sendPush(userId, payload) {
+  if (!Number.isInteger(userId) || userId <= 0) {
+    log.warn('sendPush skipped — no owning account');
+    return;
+  }
   await Promise.all([
     sendWebPush(userId, payload),
     sendFcm(userId, payload),
@@ -74,11 +79,9 @@ async function sendPush(userId, payload) {
 async function sendWebPush(userId, payload) {
   if (!vapidConfigured) return;
 
-  const subs = userId == null
-    ? db.prepare('SELECT * FROM push_subscriptions').all()
-    : db.prepare(
-        'SELECT * FROM push_subscriptions WHERE user_id = ? OR user_id IS NULL'
-      ).all(userId);
+  const subs = db.prepare(
+    'SELECT * FROM push_subscriptions WHERE user_id = ?'
+  ).all(userId);
 
   if (subs.length === 0) return;
 
@@ -109,11 +112,9 @@ async function sendWebPush(userId, payload) {
 async function sendFcm(userId, payload) {
   if (!fcmConfigured) return;
 
-  const tokens = userId == null
-    ? db.prepare('SELECT fcm_token FROM fcm_subscriptions').all().map(r => r.fcm_token)
-    : db.prepare(
-        'SELECT fcm_token FROM fcm_subscriptions WHERE user_id = ? OR user_id IS NULL'
-      ).all(userId).map(r => r.fcm_token);
+  const tokens = db.prepare(
+    'SELECT fcm_token FROM fcm_subscriptions WHERE user_id = ?'
+  ).all(userId).map(r => r.fcm_token);
 
   if (tokens.length === 0) return;
 

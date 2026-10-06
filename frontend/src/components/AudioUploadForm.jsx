@@ -30,8 +30,12 @@ export default function AudioUploadForm({ onLeadCreated, language }) {
       formData.append('audio', file);
       if (language) formData.append('language', language);
 
+      // /api/transcribe requires a session (cookie, or Bearer for Safari ITP).
+      const storedToken = localStorage.getItem('plumbline_token');
       const res = await fetch(`${API_BASE}/transcribe`, {
         method: 'POST',
+        credentials: 'include',
+        headers: storedToken ? { Authorization: `Bearer ${storedToken}` } : undefined,
         body: formData,
       });
 

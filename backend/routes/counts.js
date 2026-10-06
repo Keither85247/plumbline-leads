@@ -30,7 +30,7 @@ router.get('/', (req, res) => {
         AND m.id = (
           SELECT id FROM messages m2
           WHERE m2.phone = m.phone
-            AND (m2.user_id = ? OR m2.user_id IS NULL)
+            AND m2.user_id = ?
           ORDER BY m2.created_at DESC
           LIMIT 1
         )

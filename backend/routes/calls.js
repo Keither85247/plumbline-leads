@@ -217,11 +217,10 @@ router.post('/outbound-note', express.json(), (req, res) => {
       const r = db.prepare(`
         UPDATE calls
         SET contractor_note = ?,
-            outcome         = ?,
-            user_id         = COALESCE(user_id, ?)
+            outcome         = ?
         WHERE call_sid = ?
-          AND (user_id = ? OR user_id IS NULL)
-      `).run(trimmedNote, trimmedOutcome, req.userId, callSid, req.userId);
+          AND user_id = ?
+      `).run(trimmedNote, trimmedOutcome, callSid, req.userId);
       updated = r.changes > 0;
       if (updated) {
         console.log(`[Calls] Outbound note attached to call_sid=${callSid} (user ${req.userId})`);
@@ -244,12 +243,11 @@ router.post('/outbound-note', express.json(), (req, res) => {
       const r = db.prepare(`
         UPDATE calls
         SET contractor_note = ?,
-            outcome         = ?,
-            user_id         = COALESCE(user_id, ?)
+            outcome         = ?
         WHERE id = (
           SELECT id FROM calls
           WHERE classification = 'Outbound'
-            AND (user_id = ? OR user_id IS NULL)
+            AND user_id = ?
             AND contractor_note IS NULL
             AND outcome         IS NULL
             AND created_at > datetime('now', '-15 minutes')
@@ -261,7 +259,7 @@ router.post('/outbound-note', express.json(), (req, res) => {
           ORDER BY created_at DESC
           LIMIT 1
         )
-      `).run(trimmedNote, trimmedOutcome, req.userId, req.userId, normalized, normalized);
+      `).run(trimmedNote, trimmedOutcome, req.userId, normalized, normalized);
       updated = r.changes > 0;
       if (updated) {
         console.log(`[Calls] Outbound note attached via phone fallback for ${phone} (user ${req.userId})`);
@@ -316,16 +314,20 @@ router.post('/ensure-logged', express.json(), (req, res) => {
   const classification  = direction === 'outbound' ? 'Outbound' : 'Unknown';
 
   try {
-    const existing = db.prepare('SELECT id FROM calls WHERE call_sid = ?').get(callSid);
+    const existing = db.prepare('SELECT id, user_id FROM calls WHERE call_sid = ?').get(callSid);
+    if (existing && existing.user_id !== req.userId) {
+      // Another account's (or an ownerless) call: never reveal its id, claim
+      // it, or modify it.
+      return res.json({ ok: true, created: false });
+    }
     if (existing) {
       // Row already created by the webhook (or a prior ensure-logged call).
       // Enrich NULL fields only — never overwrite anything the webhook set.
       db.prepare(`
         UPDATE calls SET
-          from_number = COALESCE(from_number, ?),
-          user_id     = COALESCE(user_id, ?)
-        WHERE id = ?
-      `).run(normalizedPhone || phone || null, req.userId, existing.id);
+          from_number = COALESCE(from_number, ?)
+        WHERE id = ? AND user_id = ?
+      `).run(normalizedPhone || phone || null, existing.id, req.userId);
       return res.json({ ok: true, created: false, id: existing.id });
     }
 

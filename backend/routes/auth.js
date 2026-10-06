@@ -226,6 +226,20 @@ router.post('/logout', (req, res) => {
     if (auth?.startsWith('Bearer ')) token = auth.slice(7).trim();
   }
   if (token) {
+    // Remove THIS device's push registration so notifications stop after
+    // logout. Scoped to the session's own account; other devices are kept.
+    const session = db.prepare('SELECT user_id FROM sessions WHERE token = ?').get(token);
+    const { pushEndpoint, fcmToken } = req.body || {};
+    if (session?.user_id) {
+      if (typeof pushEndpoint === 'string' && pushEndpoint) {
+        db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?')
+          .run(pushEndpoint, session.user_id);
+      }
+      if (typeof fcmToken === 'string' && fcmToken) {
+        db.prepare('DELETE FROM fcm_subscriptions WHERE fcm_token = ? AND user_id = ?')
+          .run(fcmToken, session.user_id);
+      }
+    }
     db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
   }
   res.clearCookie('plumbline_session', clearOptions());

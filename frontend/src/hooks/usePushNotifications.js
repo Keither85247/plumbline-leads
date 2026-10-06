@@ -22,7 +22,7 @@ const SW_PATH = '/sw.js';
  *   subscribe()   — request permission + subscribe
  *   unsubscribe() — cancel subscription
  */
-export function usePushNotifications() {
+export function usePushNotifications({ userId } = {}) {
   const supported = typeof window !== 'undefined'
     && 'serviceWorker' in navigator
     && 'PushManager'   in window
@@ -33,15 +33,20 @@ export function usePushNotifications() {
   const [subscribing,  setSubscribing]  = useState(false);
   const [error,        setError]        = useState(null);
 
-  // Check existing subscription on mount
+  // Check the existing subscription on mount and whenever the signed-in
+  // account changes. Logout removes this browser's server row, so on sign-in
+  // an existing subscription is re-bound to the account now signed in.
   useEffect(() => {
     if (!supported) return;
     navigator.serviceWorker.ready.then(reg =>
       reg.pushManager.getSubscription()
     ).then(sub => {
       setSubscribed(!!sub);
+      if (sub && userId && Notification.permission === 'granted') {
+        savePushSubscription(sub.toJSON()).catch(() => {});
+      }
     }).catch(() => {});
-  }, [supported]);
+  }, [supported, userId]);
 
   const subscribe = useCallback(async () => {
     if (!supported || subscribing) return false;
