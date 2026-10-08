@@ -59,8 +59,8 @@ if (process.env.RESET_OWNER_PASSWORD) {
     const _db     = require('./db');
 
     // Step 1: hash the password
-    const _hash = _bcrypt.hashSync(process.env.RESET_OWNER_PASSWORD, 10);
-    console.log('[RESET] Password hashed (bcrypt, 10 rounds)');
+    const _hash = _bcrypt.hashSync(process.env.RESET_OWNER_PASSWORD, 12);   // same cost as other hashes (login timing parity)
+    console.log('[RESET] Password hashed (bcrypt, 12 rounds)');
 
     // Step 2: upsert the account
     if (_resetEmail) {
@@ -195,9 +195,9 @@ app.use('/api/health', healthRouters.publicRouter);
 
 // Auth routes: login, logout, me, Gmail OAuth callbacks
 // login / logout / me are always public by definition.
-// Gmail OAuth routes are also public here because the /google/callback redirect
-// comes from Google's servers (no cookie). The connect button in the UI is only
-// reachable when logged in, which is sufficient protection in Phase 1.
+// Gmail OAuth routes are mounted here too: /google requires the session cookie
+// itself, and /google/callback is bound to that account by a single-use,
+// short-lived state plus a browser nonce cookie (see routes/auth.js).
 app.use('/auth', authRouter);
 
 // Twilio routes — mounted before the session-cookie requireAuth because Twilio's

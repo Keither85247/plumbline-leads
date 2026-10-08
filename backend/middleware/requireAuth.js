@@ -11,39 +11,35 @@
  * Returns 401 JSON (never HTML) if no valid session is found.
  */
 
-const db = require('../db');
+const { getSessionToken, lookupSession, revokeUserSessions, clearSessionCookieOptions, SUSPENDED_ERROR } = require('../utils/session');
 
 module.exports = function requireAuth(req, res, next) {
-  let token = req.cookies?.plumbline_session;
-
-  // Safari ITP fallback 1: accept Bearer token from Authorization header
-  if (!token) {
-    const auth = req.headers.authorization;
-    if (auth?.startsWith('Bearer ')) token = auth.slice(7).trim();
-  }
-
-  // Safari ITP fallback 2: accept token as a URL query param.
-  // <audio> / <video> elements make raw resource fetches — they cannot send
-  // custom headers, so Bearer-in-header is not available for media proxies.
-  // The frontend appends ?token=<session_token> to recording/voicemail URLs.
-  if (!token && req.query.token) token = String(req.query.token).trim();
+  // Cookie, then Bearer (Safari ITP), then ?token= — <audio>/<video> elements
+  // make raw resource fetches and cannot send headers, so the frontend appends
+  // ?token=<session_token> to recording/voicemail URLs.
+  const token = getSessionToken(req, { allowQuery: true });
 
   if (!token) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
 
-  const session = db.prepare(`
-    SELECT user_id FROM sessions
-    WHERE token = ?
-      AND expires_at > CURRENT_TIMESTAMP
-  `).get(token);
+  // Absolute-UTC expiry check (see utils/session.js).
+  const session = lookupSession(token);
 
   if (!session) {
     // Clear the stale cookie so the browser doesn't keep sending it
-    res.clearCookie('plumbline_session', { path: '/' });
+    res.clearCookie('plumbline_session', clearSessionCookieOptions());
     return res.status(401).json({ error: 'Session expired. Please log in again.' });
   }
 
-  req.userId = session.user_id;
+  // Suspended accounts stop working immediately: end every session and reject.
+  // 401 (not 403) so the frontend treats it as a logout.
+  if (session.suspended) {
+    revokeUserSessions(session.userId);
+    res.clearCookie('plumbline_session', clearSessionCookieOptions());
+    return res.status(401).json(SUSPENDED_ERROR);
+  }
+
+  req.userId = session.userId;
   next();
 };

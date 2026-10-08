@@ -4,6 +4,7 @@ const multer = require('multer');
 const fs = require('fs');
 const OpenAI = require('openai');
 const { createLeadFromTranscript } = require('./leads');
+const { transcribeLimits, transcribeRateLimit } = require('../utils/aiBudget');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -26,7 +27,7 @@ const upload = multer({
 // POST /api/transcribe — upload audio, transcribe with Whisper, create lead.
 // Mounted behind requireAuth: the lead is always owned by the authenticated
 // account (req.userId). No user id is ever read from the request body.
-router.post('/', upload.single('audio'), async (req, res) => {
+router.post('/', transcribeRateLimit, upload.single('audio'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Audio file is required' });
   }
@@ -74,3 +75,4 @@ router.post('/', upload.single('audio'), async (req, res) => {
 });
 
 module.exports = router;
+module.exports.transcribeLimits = transcribeLimits;   // for tests

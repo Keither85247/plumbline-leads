@@ -777,6 +777,14 @@ router.post('/voice-client', express.urlencoded({ extended: true }), verifyTwili
     }
   }
 
+  // A Voice token issued before a suspension stays valid for up to an hour;
+  // refuse calls from suspended accounts here as well.
+  if (callerUserId && db.prepare('SELECT is_suspended FROM users WHERE id = ?').get(callerUserId)?.is_suspended) {
+    log.warn('/voice-client: caller account suspended — call refused', { callSid: CallSid, userId: callerUserId });
+    twiml.say('This account is not active.');
+    return res.type('text/xml').send(twiml.toString());
+  }
+
   try {
     if (!To) {
       log.error('/voice-client: missing To param', { callSid: CallSid });

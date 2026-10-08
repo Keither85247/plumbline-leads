@@ -3,9 +3,9 @@ const { google } = require('googleapis');
 const db = require('../db');
 
 // ── OAuth2 client factory ─────────────────────────────────────────────────────
-// The shared oauth2Client is used ONLY for the OAuth URL generation and code
-// exchange in auth.js. All per-user Gmail API calls use isolated clients
-// created by loadCredentials(userId) so tokens never bleed across accounts.
+// Every caller gets a FRESH client: auth.js creates one per OAuth request, and
+// per-user Gmail API calls use loadCredentials(userId). There is deliberately
+// no shared client, so one user's tokens can never be held for another.
 
 function createBaseClient() {
   return new google.auth.OAuth2(
@@ -14,10 +14,6 @@ function createBaseClient() {
     process.env.GOOGLE_REDIRECT_URI,
   );
 }
-
-// Exported for auth.js OAuth flow (URL generation + code exchange only).
-// Do NOT use this for making Gmail API calls — use getClient(userId) instead.
-const oauth2Client = createBaseClient();
 
 // ── Per-user token persistence ────────────────────────────────────────────────
 
@@ -397,7 +393,7 @@ function getAllConnectedUserIds() {
 }
 
 module.exports = {
-  oauth2Client,
+  createBaseClient,
   loadCredentials,
   isConnected,
   isInvalidGrant,

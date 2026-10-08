@@ -121,32 +121,20 @@ Module._load = function (request, parent, isMain) {
 const gmailPath = require.resolve(path.join(BE, 'services/gmailService.js'));
 require.cache[gmailPath] = {
   id: gmailPath, filename: gmailPath, loaded: true,
-  exports: { oauth2Client: {}, syncRecentEmails: async () => {}, isConnected: () => false },
+  exports: { createBaseClient: () => ({}), syncRecentEmails: async () => {}, isConnected: () => false },
 };
 
 const express      = require(path.join(BE, 'node_modules/express'));
 const cookieParser = require(path.join(BE, 'node_modules/cookie-parser'));
 const twilio       = require(path.join(BE, 'node_modules/twilio'));
 const db           = require(path.join(BE, 'db'));
-// Test-DB fix-up only: on a brand-new database the existing contacts migration
-// in db.js fails ("no such column: user_id"), leaving the legacy contacts table
-// (no id / user_id / UNIQUE(user_id, phone)). Production DBs were migrated
-// incrementally and already have the new schema. Tracked separately; here the
-// EMPTY test table is rebuilt with the schema db.js migrates to.
-if (!db.prepare('PRAGMA table_info(contacts)').all().some(c => c.name === 'user_id')) {
-  db.exec(`
-    DROP TABLE IF EXISTS contacts_new;
-    DROP TABLE contacts;
-    CREATE TABLE contacts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER REFERENCES users(id),
-      phone TEXT NOT NULL, name TEXT, address TEXT, email TEXT, notes TEXT,
-      preferred_contact_method TEXT, formatted_address TEXT, address_line_1 TEXT,
-      city TEXT, state TEXT, postal_code TEXT, country TEXT, lat REAL, lng REAL,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      company TEXT, contact_type TEXT NOT NULL DEFAULT 'Lead',
-      UNIQUE(user_id, phone)
-    );`);
-}
+// The fresh temp DB must come out of db.js with the final contacts schema
+// (previously the contacts migration failed on brand-new databases).
+const freshContactsOk = (() => {
+  const cols = db.prepare('PRAGMA table_info(contacts)').all().map(c => c.name);
+  const leftover = db.prepare("SELECT name FROM sqlite_master WHERE name IN ('contacts_new','contacts_v3')").all();
+  return cols.includes('id') && cols.includes('user_id') && leftover.length === 0;
+})();
 
 // ── Harness ──────────────────────────────────────────────────────────────────
 let pass = 0, fail = 0;
@@ -271,46 +259,52 @@ async function run() {
     ok('B5 createLeadFromTranscript refuses a missing owner (no row)', threw && count('SELECT COUNT(*) n FROM leads') === before);
 
     // ── C. Push ─────────────────────────────────────────────────────────────
-    const insWeb = db.prepare("INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (?, ?, 'k', 'a')");
+    // Realistic identifiers: send-time validation skips anything that is not a
+    // real push-service endpoint with valid P-256 keys.
+    const pushEcdh = crypto.createECDH('prime256v1'); pushEcdh.generateKeys();
+    const PUSH_P256 = pushEcdh.getPublicKey().toString('base64url');
+    const PUSH_AUTH = crypto.randomBytes(16).toString('base64url');
+    const insWebRaw = db.prepare('INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)');
+    const insWeb = { run: (uid, ep) => insWebRaw.run(uid, ep, PUSH_P256, PUSH_AUTH) };
     const insFcm = db.prepare('INSERT INTO fcm_subscriptions (user_id, fcm_token) VALUES (?, ?)');
-    insWeb.run(A, 'https://push.test/a1'); insWeb.run(A, 'https://push.test/a2'); insWeb.run(A, 'https://push.test/a3');
-    insWeb.run(B, 'https://push.test/b1'); insWeb.run(null, 'https://push.test/orphan');
-    insWeb.run(OWNER, 'https://push.test/owner1');
-    insFcm.run(A, 'fcm-a'); insFcm.run(B, 'fcm-b'); insFcm.run(null, 'fcm-orphan');
+    insWeb.run(A, 'https://fcm.googleapis.com/fcm/send/a1'); insWeb.run(A, 'https://fcm.googleapis.com/fcm/send/a2'); insWeb.run(A, 'https://fcm.googleapis.com/fcm/send/a3');
+    insWeb.run(B, 'https://fcm.googleapis.com/fcm/send/b1'); insWeb.run(null, 'https://fcm.googleapis.com/fcm/send/orphan');
+    insWeb.run(OWNER, 'https://fcm.googleapis.com/fcm/send/owner1');
+    insFcm.run(A, 'fcm-a:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ'); insFcm.run(B, 'fcm-b:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ'); insFcm.run(null, 'fcm-orphan:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ');
 
     const reset = () => { sentWebEndpoints.length = 0; sentFcmTokens.length = 0; };
     reset(); await sendPush(A, { title: 't', body: 'b' });
     ok('C1 sendPush(A) targets only A web subscriptions',
-      JSON.stringify([...sentWebEndpoints].sort()) === JSON.stringify(['https://push.test/a1', 'https://push.test/a2', 'https://push.test/a3']),
+      JSON.stringify([...sentWebEndpoints].sort()) === JSON.stringify(['https://fcm.googleapis.com/fcm/send/a1', 'https://fcm.googleapis.com/fcm/send/a2', 'https://fcm.googleapis.com/fcm/send/a3']),
       sentWebEndpoints.join(','));
-    ok('C2 sendPush(A) targets only A FCM tokens (no orphan/foreign)', JSON.stringify(sentFcmTokens) === '["fcm-a"]', sentFcmTokens.join(','));
+    ok('C2 sendPush(A) targets only A FCM tokens (no orphan/foreign)', JSON.stringify(sentFcmTokens) === '["fcm-a:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ"]', sentFcmTokens.join(','));
     reset(); await sendPush(null, { title: 't', body: 'b' }); await sendPush(undefined, { title: 't', body: 'b' });
     ok('C3 sendPush(null/undefined) sends nothing (no broadcast)', sentWebEndpoints.length === 0 && sentFcmTokens.length === 0);
     reset(); await sendPush(OWNER, { title: 't', body: 'b' });
-    ok('C4 owner receives only owner subscriptions (no owner bypass)', JSON.stringify(sentWebEndpoints) === '["https://push.test/owner1"]' && sentFcmTokens.length === 0);
+    ok('C4 owner receives only owner subscriptions (no owner bypass)', JSON.stringify(sentWebEndpoints) === '["https://fcm.googleapis.com/fcm/send/owner1"]' && sentFcmTokens.length === 0);
 
-    r = await req('POST', '/api/push/subscribe', { json: { endpoint: 'https://push.test/x', keys: { p256dh: 'k', auth: 'a' } } });
-    ok('C5 anonymous push subscribe → 401 (no row)', r.status === 401 && count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint = 'https://push.test/x'") === 0);
-    r = await req('POST', '/api/push/fcm-subscribe', { json: { fcmToken: 'fcm-anon' } });
-    ok('C6 anonymous FCM subscribe → 401 (no row)', r.status === 401 && count("SELECT COUNT(*) n FROM fcm_subscriptions WHERE fcm_token = 'fcm-anon'") === 0);
-    r = await req('DELETE', '/api/push/subscribe', { token: tB, json: { endpoint: 'https://push.test/a1' } });
-    ok('C7 B cannot delete A web subscription', count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint = 'https://push.test/a1' AND user_id = ?", A) === 1);
-    r = await req('DELETE', '/api/push/fcm-subscribe', { token: tB, json: { fcmToken: 'fcm-a' } });
-    ok('C8 B cannot delete A FCM token', count("SELECT COUNT(*) n FROM fcm_subscriptions WHERE fcm_token = 'fcm-a' AND user_id = ?", A) === 1);
+    r = await req('POST', '/api/push/subscribe', { json: { endpoint: 'https://fcm.googleapis.com/fcm/send/x', keys: { p256dh: 'k', auth: 'a' } } });
+    ok('C5 anonymous push subscribe → 401 (no row)', r.status === 401 && count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint = 'https://fcm.googleapis.com/fcm/send/x'") === 0);
+    r = await req('POST', '/api/push/fcm-subscribe', { json: { fcmToken: 'fcm-anon:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ' } });
+    ok('C6 anonymous FCM subscribe → 401 (no row)', r.status === 401 && count("SELECT COUNT(*) n FROM fcm_subscriptions WHERE fcm_token = 'fcm-anon:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ'") === 0);
+    r = await req('DELETE', '/api/push/subscribe', { token: tB, json: { endpoint: 'https://fcm.googleapis.com/fcm/send/a1' } });
+    ok('C7 B cannot delete A web subscription', count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint = 'https://fcm.googleapis.com/fcm/send/a1' AND user_id = ?", A) === 1);
+    r = await req('DELETE', '/api/push/fcm-subscribe', { token: tB, json: { fcmToken: 'fcm-a:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ' } });
+    ok('C8 B cannot delete A FCM token', count("SELECT COUNT(*) n FROM fcm_subscriptions WHERE fcm_token = 'fcm-a:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ' AND user_id = ?", A) === 1);
 
     // Logout removes THIS device only, and only rows the session owns.
     const tA2 = mkSession(A);
-    r = await req('POST', '/auth/logout', { token: tA2, json: { pushEndpoint: 'https://push.test/a1', fcmToken: 'fcm-a' } });
-    ok('C9 logout removes this device web subscription', r.status === 200 && count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint = 'https://push.test/a1'") === 0);
-    ok('C10 logout removes this device FCM token', count("SELECT COUNT(*) n FROM fcm_subscriptions WHERE fcm_token = 'fcm-a'") === 0);
+    r = await req('POST', '/auth/logout', { token: tA2, json: { pushEndpoint: 'https://fcm.googleapis.com/fcm/send/a1', fcmToken: 'fcm-a:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ' } });
+    ok('C9 logout removes this device web subscription', r.status === 200 && count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint = 'https://fcm.googleapis.com/fcm/send/a1'") === 0);
+    ok('C10 logout removes this device FCM token', count("SELECT COUNT(*) n FROM fcm_subscriptions WHERE fcm_token = 'fcm-a:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ'") === 0);
     ok('C11 logout keeps A other devices', count('SELECT COUNT(*) n FROM push_subscriptions WHERE user_id = ?', A) === 2);
     ok('C12 logout session is deleted', count('SELECT COUNT(*) n FROM sessions WHERE token = ?', tA2) === 0);
     const tA3 = mkSession(A);
-    await req('POST', '/auth/logout', { token: tA3, json: { pushEndpoint: 'https://push.test/b1', fcmToken: 'fcm-b' } });
-    ok('C13 logout cannot remove another account device', count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint = 'https://push.test/b1' AND user_id = ?", B) === 1
-      && count("SELECT COUNT(*) n FROM fcm_subscriptions WHERE fcm_token = 'fcm-b' AND user_id = ?", B) === 1);
+    await req('POST', '/auth/logout', { token: tA3, json: { pushEndpoint: 'https://fcm.googleapis.com/fcm/send/b1', fcmToken: 'fcm-b:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ' } });
+    ok('C13 logout cannot remove another account device', count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint = 'https://fcm.googleapis.com/fcm/send/b1' AND user_id = ?", B) === 1
+      && count("SELECT COUNT(*) n FROM fcm_subscriptions WHERE fcm_token = 'fcm-b:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ' AND user_id = ?", B) === 1);
     reset(); await sendPush(A, { title: 't', body: 'b' });
-    ok('C14 after logout, logged-out device no longer targeted', !sentWebEndpoints.includes('https://push.test/a1') && !sentFcmTokens.includes('fcm-a'));
+    ok('C14 after logout, logged-out device no longer targeted', !sentWebEndpoints.includes('https://fcm.googleapis.com/fcm/send/a1') && !sentFcmTokens.includes('fcm-a:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ'));
 
     // ── D. Inbound SMS / voice isolation ────────────────────────────────────
     const P = '+15557770007';
@@ -359,15 +353,15 @@ async function run() {
     ok('D3b B same-day lead does not suppress A new lead', count('SELECT COUNT(*) n FROM leads WHERE user_id = ? AND phone_number = ?', A, P6) === a6Before + 1);
 
     // Classification: B labelled P as Spam; a call from P to A must not be.
-    insFcm.run(A, 'fcm-a2');
+    insFcm.run(A, 'fcm-a2:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ');
     reset();
     r = await twilioPost('/api/twilio/voice', { From: P, To: NUM_A, CallSid: 'CA' + 'd'.repeat(32), Direction: 'inbound' });
     const aCall = db.prepare('SELECT * FROM calls WHERE call_sid = ?').get('CA' + 'd'.repeat(32));
     ok('D7 call to A classified from A data only (not B Spam)', r.status === 200 && aCall?.user_id === A && aCall?.classification !== 'Likely Spam', `class=${aCall?.classification}`);
     await sleep(50);
     ok('D8 incoming-call push goes to A devices only (web + FCM)',
-      sentWebEndpoints.length > 0 && sentWebEndpoints.every(e => e.startsWith('https://push.test/a'))
-      && sentFcmTokens.length > 0 && sentFcmTokens.every(t => t === 'fcm-a2'),
+      sentWebEndpoints.length > 0 && sentWebEndpoints.every(e => e.startsWith('https://fcm.googleapis.com/fcm/send/a'))
+      && sentFcmTokens.length > 0 && sentFcmTokens.every(t => t === 'fcm-a2:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ'),
       `web=${sentWebEndpoints.join(',')} fcm=${sentFcmTokens.join(',')}`);
     // Control: A's own Spam history does classify.
     const P3 = '+15559990009';
@@ -485,6 +479,7 @@ async function run() {
     const iMig    = at("app.use('/api/migrate', migrateRouter)");
     ok('G1 index.js: public health before requireAuth', iPublic > 0 && iAuth > iPublic);
     ok('G2 index.js: owner diagnostics, transcribe, migrate after requireAuth', iOwnerH > iAuth && iTrans > iAuth && iMig > iAuth);
+    ok('G4 fresh DB gets the final contacts schema (no workaround)', freshContactsOk);
     ok('G3 index.js: no inline public health diagnostics remain', !/app\.(get|use|all)\(\s*['"`]\/api\/health\/(owner|env)/.test(src));
   } catch (err) {
     fail++; console.log('FAIL  harness error —', err.stack || err.message);

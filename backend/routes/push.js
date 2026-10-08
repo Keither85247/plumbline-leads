@@ -2,6 +2,15 @@
 const express = require('express');
 const router  = express.Router();
 const db      = require('../db');
+const log     = require('../logger').for('Push');
+const {
+  ENDPOINT_MAX, FCM_TOKEN_MAX,
+  validateWebPushEndpoint, validateSubscriptionKeys, validateFcmToken, isDeletableIdentifier,
+} = require('../utils/pushValidation');
+
+// Fixed error bodies — never echo the submitted value.
+const INVALID_SUB = { error: 'Invalid push subscription' };
+const INVALID_FCM = { error: 'Invalid FCM token' };
 
 // GET /api/push/vapid-public-key
 // Returns the VAPID public key so the frontend can subscribe.
@@ -15,8 +24,15 @@ router.get('/vapid-public-key', (req, res) => {
 // Saves (or upserts) a push subscription for the current user.
 router.post('/subscribe', express.json(), (req, res) => {
   const { endpoint, keys } = req.body || {};
-  if (!endpoint || !keys?.p256dh || !keys?.auth) {
-    return res.status(400).json({ error: 'endpoint and keys (p256dh, auth) are required' });
+  const ep = validateWebPushEndpoint(endpoint);
+  if (!ep.ok) {
+    log.warn('Rejected push subscription', { userId: req.userId, reason: ep.reason });
+    return res.status(400).json(INVALID_SUB);
+  }
+  const k = validateSubscriptionKeys(keys?.p256dh, keys?.auth);
+  if (!k.ok) {
+    log.warn('Rejected push subscription', { userId: req.userId, reason: k.reason });
+    return res.status(400).json(INVALID_SUB);
   }
 
   db.prepare(`
@@ -26,7 +42,7 @@ router.post('/subscribe', express.json(), (req, res) => {
       user_id = excluded.user_id,
       p256dh  = excluded.p256dh,
       auth    = excluded.auth
-  `).run(req.userId, endpoint, keys.p256dh, keys.auth);
+  `).run(req.userId, ep.value, k.value.p256dh, k.value.auth);
 
   return res.json({ ok: true });
 });
@@ -35,7 +51,7 @@ router.post('/subscribe', express.json(), (req, res) => {
 // Removes a push subscription (user unsubscribed or revoked permission).
 router.delete('/subscribe', express.json(), (req, res) => {
   const { endpoint } = req.body || {};
-  if (!endpoint) return res.status(400).json({ error: 'endpoint is required' });
+  if (!isDeletableIdentifier(endpoint, ENDPOINT_MAX)) return res.status(400).json(INVALID_SUB);
   db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?')
     .run(endpoint, req.userId);
   return res.json({ ok: true });
@@ -46,13 +62,17 @@ router.delete('/subscribe', express.json(), (req, res) => {
 // Called once after the app starts and receives a token from Firebase.
 router.post('/fcm-subscribe', express.json(), (req, res) => {
   const { fcmToken } = req.body || {};
-  if (!fcmToken) return res.status(400).json({ error: 'fcmToken is required' });
+  const t = validateFcmToken(fcmToken);
+  if (!t.ok) {
+    log.warn('Rejected FCM token', { userId: req.userId, reason: t.reason });
+    return res.status(400).json(INVALID_FCM);
+  }
 
   db.prepare(`
     INSERT INTO fcm_subscriptions (user_id, fcm_token)
     VALUES (?, ?)
     ON CONFLICT(fcm_token) DO UPDATE SET user_id = excluded.user_id
-  `).run(req.userId, fcmToken);
+  `).run(req.userId, t.value);
 
   return res.json({ ok: true });
 });
@@ -61,7 +81,7 @@ router.post('/fcm-subscribe', express.json(), (req, res) => {
 // Removes an FCM token (logout or token rotation).
 router.delete('/fcm-subscribe', express.json(), (req, res) => {
   const { fcmToken } = req.body || {};
-  if (!fcmToken) return res.status(400).json({ error: 'fcmToken is required' });
+  if (!isDeletableIdentifier(fcmToken, FCM_TOKEN_MAX)) return res.status(400).json(INVALID_FCM);
   db.prepare('DELETE FROM fcm_subscriptions WHERE fcm_token = ? AND user_id = ?')
     .run(fcmToken, req.userId);
   return res.json({ ok: true });

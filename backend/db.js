@@ -88,16 +88,29 @@ try { db.exec('ALTER TABLE leads ADD COLUMN recording_url TEXT'); } catch {}
 // Contact profiles — manually-editable data keyed by normalized phone number.
 // Separate from leads/calls because profile data (address, email, notes) is
 // entered by the contractor, not inferred from AI or Twilio.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS contacts (
-    phone                   TEXT PRIMARY KEY,
-    address                 TEXT,
-    email                   TEXT,
-    notes                   TEXT,
+// FINAL contacts schema (column order matches production after all migrations).
+const CONTACTS_FINAL_COLUMNS = `
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id                  INTEGER REFERENCES users(id),
+    phone                    TEXT,
+    name                     TEXT,
+    address                  TEXT,
+    email                    TEXT,
+    notes                    TEXT,
     preferred_contact_method TEXT,
-    updated_at              DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
+    formatted_address        TEXT,
+    address_line_1           TEXT,
+    city                     TEXT,
+    state                    TEXT,
+    postal_code              TEXT,
+    country                  TEXT,
+    lat                      REAL,
+    lng                      REAL,
+    updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
+    company                  TEXT,
+    contact_type             TEXT NOT NULL DEFAULT 'Lead',
+    UNIQUE(user_id, phone)`;
+db.exec(`CREATE TABLE IF NOT EXISTS contacts (${CONTACTS_FINAL_COLUMNS}\n  )`);
 
 // Email activity log — one row per inbound or outbound email event.
 // Actual sending/receiving is handled by an external provider (see Phase 2).
@@ -233,6 +246,23 @@ db.exec(`
   )
 `);
 
+// ── Gmail OAuth flows ─────────────────────────────────────────────────────────
+// One row per Connect attempt: a random, single-use, short-lived state bound to
+// the initiating account and (via an httpOnly nonce cookie) the initiating
+// browser. Only SHA-256 hashes of the state and nonce are stored.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gmail_oauth_states (
+    state_hash TEXT    PRIMARY KEY,
+    nonce_hash TEXT    NOT NULL,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT    NOT NULL,
+    used_at    TEXT,
+    created_at TEXT    NOT NULL
+  )
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_gmail_oauth_states_expires ON gmail_oauth_states(expires_at)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_gmail_oauth_states_user ON gmail_oauth_states(user_id)');
+
 // ── user_id scaffolding on data tables ────────────────────────────────────────
 // All nullable so existing rows stay intact on first migration.
 // Legacy rows (user_id IS NULL) are stamped to the owner account below so that
@@ -243,6 +273,94 @@ try { db.exec('ALTER TABLE calls    ADD COLUMN user_id INTEGER REFERENCES users(
 try { db.exec('ALTER TABLE emails   ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
 try { db.exec('ALTER TABLE gmail_tokens ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
+
+// ── Contacts table migration ───────────────────────────────────────────────────
+// Old schema: phone TEXT PRIMARY KEY — globally unique, blocks multi-user.
+// Rebuilds straight to the FINAL schema. Column-aware: legacy tables may or may
+// not have user_id (added 376e82f, removed 57aaf0c) or company/contact_type.
+// Atomic: a failure rolls back, so no half-built contacts_new is left behind.
+try {
+  const tableInfo = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='contacts'"
+  ).get();
+  if (tableInfo && /phone\s+TEXT\s+PRIMARY\s+KEY/i.test(tableInfo.sql)) {
+    const have = new Set(db.prepare('PRAGMA table_info(contacts)').all().map(c => c.name));
+    const pick = (c) => (have.has(c) ? c : 'NULL');
+    const copyCols = ['user_id', 'phone', 'name', 'address', 'email', 'notes',
+      'preferred_contact_method', 'formatted_address', 'address_line_1', 'city',
+      'state', 'postal_code', 'country', 'lat', 'lng', 'updated_at', 'company'];
+    const selectList = copyCols.map(pick).concat(
+      have.has('contact_type') ? "COALESCE(contact_type, 'Lead')" : "'Lead'"
+    ).join(', ');
+    // better-sqlite3 enables FK enforcement by default; a table rebuild must run
+    // with it off (SQLite "12-step" ALTER procedure) so legacy rows whose user_id
+    // points at a since-deleted user are copied rather than aborting the migration.
+    db.pragma('foreign_keys = OFF');
+    try {
+      db.transaction(() => {
+        db.exec('DROP TABLE IF EXISTS contacts_new');   // leftover from a failed run
+        db.exec(`CREATE TABLE contacts_new (${CONTACTS_FINAL_COLUMNS}\n)`);
+        db.exec(`INSERT INTO contacts_new (${copyCols.join(', ')}, contact_type)
+                 SELECT ${selectList} FROM contacts`);
+        db.exec('DROP TABLE contacts');
+        db.exec('ALTER TABLE contacts_new RENAME TO contacts');
+      })();
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
+    const orphans = db.pragma('foreign_key_check(contacts)');
+    if (orphans.length) console.warn(`[DB] contacts: ${orphans.length} row(s) reference missing users`);
+    console.log('[DB] Contacts table migrated to per-user uniqueness');
+  }
+} catch (err) {
+  console.error('[DB] Contacts migration error:', err.message);
+}
+
+// ── Allow contacts.phone to be NULL ──────────────────────────────────────────
+// Manual contacts added by the user may not have a phone number.
+// The previous schema had phone TEXT NOT NULL; recreate to remove the constraint.
+// SQLite's UNIQUE constraint treats NULL values as distinct, so multiple
+// phone-less rows per user are allowed (each gets its own row).
+try {
+  const tbl = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='contacts'"
+  ).get();
+  // Only run if phone column still has NOT NULL constraint
+  if (tbl && /phone\s+TEXT\s+NOT\s+NULL/i.test(tbl.sql)) {
+    // Same treatment as the per-user migration above: rebuild straight to the
+    // FINAL schema, copy only columns that exist (keeping id, company and
+    // contact_type), atomically, with FK enforcement off for the rebuild, and
+    // clear any half-built table left by an earlier failed run.
+    const have = new Set(db.prepare('PRAGMA table_info(contacts)').all().map(c => c.name));
+    const pick = (c) => (have.has(c) ? c : 'NULL');
+    const copyCols = ['id', 'user_id', 'phone', 'name', 'address', 'email', 'notes',
+      'preferred_contact_method', 'formatted_address', 'address_line_1', 'city',
+      'state', 'postal_code', 'country', 'lat', 'lng', 'updated_at', 'company'];
+    const selectList = copyCols.map(pick).concat(
+      have.has('contact_type') ? "COALESCE(contact_type, 'Lead')" : "'Lead'"
+    ).join(', ');
+    db.pragma('foreign_keys = OFF');
+    try {
+      db.transaction(() => {
+        db.exec('DROP TABLE IF EXISTS contacts_v3');
+        db.exec(`CREATE TABLE contacts_v3 (${CONTACTS_FINAL_COLUMNS}\n)`);
+        db.exec(`INSERT INTO contacts_v3 (${copyCols.join(', ')}, contact_type)
+                 SELECT ${selectList} FROM contacts`);
+        db.exec('DROP TABLE contacts');
+        db.exec('ALTER TABLE contacts_v3 RENAME TO contacts');
+      })();
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
+    console.log('[DB] Contacts phone made nullable (supports manual contacts without phone)');
+  }
+} catch (err) {
+  console.error('[DB] Contacts phone-nullable migration error:', err.message);
+}
+
+// Company and contact_type for manually-created contacts
+try { db.exec('ALTER TABLE contacts ADD COLUMN company TEXT'); } catch {}
+try { db.exec("ALTER TABLE contacts ADD COLUMN contact_type TEXT NOT NULL DEFAULT 'Lead'"); } catch {}
 
 // ── Stamp legacy NULL rows to the owner account ───────────────────────────────
 // Runs on every boot but is a no-op once rows are stamped.
@@ -268,109 +386,6 @@ try {
   console.error('[DB] Legacy row stamp failed:', err.message);
 }
 
-// ── Contacts table migration ───────────────────────────────────────────────────
-// Old schema: phone TEXT PRIMARY KEY — globally unique, blocks multi-user.
-// New schema: UNIQUE(user_id, phone) — each user can save the same phone number.
-// Runs once; safe to re-deploy (the regex check prevents re-running).
-try {
-  const tableInfo = db.prepare(
-    "SELECT sql FROM sqlite_master WHERE type='table' AND name='contacts'"
-  ).get();
-
-  // Only migrate if the old PRIMARY KEY declaration is still present
-  if (tableInfo && /phone\s+TEXT\s+PRIMARY\s+KEY/i.test(tableInfo.sql)) {
-    db.exec(`
-      CREATE TABLE contacts_new (
-        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id                  INTEGER REFERENCES users(id),
-        phone                    TEXT    NOT NULL,
-        name                     TEXT,
-        address                  TEXT,
-        email                    TEXT,
-        notes                    TEXT,
-        preferred_contact_method TEXT,
-        formatted_address        TEXT,
-        address_line_1           TEXT,
-        city                     TEXT,
-        state                    TEXT,
-        postal_code              TEXT,
-        country                  TEXT,
-        lat                      REAL,
-        lng                      REAL,
-        updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, phone)
-      );
-      INSERT INTO contacts_new
-        (user_id, phone, name, address, email, notes, preferred_contact_method,
-         formatted_address, address_line_1, city, state, postal_code, country,
-         lat, lng, updated_at)
-      SELECT
-        user_id, phone, name, address, email, notes, preferred_contact_method,
-        formatted_address, address_line_1, city, state, postal_code, country,
-        lat, lng, updated_at
-      FROM contacts;
-      DROP TABLE contacts;
-      ALTER TABLE contacts_new RENAME TO contacts;
-    `);
-    console.log('[DB] Contacts table migrated to per-user uniqueness');
-  }
-} catch (err) {
-  console.error('[DB] Contacts migration error:', err.message);
-}
-
-// ── Allow contacts.phone to be NULL ──────────────────────────────────────────
-// Manual contacts added by the user may not have a phone number.
-// The previous schema had phone TEXT NOT NULL; recreate to remove the constraint.
-// SQLite's UNIQUE constraint treats NULL values as distinct, so multiple
-// phone-less rows per user are allowed (each gets its own row).
-try {
-  const tbl = db.prepare(
-    "SELECT sql FROM sqlite_master WHERE type='table' AND name='contacts'"
-  ).get();
-  // Only run if phone column still has NOT NULL constraint
-  if (tbl && /phone\s+TEXT\s+NOT\s+NULL/i.test(tbl.sql)) {
-    db.exec(`
-      CREATE TABLE contacts_v3 (
-        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id                  INTEGER REFERENCES users(id),
-        phone                    TEXT,
-        name                     TEXT,
-        address                  TEXT,
-        email                    TEXT,
-        notes                    TEXT,
-        preferred_contact_method TEXT,
-        formatted_address        TEXT,
-        address_line_1           TEXT,
-        city                     TEXT,
-        state                    TEXT,
-        postal_code              TEXT,
-        country                  TEXT,
-        lat                      REAL,
-        lng                      REAL,
-        updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, phone)
-      );
-      INSERT INTO contacts_v3
-        (id, user_id, phone, name, address, email, notes, preferred_contact_method,
-         formatted_address, address_line_1, city, state, postal_code, country,
-         lat, lng, updated_at)
-      SELECT
-        id, user_id, phone, name, address, email, notes, preferred_contact_method,
-        formatted_address, address_line_1, city, state, postal_code, country,
-        lat, lng, updated_at
-      FROM contacts;
-      DROP TABLE contacts;
-      ALTER TABLE contacts_v3 RENAME TO contacts;
-    `);
-    console.log('[DB] Contacts phone made nullable (supports manual contacts without phone)');
-  }
-} catch (err) {
-  console.error('[DB] Contacts phone-nullable migration error:', err.message);
-}
-
-// Company and contact_type for manually-created contacts
-try { db.exec('ALTER TABLE contacts ADD COLUMN company TEXT'); } catch {}
-try { db.exec("ALTER TABLE contacts ADD COLUMN contact_type TEXT NOT NULL DEFAULT 'Lead'"); } catch {}
 
 // ── App-wide settings ─────────────────────────────────────────────────────────
 // Simple key/value store for non-tenant data only (e.g. gmail_last_poll_time).

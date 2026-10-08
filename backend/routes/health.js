@@ -13,6 +13,8 @@
 
 const express = require('express');
 const db      = require('../db');
+const { validateWebPushEndpoint, validateSubscriptionKeys, validateFcmToken } = require('../utils/pushValidation');
+const { clientIpKey } = require('../utils/clientIp');
 
 const publicRouter = express.Router();
 publicRouter.get('/', (_req, res) => res.json({ ok: true }));
@@ -45,6 +47,40 @@ ownerRouter.get('/owner', (_req, res) => {
     });
   } catch (err) {
     console.error('[Health] owner diagnostic failed:', err.message);
+    res.status(500).json({ error: 'Diagnostic failed' });
+  }
+});
+
+// Push-registration inventory — owner only, READ-ONLY, counts only. Never
+// returns endpoints, tokens, or IP addresses.
+ownerRouter.get('/push-inventory', (req, res) => {
+  try {
+    const n = (sql) => db.prepare(sql).get().n;
+    const web = db.prepare('SELECT endpoint, p256dh, auth FROM push_subscriptions').all();
+    const fcm = db.prepare('SELECT fcm_token FROM fcm_subscriptions').all();
+    const webReasons = {};
+    for (const r of web) {
+      const ep = validateWebPushEndpoint(r.endpoint);
+      const k  = ep.ok ? validateSubscriptionKeys(r.p256dh, r.auth) : null;
+      if (!(ep.ok && k.ok)) { const why = ep.ok ? k.reason : ep.reason; webReasons[why] = (webReasons[why] || 0) + 1; }
+    }
+    res.json({
+      ownerless: {
+        push_subscriptions: n('SELECT COUNT(*) AS n FROM push_subscriptions WHERE user_id IS NULL'),
+        fcm_subscriptions:  n('SELECT COUNT(*) AS n FROM fcm_subscriptions WHERE user_id IS NULL'),
+      },
+      totals: { push_subscriptions: web.length, fcm_subscriptions: fcm.length },
+      failingValidation: {
+        push_subscriptions: webReasons,
+        fcm_subscriptions:  fcm.filter(r => !validateFcmToken(r.fcm_token).ok).length,
+      },
+      rateLimitIp: {
+        cfConnectingIpPresent: typeof req.headers['cf-connecting-ip'] === 'string',
+        ipKeyDerived:          clientIpKey(req) !== null,
+      },
+    });
+  } catch (err) {
+    console.error('[Health] push inventory failed:', err.message);
     res.status(500).json({ error: 'Diagnostic failed' });
   }
 });

@@ -12,6 +12,15 @@
 const webpush = require('web-push');
 const db      = require('../db');
 const log     = require('../logger').for('Push');
+const { validateWebPushEndpoint, validateSubscriptionKeys, validateFcmToken } = require('../utils/pushValidation');
+
+// Rows that fail validation (e.g. stored before validation existed) are skipped,
+// never deleted — a false positive must not destroy a real subscription.
+function countReasons(reasons) {
+  const out = {};
+  for (const r of reasons) out[r] = (out[r] || 0) + 1;
+  return out;
+}
 
 // ── Web Push (VAPID) ─────────────────────────────────────────────────────────
 
@@ -79,9 +88,19 @@ async function sendPush(userId, payload) {
 async function sendWebPush(userId, payload) {
   if (!vapidConfigured) return;
 
-  const subs = db.prepare(
-    'SELECT * FROM push_subscriptions WHERE user_id = ?'
+  const rows = db.prepare(
+    'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?'
   ).all(userId);
+
+  const subs = [];
+  const skipped = [];
+  for (const row of rows) {
+    const ep = validateWebPushEndpoint(row.endpoint);
+    const k  = ep.ok ? validateSubscriptionKeys(row.p256dh, row.auth) : null;
+    if (ep.ok && k.ok) subs.push(row);
+    else skipped.push(ep.ok ? k.reason : ep.reason);
+  }
+  if (skipped.length) log.warn('Skipped push subscriptions failing validation', { count: skipped.length, reasons: countReasons(skipped) });
 
   if (subs.length === 0) return;
 
@@ -90,7 +109,7 @@ async function sendWebPush(userId, payload) {
       webpush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
         JSON.stringify(payload),
-        { TTL: 60 * 60 }
+        { TTL: 60 * 60, timeout: 10_000 }
       )
     )
   );
@@ -103,7 +122,8 @@ async function sendWebPush(userId, payload) {
           .run(subs[i].endpoint);
         log.info('Pruned expired Web Push subscription');
       } else {
-        log.warn('Web Push delivery failed', { code, err: result.reason?.message });
+        // No err.message: it can contain the endpoint host.
+        log.warn('Web Push delivery failed', { code, errCode: result.reason?.code });
       }
     }
   });
@@ -112,9 +132,13 @@ async function sendWebPush(userId, payload) {
 async function sendFcm(userId, payload) {
   if (!fcmConfigured) return;
 
-  const tokens = db.prepare(
+  const allTokens = db.prepare(
     'SELECT fcm_token FROM fcm_subscriptions WHERE user_id = ?'
   ).all(userId).map(r => r.fcm_token);
+  const tokens = allTokens.filter(t => validateFcmToken(t).ok);
+  if (tokens.length !== allTokens.length) {
+    log.warn('Skipped FCM tokens failing validation', { count: allTokens.length - tokens.length });
+  }
 
   if (tokens.length === 0) return;
 

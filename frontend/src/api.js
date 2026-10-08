@@ -149,6 +149,8 @@ export async function login(email, password) {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ email, password }),
+      // Suspended (403) and throttled (429) are expected outcomes, not bugs.
+      skipSentryOn: [403, 429],
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));

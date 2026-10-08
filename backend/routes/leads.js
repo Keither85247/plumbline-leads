@@ -1,5 +1,8 @@
 const express = require('express');
 const router = express.Router();
+const { transcribeRateLimit } = require('../utils/aiBudget');
+// Manual transcripts go to OpenAI; cap their size (express.json allows 2 MB).
+const MAX_MANUAL_TRANSCRIPT = 20000;
 const OpenAI = require('openai');
 const db = require('../db');
 const { classifyVoicemailIntent } = require('../utils/voicemailClassifier');
@@ -294,11 +297,14 @@ function hasLeadToday(phoneNumber, userId = null) {
 // ---------------------------------------------------------------------------
 // POST /api/leads — manual transcript submission (user-initiated from the UI)
 // ---------------------------------------------------------------------------
-router.post('/', async (req, res) => {
+router.post('/', transcribeRateLimit, async (req, res) => {
   const { transcript } = req.body;
 
-  if (!transcript || transcript.trim().length === 0) {
+  if (typeof transcript !== 'string' || transcript.trim().length === 0) {
     return res.status(400).json({ error: 'Transcript is required' });
+  }
+  if (transcript.length > MAX_MANUAL_TRANSCRIPT) {
+    return res.status(413).json({ error: 'Transcript is too long' });
   }
 
   try {
