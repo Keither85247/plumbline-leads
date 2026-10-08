@@ -101,11 +101,20 @@ async function run() {
     ok('5b. invalid-sig caused no calls row', callsBefore() === n0);
 
     // 3 + 4. Correct signature for exact URL + form body → accepted (200 TwiML) + behavior retained (call logged)
+    // With no account at all there is no verified owner: the call is refused
+    // (valid TwiML, so Twilio does not retry) and no ownerless row is created.
     n0 = callsBefore();
     const goodSig = sign(signedUrl, voiceForm);
     r = await post(BASE, voicePath, { sig: goodSig, form: voiceForm });
+    ok('4c. valid request with no owning account → refused TwiML, no ownerless calls row',
+      r.status === 200 && /<Reject/.test(r.text) && callsBefore() === n0);
+    if (!db.prepare('SELECT id FROM users WHERE is_owner=1 LIMIT 1').get()) {
+      db.prepare("INSERT INTO users (email,is_owner) VALUES ('o@t.local',1)").run();
+    }
+    n0 = callsBefore();
+    r = await post(BASE, voicePath, { sig: goodSig, form: voiceForm });
     ok('3. correct signature accepted → 200', r.status === 200, `status=${r.status}`);
-    ok('4. valid request retains behavior (TwiML returned)', /<Response>/.test(r.text));
+    ok('4. valid request retains behavior (TwiML returned)', /<Response>/.test(r.text) && /<Dial/.test(r.text));
     ok('4b. valid request performed its DB write (call logged)', callsBefore() === n0 + 1);
 
     // 3c. Signature validity is URL-specific: a signature for a different path is rejected

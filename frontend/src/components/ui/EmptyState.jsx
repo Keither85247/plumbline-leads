@@ -42,7 +42,8 @@ export default function EmptyState({ icon, title, subtitle, action, className = 
         <button
           type="button"
           onClick={action.onClick}
-          className="mt-5 inline-flex items-center gap-2 bg-ink-50 text-white text-sm font-semibold px-4 py-2 rounded-full hover:bg-ink-100 active:scale-[0.97] transition-all"
+          disabled={!!action.disabled}
+          className="mt-5 inline-flex items-center gap-2 bg-ink-50 text-white text-sm font-semibold px-4 py-2 rounded-full hover:bg-ink-100 active:scale-[0.97] transition-all disabled:opacity-50"
         >
           {action.icon}
           {action.label}

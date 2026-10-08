@@ -3,6 +3,7 @@ const express = require('express');
 const router  = express.Router();
 const twilio  = require('twilio');
 const db      = require('../db');
+const { isDisabledRow } = require('../utils/accountStatus');
 const log     = require('../logger').for('Numbers');
 
 // ── GET /api/numbers/mine ─────────────────────────────────────────────────────
@@ -64,14 +65,15 @@ router.post('/claim', express.json(), async (req, res) => {
   if (!phoneNumber) return res.status(400).json({ error: 'phoneNumber is required' });
 
   // Look up user for log context and suspension check
-  const userRow = db.prepare('SELECT email, is_suspended FROM users WHERE id = ?').get(req.userId);
+  const userRow = db.prepare('SELECT email, is_owner, is_suspended, access_status FROM users WHERE id = ?').get(req.userId);
   const userEmail = userRow?.email || '(unknown)';
 
   log.info('Number claim requested', { userId: req.userId, email: userEmail, phoneNumber });
 
-  // Block suspended users from claiming a number
-  if (userRow?.is_suspended) {
-    log.warn('Claim blocked — user suspended', { userId: req.userId, email: userEmail });
+  // Block suspended or blocked accounts from claiming a number (requireAuth
+  // already refuses them; defence in depth).
+  if (isDisabledRow(userRow)) {
+    log.warn('Claim blocked — account not active', { userId: req.userId });
     return res.status(403).json({ error: 'Your account has been suspended. Contact your administrator.' });
   }
 

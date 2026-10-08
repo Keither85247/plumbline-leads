@@ -53,7 +53,7 @@ if (typeof window !== 'undefined') {
   const _envVar   = import.meta.env.VITE_BACKEND_URL;
   const _isNative = !!window.Capacitor?.isNativePlatform?.();
   console.group('%c[PlumbLine API Config]', 'color:#3b82f6;font-weight:bold');
-  console.log('window.location.href  :', window.location.href);
+  console.log('page                  :', window.location.origin + window.location.pathname);
   console.log('VITE_BACKEND_URL env  :', _envVar ?? '(not set — using built-in fallback)');
   console.log('isNative (Capacitor)  :', _isNative);
   console.log('resolved BACKEND_URL  :', BACKEND_URL || '(empty — localhost dev mode)');
@@ -255,6 +255,17 @@ export async function getMe() {
   }
 }
 
+/**
+ * Like getMe, but tells "not signed in" (null) apart from "could not check"
+ * (throws) — used by the Gmail connection screen so a brief outage does not
+ * look like a signed-out browser.
+ */
+export async function getMeStrict() {
+  const res = await apiFetch(`${AUTH_BASE}/me`, { skipSentryOn: [502, 503, 504] });   // 401 → AuthError
+  if (!res.ok) { const e = new Error('Session check failed'); e.status = res.status; throw e; }
+  return res.json();
+}
+
 export async function createLead(transcript, language) {
   const res = await apiFetch(`${API_BASE}/leads`, {
     method: 'POST',
@@ -347,8 +358,15 @@ export async function translateText(text, targetLang) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, targetLang }),
+    // Limit reached (429) and too long (413) are expected outcomes, not bugs.
+    skipSentryOn: [413, 429],
   });
-  if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Translation failed'); }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    const e = new Error(err.error || 'Translation failed');
+    e.status = res.status;
+    throw e;
+  }
   return res.json(); // { translated }
 }
 
@@ -516,6 +534,48 @@ export async function unhideContact(phone) {
 export async function getGmailStatus() {
   const res = await apiFetch(`${AUTH_BASE}/gmail-status`);
   if (!res.ok) throw new Error('Failed to get Gmail status');
+  return res.json();
+}
+
+// ── Gmail connection flow (see backend routes/auth.js "Gmail OAuth") ─────────
+// Never log the launch URL, the completion handle or these responses.
+async function gmailPost(path, body, skip) {
+  const res = await apiFetch(`${AUTH_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+    skipSentryOn: skip,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const e = new Error(data.error || 'Gmail connection failed');
+    e.code = data.code || 'oauth_error';
+    e.status = res.status;
+    throw e;
+  }
+  return data;
+}
+
+/** Starts a Gmail connection attempt; returns the URL to open for Google. */
+export async function startGmailConnect() {
+  const { launchUrl } = await gmailPost('/google/start', {}, [403, 429, 503]);
+  return launchUrl;
+}
+
+/** Google address of a parked result (does not consume it). */
+export function previewGmailCompletion(handle) {
+  return gmailPost('/google/complete/preview', { handle }, [400, 403, 410, 429]);
+}
+
+/** Claims (confirm=true) or discards (confirm=false) a parked result. */
+export function completeGmailConnection(handle, confirm) {
+  return gmailPost('/google/complete', { handle, confirm: confirm === true }, [400, 403, 410, 429, 502]);
+}
+
+/** Coarse status of this account's latest connection attempt. */
+export async function getGmailAttempt() {
+  const res = await apiFetch(`${AUTH_BASE}/google/attempt`);
+  if (!res.ok) throw new Error('Failed to get Gmail connection status');
   return res.json();
 }
 

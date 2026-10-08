@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { getEmails, getGmailStatus, disconnectGmail, sendEmail, patchEmail, softDeleteEmail, searchContacts, BACKEND_URL } from '../api';
+import { getEmails, getGmailStatus, disconnectGmail, sendEmail, patchEmail, softDeleteEmail, searchContacts } from '../api';
+import { gmailErrorCopy } from '../gmailCopy';
+import { useGmailConnect } from '../hooks/useGmailConnect';
 import { useInvalidate } from '../refreshBus';
 import { translations } from '../i18n';
 import { parseTimestamp } from '../utils/phone';
@@ -484,7 +486,7 @@ function EmailDetailPanel({ email, onBack, onDelete, onToggleRead, onArchive }) 
 
 // ── Email settings modal ──────────────────────────────────────────────────────
 
-function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting }) {
+function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting, onConnect, connecting }) {
   const t = getT();
   return (
     <div
@@ -537,17 +539,17 @@ function EmailSettingsModal({ gmailStatus, onClose, onDisconnect, disconnecting 
           ) : gmailStatus.enabled ? (
             <div className="py-1">
               <p className="text-sm text-gray-500 mb-3">{t.emailGmailNotConnected}</p>
-              <a
-                // /auth/google authenticates with the session COOKIE only. A
-                // session token in the URL would let anyone who sends this link
-                // start a Gmail connection for THEIR account in someone else's
-                // browser, so no token is ever appended here.
-                href={`${BACKEND_URL}/auth/google`}
-                className="flex items-center justify-center gap-2.5 w-full border border-gray-200 hover:border-gray-300 rounded-xl py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm"
+              <button
+                // Starts an attempt with the normal session (never a token in a
+                // URL); the user confirms the result after Google.
+                type="button"
+                onClick={onConnect}
+                disabled={connecting}
+                className="flex items-center justify-center gap-2.5 w-full border border-gray-200 hover:border-gray-300 rounded-xl py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm disabled:opacity-50"
               >
                 <GoogleLogo size={16} />
-                {t.emailConnectGmail}
-              </a>
+                {connecting ? 'Opening Google…' : t.emailConnectGmail}
+              </button>
             </div>
           ) : (
             <div className="py-2 space-y-2">
@@ -983,47 +985,50 @@ function ComposeModal({ onClose, onSent }) {
 // Shown when the OAuth callback returns a gmail_error param.
 // Persists until dismissed — more visible than a toast for beta users.
 
-const GMAIL_ERROR_COPY = {
-  access_restricted: {
-    title: 'Gmail access is currently limited during beta testing.',
-    body:  'Contact your administrator to enable Gmail access for your Google account.',
-  },
-  oauth_disabled: {
-    title: 'Gmail connection is not available yet.',
-    body:  'We\'re finishing Google verification before enabling Gmail sync for testers.',
-  },
-  not_configured: {
-    title: 'Gmail is not configured on this server.',
-    body:  'Contact your administrator to set up Gmail integration.',
-  },
-  oauth_cancelled: {
-    title: 'Gmail connection was cancelled.',
-    body:  'You can try connecting again from Email Settings.',
-  },
-  oauth_error: {
-    title: 'Gmail connection could not be completed.',
-    body:  'Contact your administrator if this keeps happening.',
-  },
-  state_invalid: {
-    title: 'That Gmail connection link expired or was already used.',
-    body:  'Start again from Email Settings in this browser.',
-  },
-  missing_scopes: {
-    title: 'Gmail needs all of the requested permissions.',
-    body:  'Connect again and leave every Gmail permission ticked.',
-  },
-  session_required: {
-    title: 'Sign in to Plumbline Leads in this browser first.',
-    body:  'Gmail can only be connected from a browser where you are signed in.',
-  },
-  too_many_attempts: {
-    title: 'Too many Gmail connection attempts.',
-    body:  'Please wait a few minutes and try again.',
-  },
-};
+// Copy lives in ../gmailCopy (shared with the Gmail connection screen).
+
+function GmailConnectPanel({ state, onContinue, onCheck, onClose }) {
+  const step = state.step;
+  const copy = step === 'error' ? gmailErrorCopy(state.code) : null;
+  const waitingText = state.status === 'waiting_for_confirmation'
+    ? 'Almost done: in your browser, sign in to Plumbline Leads and confirm the Gmail account.'
+    : 'Finish in your browser: approve access on Google’s page.';
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30 px-4 pb-6">
+      <div role="dialog" aria-modal="true" className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5">
+        {step === 'intro' && (<>
+          <p className="text-base font-semibold text-gray-900">Connect Gmail</p>
+          <p className="text-sm text-gray-500 mt-2">We’ll open your phone’s browser for Google. After you approve, sign in to Plumbline Leads there and confirm — then come back to this app.</p>
+          <div className="mt-4 space-y-2">
+            <button onClick={onContinue} className="w-full rounded-xl py-2.5 text-sm font-semibold bg-gray-900 text-white">Continue</button>
+            <button onClick={onClose} className="w-full rounded-xl py-2.5 text-sm font-medium border border-gray-200 text-gray-700">Cancel</button>
+          </div>
+        </>)}
+        {step === 'starting' && (<>
+          <p className="text-sm text-gray-600">Opening Google…</p>
+          <button onClick={onClose} className="mt-4 w-full rounded-xl py-2 text-xs text-gray-400">Cancel</button>
+        </>)}
+        {step === 'waiting' && (<>
+          <p className="text-base font-semibold text-gray-900">Connecting Gmail…</p>
+          <p className="text-sm text-gray-500 mt-2">{waitingText}</p>
+          <div className="mt-4 space-y-2">
+            <button onClick={onCheck} className="w-full rounded-xl py-2.5 text-sm font-semibold bg-gray-900 text-white">Check again</button>
+            <button onClick={onContinue} className="w-full rounded-xl py-2.5 text-sm font-medium border border-gray-200 text-gray-700">Start over</button>
+            <button onClick={onClose} className="w-full rounded-xl py-2 text-xs text-gray-400">Close</button>
+          </div>
+        </>)}
+        {step === 'error' && (<>
+          <p className="text-sm font-semibold text-gray-900">{copy.title}</p>
+          <p className="text-sm text-gray-500 mt-1">{copy.body}</p>
+          <button onClick={onClose} className="mt-4 w-full rounded-xl py-2.5 text-sm font-medium border border-gray-200 text-gray-700">Close</button>
+        </>)}
+      </div>
+    </div>
+  );
+}
 
 function GmailErrorBanner({ code, onDismiss }) {
-  const copy = GMAIL_ERROR_COPY[code] || GMAIL_ERROR_COPY.oauth_error;
+  const copy = gmailErrorCopy(code);
   return (
     <div className="mx-4 mb-3 bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 shrink-0">
       <div className="flex items-start justify-between gap-3">
@@ -1060,6 +1065,14 @@ export default function EmailPage() {
   const [activeMailbox, setActiveMailbox] = useState('all'); // 'all' | 'inbox' | 'sent' | 'trash'
   const [gmailStatus,   setGmailStatus]   = useState({ connected: false, email: null, enabled: false });
   const [gmailError,    setGmailError]    = useState(null); // error code string | null
+  // Android app: when the user finishes in the phone's browser, refresh here.
+  const gmailConnect = useGmailConnect({
+    onConnected: () => {
+      getGmailStatus().then(s => { setGmailStatus(s); setSettingsOpen(true); }).catch(() => {});
+      setTimeout(() => fetchEmailsRef.current?.(), 3_000);
+    },
+  });
+  const fetchEmailsRef = useRef(null);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [composeOpen,   setComposeOpen]   = useState(false);
   const [settingsOpen,  setSettingsOpen]  = useState(false);
@@ -1099,6 +1112,7 @@ export default function EmailPage() {
       })
       .finally(() => setLoading(false));
   }, []); // stable — reads mailbox via ref
+  fetchEmailsRef.current = fetchEmails;
 
   // Re-fetch whenever the active mailbox tab changes
   useEffect(() => {
@@ -1157,8 +1171,14 @@ export default function EmailPage() {
       const errCode = params.get('gmail_error');
       window.history.replaceState({}, '', window.location.pathname);
       // Show as a persistent in-page banner (not a disappearing toast) so beta
-      // users understand this is intentional and know what to do next.
-      setGmailError(errCode);
+      // users understand this is intentional and know what to do next. A stale
+      // "link expired" (e.g. Back into Google's consent page after connecting)
+      // is not shown when Gmail is in fact connected.
+      if (errCode === 'state_invalid') {
+        getGmailStatus().then(s => { if (!s?.connected) setGmailError(errCode); }).catch(() => setGmailError(errCode));
+      } else {
+        setGmailError(errCode);
+      }
     }
   }, [fetchEmails]);
 
@@ -1300,13 +1320,15 @@ export default function EmailPage() {
               <div className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
               <p className="text-xs text-amber-700 font-medium truncate">{t.emailGmailNotConnectedStrip}</p>
             </div>
-            <a
-              href={`${BACKEND_URL}/auth/google`}
-              className="shrink-0 flex items-center gap-1.5 text-xs font-semibold text-amber-700 hover:text-amber-900 bg-white border border-amber-200 rounded-lg px-2.5 py-1 transition-colors"
+            <button
+              type="button"
+              onClick={gmailConnect.begin}
+              disabled={gmailConnect.state?.step === 'starting'}
+              className="shrink-0 flex items-center gap-1.5 text-xs font-semibold text-amber-700 hover:text-amber-900 bg-white border border-amber-200 rounded-lg px-2.5 py-1 transition-colors disabled:opacity-50"
             >
               <GoogleLogo size={12} />
               {t.emailConnectButton}
-            </a>
+            </button>
           </div>
         )}
         {!gmailStatus.connected && !gmailStatus.enabled && (
@@ -1388,7 +1410,8 @@ export default function EmailPage() {
               subtitle={gmailStatus.connected ? t.emailConnectHint : t.emailNotConnected}
               action={!gmailStatus.connected && gmailStatus.enabled ? {
                 label: t.emailConnectButton,
-                onClick: () => { window.location.href = `${BACKEND_URL}/auth/google`; },
+                onClick: gmailConnect.begin,
+                disabled: gmailConnect.state?.step === 'starting',
               } : undefined}
             />
           ) : (
@@ -1468,6 +1491,17 @@ export default function EmailPage() {
             setSettingsOpen(false);
           }}
           disconnecting={disconnecting}
+          onConnect={gmailConnect.begin}
+          connecting={gmailConnect.state?.step === 'starting'}
+        />
+      )}
+
+      {gmailConnect.state && !(gmailConnect.state.step === 'starting' && !window.Capacitor?.isNativePlatform?.()) && (
+        <GmailConnectPanel
+          state={gmailConnect.state}
+          onContinue={gmailConnect.confirmOpen}
+          onCheck={gmailConnect.checkNow}
+          onClose={gmailConnect.close}
         />
       )}
 

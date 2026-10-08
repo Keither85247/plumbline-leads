@@ -22,6 +22,7 @@
  */
 
 const db  = require('../db');
+const { isDisabledRow } = require('../utils/accountStatus');
 const log = require('../logger').for('SmsGuards');
 
 // ── Configurable limits ───────────────────────────────────────────────────────
@@ -56,13 +57,14 @@ module.exports = function smsGuards(req, res, next) {
 
   // ── 1. User-level suspension ───────────────────────────────────────────────
   const user = db.prepare(
-    'SELECT is_owner, is_suspended, email FROM users WHERE id = ?'
+    'SELECT is_owner, is_suspended, access_status, email FROM users WHERE id = ?'
   ).get(userId);
 
   if (!user) return res.status(401).json({ error: 'User not found' });
 
-  if (user.is_suspended) {
-    log.warn('SMS blocked — user suspended', { userId, email: user.email, to: rawTo });
+  // Suspended or blocked (requireAuth already refuses these; defence in depth).
+  if (isDisabledRow(user)) {
+    log.warn('SMS blocked — account not active', { userId });
     return res.status(403).json({
       error: 'Your account has been suspended. Please contact your administrator.',
     });

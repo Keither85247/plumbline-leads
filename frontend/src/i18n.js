@@ -41,6 +41,9 @@ export const translations = {
     showOriginal: 'Show original',
     showTranslation: 'Show translation',
     translating: 'Translating…',
+    translateLimited: 'Translation limit reached. Please try again later.',
+    translateTooLong: 'This text is too long to translate.',
+    translateFailed: 'Translation failed. Please try again.',
 
     // Voicemail Greeting Editor
     vmGreeting:      'Voicemail Greeting',
@@ -614,6 +617,9 @@ export const translations = {
     showOriginal: 'Ver original',
     showTranslation: 'Ver traducción',
     translating: 'Traduciendo…',
+    translateLimited: 'Se alcanzó el límite de traducciones. Inténtalo más tarde.',
+    translateTooLong: 'Este texto es demasiado largo para traducirlo.',
+    translateFailed: 'No se pudo traducir. Inténtalo de nuevo.',
 
     // Voicemail Greeting Editor
     vmGreeting:      'Saludo de buzón de voz',

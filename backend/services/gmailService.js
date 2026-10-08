@@ -1,6 +1,7 @@
 'use strict';
 const { google } = require('googleapis');
 const db = require('../db');
+const { disabledSql } = require('../utils/accountStatus');
 
 // ── OAuth2 client factory ─────────────────────────────────────────────────────
 // Every caller gets a FRESH client: auth.js creates one per OAuth request, and
@@ -38,7 +39,9 @@ function loadCredentials(userId) {
     expiry_date:   row.expiry_date,
   });
 
-  // Auto-persist refreshed tokens for this specific user only
+  // Auto-persist refreshed tokens for this specific user only — and only into
+  // the same token set this client was built from (if the user reconnected a
+  // different address meanwhile, a late refresh must not overwrite it).
   client.on('tokens', (tokens) => {
     console.log(`[Gmail] Access token auto-refreshed for user ${userId}`);
     db.prepare(`
@@ -46,8 +49,8 @@ function loadCredentials(userId) {
       SET access_token = ?,
           expiry_date  = ?,
           updated_at   = CURRENT_TIMESTAMP
-      WHERE user_id = ?
-    `).run(tokens.access_token, tokens.expiry_date ?? null, userId);
+      WHERE user_id = ? AND refresh_token IS ?
+    `).run(tokens.access_token, tokens.expiry_date ?? null, userId, row.refresh_token ?? null);
   });
 
   return { client, row };
@@ -86,9 +89,15 @@ function isInvalidGrant(err) {
  *
  * @param {number} userId
  */
-function invalidateToken(userId) {
+function invalidateToken(userId, refreshToken) {
   if (!userId) return;
-  db.prepare('DELETE FROM gmail_tokens WHERE user_id = ?').run(userId);
+  // When the failing token set is known, delete only that one — a connection
+  // made meanwhile (new refresh token) is kept.
+  if (refreshToken !== undefined) {
+    db.prepare('DELETE FROM gmail_tokens WHERE user_id = ? AND refresh_token IS ?').run(userId, refreshToken ?? null);
+  } else {
+    db.prepare('DELETE FROM gmail_tokens WHERE user_id = ?').run(userId);
+  }
   console.warn(`[Gmail] Token invalidated for user ${userId} — must reconnect Gmail`);
 }
 
@@ -252,7 +261,7 @@ async function syncRecentEmails(userId, { daysBack = 30, maxPerLabel = 100 } = {
   const connectedEmail = (result.row.email || '').toLowerCase();
   const sinceSeconds   = Math.floor((Date.now() - daysBack * 24 * 60 * 60 * 1000) / 1000);
 
-  console.log(`[Backfill] Starting for user ${userId} (${connectedEmail}), ${daysBack} days back`);
+  console.log(`[Backfill] Starting for user ${userId}, ${daysBack} days back`);
 
   const [inboxRes, sentRes] = await Promise.all([
     gmail.users.messages.list({ userId: 'me', q: `in:inbox after:${sinceSeconds}`, maxResults: maxPerLabel }),
@@ -392,6 +401,14 @@ function getAllConnectedUserIds() {
   return db.prepare('SELECT user_id FROM gmail_tokens WHERE user_id IS NOT NULL').all().map(r => r.user_id);
 }
 
+/** Connected user_ids whose account is active (not suspended or blocked). */
+function getActiveConnectedUserIds() {
+  return db.prepare(`
+    SELECT g.user_id FROM gmail_tokens g JOIN users u ON u.id = g.user_id
+    WHERE NOT ${disabledSql('u')}
+  `).all().map(r => r.user_id);
+}
+
 module.exports = {
   createBaseClient,
   loadCredentials,
@@ -409,4 +426,5 @@ module.exports = {
   syncRecentEmails,
   backfillMissingLabels,
   getAllConnectedUserIds,
+  getActiveConnectedUserIds,
 };

@@ -11,35 +11,45 @@
  * Returns 401 JSON (never HTML) if no valid session is found.
  */
 
-const { getSessionToken, lookupSession, revokeUserSessions, clearSessionCookieOptions, SUSPENDED_ERROR } = require('../utils/session');
+const { resolveSession, revokeUserSessions, clearSessionCookieOptions, ACCOUNT_DISABLED_ERROR } = require('../utils/session');
 
-module.exports = function requireAuth(req, res, next) {
-  // Cookie, then Bearer (Safari ITP), then ?token= — <audio>/<video> elements
-  // make raw resource fetches and cannot send headers, so the frontend appends
-  // ?token=<session_token> to recording/voicemail URLs.
-  const token = getSessionToken(req, { allowQuery: true });
+function authenticate(req, res, next, { allowQuery }) {
+  const r = resolveSession(req, { allowQuery });
 
-  if (!token) {
+  if (r.status === 'none') {
     return res.status(401).json({ error: 'Not authenticated' });
   }
 
-  // Absolute-UTC expiry check (see utils/session.js).
-  const session = lookupSession(token);
-
-  if (!session) {
+  if (r.status !== 'ok') {
     // Clear the stale cookie so the browser doesn't keep sending it
     res.clearCookie('plumbline_session', clearSessionCookieOptions());
     return res.status(401).json({ error: 'Session expired. Please log in again.' });
   }
+  if (r.staleCookie) res.clearCookie('plumbline_session', clearSessionCookieOptions());
 
-  // Suspended accounts stop working immediately: end every session and reject.
-  // 401 (not 403) so the frontend treats it as a logout.
-  if (session.suspended) {
-    revokeUserSessions(session.userId);
+  // Suspended / blocked accounts stop working on their next request: end every
+  // session and reject. 401 (not 403) so the frontend treats it as a sign-out.
+  if (r.session.disabled) {
+    revokeUserSessions(r.session.userId);
     res.clearCookie('plumbline_session', clearSessionCookieOptions());
-    return res.status(401).json(SUSPENDED_ERROR);
+    return res.status(401).json(ACCOUNT_DISABLED_ERROR);
   }
 
-  req.userId = session.userId;
+  req.userId = r.session.userId;
   next();
+}
+
+// Cookie, Bearer (Safari ITP) and ?token= are all considered —
+// <audio>/<video> elements make raw resource fetches and cannot send
+// headers, so the frontend appends ?token=<session_token> to recording URLs.
+function requireAuth(req, res, next) {
+  return authenticate(req, res, next, { allowQuery: true });
+}
+
+// Cookie or Bearer only — never a session token in a URL. Used by the Gmail
+// connection endpoints.
+requireAuth.strict = function requireAuthStrict(req, res, next) {
+  return authenticate(req, res, next, { allowQuery: false });
 };
+
+module.exports = requireAuth;

@@ -3,6 +3,7 @@ const express      = require('express');
 const router       = express.Router();
 const twilio       = require('twilio');
 const db           = require('../db');
+const { revokeUserSessions } = require('../utils/session');
 const requireOwner = require('../middleware/requireOwner');
 const { seedDemoData } = require('../scripts/seed-demo');
 
@@ -74,10 +75,9 @@ router.patch('/users/:id/suspend', requireOwner, express.json(), (req, res) => {
 
   db.prepare('UPDATE users SET is_suspended = ? WHERE id = ?').run(suspended, id);
 
-  // Kill all active sessions if suspending so effect is immediate
-  if (suspended) {
-    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
-  }
+  // End all active sessions if suspending so the effect is immediate (expired,
+  // not deleted, so each device's logout can still remove its push rows).
+  if (suspended) revokeUserSessions(id);
 
   console.log(`[Admin] User ${id} (${target.email}) ${suspended ? 'suspended' : 'reinstated'} by owner ${req.userId}`);
   res.json({ ok: true, id, email: target.email, is_suspended: suspended });
@@ -143,13 +143,15 @@ const { syncRecentEmails, isInvalidGrant, invalidateToken } = require('../servic
 
 router.post('/gmail-sync', requireOwner, express.json(), async (req, res) => {
   const daysBack = Math.min(parseInt(req.body?.days, 10) || 60, 180);
+  // The token set this sync uses — an invalid_grant only removes that one.
+  const tokenSet = db.prepare('SELECT refresh_token FROM gmail_tokens WHERE user_id = ?').get(req.userId);
   try {
     const result = await syncRecentEmails(req.userId, { daysBack, maxPerLabel: 200 });
     console.log(`[Admin] Manual Gmail sync by user ${req.userId}: imported ${result.imported}, skipped ${result.skipped}`);
     res.json(result);
   } catch (err) {
     if (isInvalidGrant(err)) {
-      invalidateToken(req.userId);
+      invalidateToken(req.userId, tokenSet ? tokenSet.refresh_token : undefined);
       return res.status(401).json({ error: 'Gmail token expired or revoked. Please reconnect Gmail in Settings.' });
     }
     console.error('[Admin] gmail-sync error:', err.message);

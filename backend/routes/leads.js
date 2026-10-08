@@ -316,11 +316,13 @@ router.post('/', transcribeRateLimit, async (req, res) => {
     });
     return res.status(201).json(newLead);
   } catch (err) {
-    console.error('Error creating lead:', err);
+    // Codes only: provider and parser messages can carry account details or
+    // fragments of the transcript / model output.
+    console.error(`[Leads] Manual transcript failed for user ${req.userId}: ${err?.status || err?.code || err?.name || 'error'}`);
     if (err?.status === 401) {
       return res.status(502).json({ error: 'Invalid OpenAI API key. Check your .env file.' });
     }
-    return res.status(500).json({ error: 'Failed to process transcript. ' + err.message });
+    return res.status(500).json({ error: 'Failed to process transcript.' });
   }
 });
 

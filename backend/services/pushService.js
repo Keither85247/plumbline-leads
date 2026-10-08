@@ -13,6 +13,7 @@ const webpush = require('web-push');
 const db      = require('../db');
 const log     = require('../logger').for('Push');
 const { validateWebPushEndpoint, validateSubscriptionKeys, validateFcmToken } = require('../utils/pushValidation');
+const { isAccountActive } = require('../utils/accountStatus');
 
 // Rows that fail validation (e.g. stored before validation existed) are skipped,
 // never deleted — a false positive must not destroy a real subscription.
@@ -77,6 +78,12 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
 async function sendPush(userId, payload) {
   if (!Number.isInteger(userId) || userId <= 0) {
     log.warn('sendPush skipped — no owning account');
+    return;
+  }
+  // Suspended / blocked accounts receive no notifications. Their device rows
+  // are kept (not deleted) so delivery resumes if the account is reinstated.
+  if (!isAccountActive(userId)) {
+    log.warn('sendPush skipped — account not active', { userId });
     return;
   }
   await Promise.all([

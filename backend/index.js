@@ -7,6 +7,9 @@ if (process.env.SENTRY_DSN) {
     dsn: process.env.SENTRY_DSN,
     environment: process.env.NODE_ENV || 'production',
     tracesSampleRate: 0.1,
+    // No cookies, headers, bodies, query strings or URL fragments (session
+    // tokens, OAuth codes/state, Gmail tickets, submitted text) — see utils/sentryScrub.js.
+    ...require('./utils/sentryScrub').sentryPrivacyOptions(Sentry),
   });
   console.log('[Sentry] Backend error tracking enabled');
 }
@@ -37,7 +40,8 @@ const healthRouters    = require('./routes/health');
 const migrateRouter    = require('./routes/migrate');
 
 const { startPolling }                                     = require('./jobs/gmailPoller');
-const { backfillMissingLabels, getAllConnectedUserIds }     = require('./services/gmailService');
+const { backfillMissingLabels, getActiveConnectedUserIds }  = require('./services/gmailService');
+const { startHousekeeping }                                = require('./jobs/housekeeping');
 
 // ── One-time owner password reset ─────────────────────────────────────────────
 // Set RESET_OWNER_PASSWORD + RESET_OWNER_EMAIL in Render env vars.
@@ -248,7 +252,9 @@ if (process.env.SENTRY_DSN) {
 }
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  console.error(`[Express] Unhandled error on ${req.method} ${req.path}:`, err.message);
+  // Never err.message: body-parser errors echo fragments of the submitted body.
+  // The full error still reaches Sentry (scrubbed — see utils/sentryScrub.js).
+  console.error(`[Express] Unhandled error on ${req.method} ${req.path}:`, err.type || err.code || err.name || 'error');
   if (!res.headersSent) {
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -257,8 +263,9 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);
   startPolling(60_000);
-  // Run label backfill for every user that has a connected Gmail account
-  const connectedIds = getAllConnectedUserIds();
+  startHousekeeping();
+  // Run label backfill for every active user that has a connected Gmail account
+  const connectedIds = getActiveConnectedUserIds();
   Promise.all(connectedIds.map(uid => backfillMissingLabels(uid)))
     .catch(err => console.error('[Startup] Label backfill error:', err.message));
 });

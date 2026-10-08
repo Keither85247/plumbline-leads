@@ -17,6 +17,7 @@ const verifyTwilioSignature = require('../middleware/verifyTwilioSignature');
 const requireAuth = require('../middleware/requireAuth');
 const requireOwner = require('../middleware/requireOwner');
 const { resolveSafeRecordingUrl } = require('../utils/twilioRecording');
+const { isAccountActive } = require('../utils/accountStatus');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -63,6 +64,16 @@ function getOwnerUserId() {
     db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get()?.id ??
     null
   );
+}
+
+// Suspended / blocked receiving accounts: Twilio still gets a valid 200
+// response (so it does not retry), but nothing is created, altered, notified or
+// sent to paid AI, and the event is NOT re-routed to any other account.
+// Voice is rejected before it is answered (caller hears busy; no answer charge).
+function refuseInboundVoice(res, twiml, callSid) {
+  log.warn('Inbound call refused — receiving account not active', { callSid });
+  twiml.reject({ reason: 'busy' });
+  return res.type('text/xml').send(twiml.toString());
 }
 
 function getAssignedUserForNumber(toNumber) {
@@ -302,6 +313,8 @@ router.post('/voice', express.urlencoded({ extended: true }), verifyTwilioSignat
   const toNumber       = To || Called;
   const assignedUserId = getAssignedUserForNumber(toNumber);
 
+  if (!isAccountActive(assignedUserId)) return refuseInboundVoice(res, twiml, CallSid);
+
   const classification = classifyIncomingCall(From, assignedUserId);
   logCall(From, CallSid, classification, assignedUserId);
   log.info('Incoming call', { from: From || 'unknown', to: toNumber, callSid: CallSid, classification, assignedUserId });
@@ -371,6 +384,13 @@ router.post('/missed-call', express.urlencoded({ extended: true }), verifyTwilio
   const toNumber       = To || Called;
   const assignedUserId = getAssignedUserForNumber(toNumber);
 
+  // Account disabled while the call was ringing: no voicemail, no re-routing.
+  if (!isAccountActive(assignedUserId)) {
+    log.warn('Unanswered call ended — receiving account not active');
+    twiml.hangup();
+    return res.type('text/xml').send(twiml.toString());
+  }
+
   log.info('Call unanswered — routing to voicemail', { dialCallStatus: DialCallStatus, assignedUserId });
   buildVoicemailTwiml(twiml, baseUrl, assignedUserId);
   res.type('text/xml').send(twiml.toString());
@@ -392,6 +412,13 @@ router.post('/sms', express.urlencoded({ extended: true }), verifyTwilioSignatur
   // Never store a message or lead without a verified owning account.
   if (!assignedUserId) {
     log.warn('Inbound SMS dropped — no owning account for receiving number', { to: To });
+    return res.status(200).send('OK');
+  }
+
+  // Receiving account suspended or blocked: acknowledge only. No message, lead,
+  // AI analysis or notification, and no re-routing to another account.
+  if (!isAccountActive(assignedUserId)) {
+    log.warn('Inbound SMS dropped — receiving account not active', { assignedUserId });
     return res.status(200).send('OK');
   }
 
@@ -513,6 +540,12 @@ router.post('/voicemail', express.urlencoded({ extended: true }), verifyTwilioSi
     return;
   }
 
+  // Account disabled since the call started: no download, AI, lead or push.
+  if (!isAccountActive(userId)) {
+    log.warn('Voicemail webhook: receiving account not active — skipped', { callSid: CallSid });
+    return;
+  }
+
   // Derive a credential-safe URL from the trusted RecordingSid (preferred) or
   // strictly validate the supplied URL. Never attach credentials otherwise.
   let safeUrl;
@@ -615,6 +648,11 @@ router.post('/recording', express.urlencoded({ extended: true }), verifyTwilioSi
   const callRow = db.prepare('SELECT * FROM calls WHERE call_sid = ?').get(CallSid);
   if (!callRow || !callRow.user_id) {
     log.warn('/recording webhook: no owned call row for CallSid — skipped', { callSid: CallSid });
+    return;
+  }
+  // Account disabled since the call started: no download, AI or call update.
+  if (!isAccountActive(callRow.user_id)) {
+    log.warn('/recording webhook: owning account not active — skipped', { callSid: CallSid });
     return;
   }
   const fromNumber = callRow.from_number || null;
@@ -777,12 +815,26 @@ router.post('/voice-client', express.urlencoded({ extended: true }), verifyTwili
     }
   }
 
-  // A Voice token issued before a suspension stays valid for up to an hour;
-  // refuse calls from suspended accounts here as well.
-  if (callerUserId && db.prepare('SELECT is_suspended FROM users WHERE id = ?').get(callerUserId)?.is_suspended) {
-    log.warn('/voice-client: caller account suspended — call refused', { callSid: CallSid, userId: callerUserId });
+  // A Voice token issued before a suspension/block stays valid for up to an
+  // hour; refuse calls from disabled accounts here as well.
+  if (callerUserId && !isAccountActive(callerUserId)) {
+    log.warn('/voice-client: caller account not active — call refused', { callSid: CallSid, userId: callerUserId });
     twiml.say('This account is not active.');
     return res.type('text/xml').send(twiml.toString());
+  }
+
+  // In-app (client-to-client) calls must not ring a disabled account's device
+  // either — this path never passes through /voice. The identity is normalised
+  // and only an active account's exact `user_<id>` identity is ever dialled.
+  let clientIdentity = null;
+  if (typeof To === 'string' && To.startsWith('client:')) {
+    const m = /^user_(\d+)$/.exec(To.slice(7).trim());
+    if (!m || !isAccountActive(parseInt(m[1], 10))) {
+      log.warn('/voice-client: in-app destination not available — call refused', { callSid: CallSid });
+      twiml.say('The person you are calling is not available.');
+      return res.type('text/xml').send(twiml.toString());
+    }
+    clientIdentity = `user_${parseInt(m[1], 10)}`;
   }
 
   try {
@@ -792,8 +844,8 @@ router.post('/voice-client', express.urlencoded({ extended: true }), verifyTwili
       return res.type('text/xml').send(twiml.toString());
     }
 
-    const isClient = To.startsWith('client:');
-    const destination = isClient ? To.replace(/^client:/, '') : To;
+    const isClient = !!clientIdentity;
+    const destination = isClient ? clientIdentity : To;
 
     if (isClient) {
       log.info('/voice-client routing to browser client', { destination, callSid: CallSid });

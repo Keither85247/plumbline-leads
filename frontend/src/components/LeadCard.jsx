@@ -210,6 +210,7 @@ export default function LeadCard({
   const [translatedText, setTranslatedText]         = useState(null);
   const [showingTranslation, setShowingTranslation] = useState(false);
   const [isTranslating, setIsTranslating]           = useState(false);
+  const [translateError, setTranslateError]         = useState(null);
   const menuRef = useRef(null);
   const statusRef = useRef(null);
 
@@ -239,12 +240,17 @@ export default function LeadCard({
   const handleTranslate = async () => {
     const targetLang = language === 'es' ? 'en' : 'es';
     setIsTranslating(true);
+    setTranslateError(null);
     try {
       const { translated } = await translateText(displayedFollowUp, targetLang);
       setTranslatedText(translated);
       setShowingTranslation(true);
     } catch (err) {
-      console.error('Translation failed:', err);
+      setTranslateError(
+        err?.status === 429 ? (t.translateLimited || 'Translation limit reached. Please try again later.')
+        : err?.status === 413 ? (t.translateTooLong || 'This text is too long to translate.')
+        : (t.translateFailed || 'Translation failed. Please try again.')
+      );
     } finally {
       setIsTranslating(false);
     }
@@ -567,6 +573,9 @@ export default function LeadCard({
                   </>
                 )}
               </div>
+            )}
+            {replyTranslation && !editingFollowUp && translateError && (
+              <p role="status" className="mt-1 text-[12px] text-[#B42318]">{translateError}</p>
             )}
 
             {/* Actions row — dark underlined link left · pencil disc + Send right */}

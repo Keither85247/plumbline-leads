@@ -13,6 +13,7 @@
 
 const express = require('express');
 const db      = require('../db');
+const { getLastHousekeeping, SESSION_GRACE_SECONDS } = require('../jobs/housekeeping');
 const { validateWebPushEndpoint, validateSubscriptionKeys, validateFcmToken } = require('../utils/pushValidation');
 const { clientIpKey } = require('../utils/clientIp');
 
@@ -78,6 +79,15 @@ ownerRouter.get('/push-inventory', (req, res) => {
         cfConnectingIpPresent: typeof req.headers['cf-connecting-ip'] === 'string',
         ipKeyDerived:          clientIpKey(req) !== null,
       },
+      // Session housekeeping visibility (counts only; read-only).
+      sessions: {
+        active:             n("SELECT COUNT(*) AS n FROM sessions WHERE julianday(expires_at) > julianday('now')"),
+        expiredWithinGrace: n(`SELECT COUNT(*) AS n FROM sessions WHERE julianday(expires_at) <= julianday('now')
+                                 AND julianday(expires_at) > julianday('now', '-${SESSION_GRACE_SECONDS} seconds')`),
+        expiredEligible:    n(`SELECT COUNT(*) AS n FROM sessions WHERE julianday(expires_at) <= julianday('now', '-${SESSION_GRACE_SECONDS} seconds')`),
+        unparseable:        n('SELECT COUNT(*) AS n FROM sessions WHERE julianday(expires_at) IS NULL'),
+      },
+      lastHousekeeping: getLastHousekeeping(),
     });
   } catch (err) {
     console.error('[Health] push inventory failed:', err.message);

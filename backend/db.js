@@ -245,23 +245,47 @@ db.exec(`
     expires_at DATETIME NOT NULL
   )
 `);
+// Housekeeping (jobs/housekeeping.js) range-scans expires_at to delete expired
+// rows in small batches; revokeUserSessions deletes by user_id.
+db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)');
 
 // ── Gmail OAuth flows ─────────────────────────────────────────────────────────
-// One row per Connect attempt: a random, single-use, short-lived state bound to
-// the initiating account and (via an httpOnly nonce cookie) the initiating
-// browser. Only SHA-256 hashes of the state and nonce are stored.
+// One row per Connect attempt (see routes/auth.js "Gmail OAuth"). Every
+// secret value — launch ticket, state, browser nonce, completion handle — is
+// stored only as a SHA-256 hash. The PKCE verifier (optional mode) lives on the
+// row only between launch and callback. Google tokens are "parked" here only
+// between the callback and the signed-in app's explicit completion (≤10 min),
+// then moved to gmail_tokens or wiped. Rows are pruned after a day.
+// Replaces gmail_oauth_states (single-step flow, transient rows only).
+db.exec('DROP TABLE IF EXISTS gmail_oauth_states');
 db.exec(`
-  CREATE TABLE IF NOT EXISTS gmail_oauth_states (
-    state_hash TEXT    PRIMARY KEY,
-    nonce_hash TEXT    NOT NULL,
-    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at TEXT    NOT NULL,
-    used_at    TEXT,
-    created_at TEXT    NOT NULL
+  CREATE TABLE IF NOT EXISTS gmail_oauth_flows (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status          TEXT    NOT NULL,          -- started | launched | returned | parked | finishing | connected | failed | expired
+    failure         TEXT,                      -- fixed reason code
+    return_origin   TEXT,                      -- allowed frontend origin that started it
+    ticket_hash     TEXT    UNIQUE,
+    ticket_expires  TEXT,
+    state_hash      TEXT    UNIQUE,
+    nonce_hash      TEXT,
+    pkce_verifier   TEXT,
+    flow_expires    TEXT    NOT NULL,
+    handle_hash     TEXT    UNIQUE,
+    handle_expires  TEXT,
+    google_email    TEXT,
+    p_access_token  TEXT,
+    p_refresh_token TEXT,
+    p_expiry        INTEGER,
+    created_at      TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL
   )
 `);
-db.exec('CREATE INDEX IF NOT EXISTS idx_gmail_oauth_states_expires ON gmail_oauth_states(expires_at)');
-db.exec('CREATE INDEX IF NOT EXISTS idx_gmail_oauth_states_user ON gmail_oauth_states(user_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_gmail_oauth_flows_user ON gmail_oauth_flows(user_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_gmail_oauth_flows_expires ON gmail_oauth_flows(flow_expires)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_gmail_oauth_flows_status ON gmail_oauth_flows(status, handle_expires)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_gmail_oauth_flows_created ON gmail_oauth_flows(created_at)');
 
 // ── user_id scaffolding on data tables ────────────────────────────────────────
 // All nullable so existing rows stay intact on first migration.
@@ -272,6 +296,9 @@ try { db.exec('ALTER TABLE leads    ADD COLUMN user_id INTEGER REFERENCES users(
 try { db.exec('ALTER TABLE calls    ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
 try { db.exec('ALTER TABLE emails   ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
 try { db.exec('ALTER TABLE gmail_tokens ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
+// Start (epoch ms) of the window the poller skipped while the account was
+// suspended/blocked; the poller backfills it on reinstatement, then clears it.
+try { db.exec('ALTER TABLE gmail_tokens ADD COLUMN sync_paused_at INTEGER'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN user_id INTEGER REFERENCES users(id)'); } catch {}
 
 // ── Contacts table migration ───────────────────────────────────────────────────

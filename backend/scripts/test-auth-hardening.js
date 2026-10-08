@@ -2,10 +2,12 @@
 /**
  * DEF-9 security tests (RELEASE_READINESS_TEST_REPORT.md): auth hardening.
  *
- *   A. Gmail OAuth state: random, single-use, 10-minute, bound to the
- *      initiating account AND browser; rejects missing / malformed / unknown /
- *      expired / reused / wrong-browser / account-mismatched / suspended-
- *      initiator callbacks; never logs codes, tokens, state or nonce.
+ *   A. Gmail OAuth: start → launch → callback (parked) → explicit completion.
+ *      Desktop (cookie), Safari-style (Bearer only), Android (WebView start,
+ *      external-browser finish); CSRF; replay; cross-account preview/complete;
+ *      browser swap; code injection with and without PKCE; interrupted and
+ *      expired attempts; cancel; address change; revoke via request body;
+ *      Sentry scrubbing; no secrets in logs.
  *   B. Suspension and session expiry: suspended users cannot sign in, open
  *      sessions stop working, expiry is exact (absolute UTC).
  *   C. Rate limits: login (per email+IP, per IP, per email) with generic
@@ -57,22 +59,50 @@ const origStdout = process.stdout.write.bind(process.stdout);
 const say = (s) => origStdout(s + '\n');
 
 // ── Fake Google OAuth client ─────────────────────────────────────────────────
-const google = { instances: 0, getTokenCalls: 0, revoked: [], nextScope: null, emailFor: {} };
+const google = { instances: 0, getTokenCalls: 0, revoked: [], revokeRequests: [], nextScope: null, emailFor: {},
+  issued: {}, used: new Set(), lastVerifier: null, noRefresh: false };
 const FULL_SCOPE = 'https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email';
 class FakeOAuth2 {
   constructor() { google.instances++; this.creds = null; }
-  generateAuthUrl(o) { return `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(o.state)}&scope=x`; }
-  async getToken(code) {
+  generateAuthUrl(o) {
+    const q = new URLSearchParams({ state: o.state, scope: 'x', prompt: o.prompt || '', access_type: o.access_type || '' });
+    if (o.code_challenge) { q.set('code_challenge', o.code_challenge); q.set('code_challenge_method', o.code_challenge_method); }
+    return `https://accounts.google.com/o/oauth2/v2/auth?${q}`;
+  }
+  // Behaves like Google's token endpoint: one-time codes, PKCE-bound when issued with a challenge.
+  async getToken(arg) {
     google.getTokenCalls++;
+    const code = typeof arg === 'string' ? arg : arg?.code;
+    const verifier = typeof arg === 'object' ? arg?.codeVerifier : undefined;
+    const invalid = () => Object.assign(new Error(`invalid_grant for ${code}`), { code: 'invalid_grant' });
     if (code === 'boom') throw Object.assign(new Error('token endpoint failed for code=boom SECRET-boom'), { code: 'invalid_grant' });
-    return { tokens: { access_token: `AT-${code}`, refresh_token: `RT-${code}`, expiry_date: Date.now() + 3600e3, scope: google.nextScope ?? FULL_SCOPE } };
+    if (google.used.has(code)) throw invalid();
+    google.used.add(code);
+    const iss = google.issued[code];
+    if (iss?.challenge) {
+      if (!verifier || crypto.createHash('sha256').update(verifier).digest('base64url') !== iss.challenge) throw invalid();
+    }
+    if (verifier) google.lastVerifier = verifier;
+    return { tokens: { access_token: `AT-${code}`, ...(google.noRefresh ? {} : { refresh_token: `RT-${code}` }), expiry_date: Date.now() + 3600e3, scope: google.nextScope ?? FULL_SCOPE } };
   }
   setCredentials(t) { this.creds = t; }
   async revokeToken(t) { google.revoked.push(t); }
 }
 let whisperCalls = 0;
+// utils/googleRevoke.js POSTs to Google's revoke endpoint over https: capture it.
+const fakeRevokeHttps = {
+  request(opts, cb) {
+    const r = { on() { return r; }, destroy() {}, end(body) {
+      google.revokeRequests.push({ host: opts.host, path: opts.path, method: opts.method, body: String(body) });
+      google.revoked.push(new URLSearchParams(String(body)).get('token'));
+      setImmediate(() => cb({ statusCode: 200, resume() {} }));
+    } };
+    return r;
+  },
+};
 const origLoad = Module._load;
 Module._load = function (request, parent, isMain) {
+  if (request === 'https' && parent && /utils[\\/]googleRevoke\.js$/.test(parent.filename)) return fakeRevokeHttps;
   if (request === 'googleapis') {
     return { google: {
       auth: { OAuth2: FakeOAuth2 },
@@ -164,147 +194,450 @@ async function run() {
     const c = setCookies.find(s => s.startsWith(name + '='));
     return c ? decodeURIComponent(c.split(';')[0].slice(name.length + 1)) : null;
   };
-  const errCode = (r) => new URL(r.headers.get('location') || 'https://x/').searchParams.get('gmail_error');
-  const startFlow = async (token) => {
-    const r = await req('GET', '/auth/google', { cookies: { plumbline_session: token } });
-    const loc = r.headers.get('location') || '';
-    const state = new URL(loc).searchParams.get('state');
-    return { r, state, nonce: cookieVal(r.setCookies, 'plumbline_goauth'), cookie: r.setCookies.find(s => s.startsWith('plumbline_goauth=')) || '' };
-  };
-  const callback = (q, cookies) => req('GET', `/auth/google/callback?${new URLSearchParams(q)}`, { cookies });
-  const gmailRow = (uid) => db.prepare('SELECT * FROM gmail_tokens WHERE user_id = ?').get(uid);
 
   try {
-    // ── A. Gmail OAuth state ────────────────────────────────────────────────
+    // ── A. Gmail OAuth: start → launch → callback (parked) → explicit completion ──
+    const ORIGIN = 'https://app.example.test';
     const tA = mkSession(A), tB = mkSession(B), tC = mkSession(C);
-    let r = await req('GET', '/auth/google');
-    ok('A1 /auth/google without a session cookie → session_required, no flow created', errCode(r) === 'session_required' && count('SELECT COUNT(*) n FROM gmail_oauth_states') === 0);
-    // Attack: a link carrying the ATTACKER's session token must not start a flow.
-    r = await req('GET', `/auth/google?token=${tA}`);
-    const r2a = await req('GET', '/auth/google', { token: tA });
-    ok('A1b start link with ?token= or Bearer (no cookie) is refused — no flow bound to that account', errCode(r) === 'session_required' && errCode(r2a) === 'session_required' && count('SELECT COUNT(*) n FROM gmail_oauth_states') === 0);
+    const bearer = (t) => ({ token: t });
+    const cookie = (t) => ({ cookies: { plumbline_session: t } });
+    const flowRows = (uid) => db.prepare('SELECT * FROM gmail_oauth_flows WHERE user_id = ? ORDER BY id').all(uid);
+    const lastFlow = (uid) => db.prepare('SELECT * FROM gmail_oauth_flows WHERE user_id = ? ORDER BY id DESC LIMIT 1').get(uid);
+    const clearGmailLimits = () => Object.values(authRouter.gmailLimits).forEach(l => l.clear());
+    const start = (auth, { origin = ORIGIN, json = {}, headers = {} } = {}) =>
+      req('POST', '/auth/google/start', { ...auth, json, headers: { ...(origin ? { Origin: origin } : {}), ...headers } });
+    const ticketOf = (r) => { try { return new URL(r.data.launchUrl).searchParams.get('t'); } catch { return null; } };
+    const launchGet = (t, cookies = {}) => req('GET', `/auth/google/launch?t=${encodeURIComponent(t)}`, { cookies });
+    const launchPost = (t, origin = ORIGIN) => req('POST', '/auth/google/launch', {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: origin }, form: `t=${encodeURIComponent(t)}` });
+    const gUrl = (r) => { try { return new URL(r.headers.get('location')); } catch { return null; } };
+    const stateOf = (r) => gUrl(r)?.searchParams.get('state');
+    const nonceOf = (r) => cookieVal(r.setCookies, 'plumbline_goauth');
+    let codeSeq = 0;
+    // Simulates the user consenting on Google: issues a one-time code bound to the
+    // PKCE challenge (if any) in the authorization URL, for a Google address.
+    const consent = (launchRes, email) => {
+      const code = `gcode-${++codeSeq}-${crypto.randomBytes(4).toString('hex')}`;
+      google.issued[code] = { challenge: gUrl(launchRes)?.searchParams.get('code_challenge') || null };
+      google.emailFor[`AT-${code}`] = email;
+      return code;
+    };
+    const callback = (q, cookies = {}) => req('GET', `/auth/google/callback?${new URLSearchParams(q)}`, { cookies });
+    const handleOf = (r) => { const m = /#gmail_complete=([A-Za-z0-9_-]{43})$/.exec(r.headers.get('location') || ''); return m ? m[1] : null; };
+    const preview  = (auth, handle, origin = ORIGIN) => req('POST', '/auth/google/complete/preview', { ...auth, json: { handle }, headers: { Origin: origin } });
+    const complete = (auth, handle, confirm = true) => req('POST', '/auth/google/complete', { ...auth, json: { handle, confirm }, headers: { Origin: ORIGIN } });
+    const attempt  = (auth) => req('GET', '/auth/google/attempt', auth);
+    const gmailRow = (uid) => db.prepare('SELECT * FROM gmail_tokens WHERE user_id = ?').get(uid);
+    const errCode  = (r) => { try { return new URL(r.headers.get('location')).searchParams.get('gmail_error'); } catch { return null; } };
+    // Runs start → launch (GET, in a separate browser jar with no session) →
+    // consent → callback with that jar's nonce, and returns the handle.
+    async function toHandle(auth, email, { origin = ORIGIN, via = 'get', callbackCookies = {} } = {}) {
+      const s = await start(auth, { origin });
+      const t = ticketOf(s);
+      const l = via === 'post' ? await launchPost(t) : await launchGet(t);
+      const code = consent(l, email);
+      const cb = await callback({ state: stateOf(l), code }, { plumbline_goauth: nonceOf(l), ...callbackCookies });
+      return { s, t, l, code, cb, handle: handleOf(cb) };
+    }
+    const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+    const secrets = [];   // every secret value seen, for the final log audit
+    const remember = (...v) => v.forEach(x => x && secrets.push(String(x)));
 
-    const fa = await startFlow(tA);
-    const row = fa.state ? db.prepare('SELECT * FROM gmail_oauth_states WHERE state_hash = ?').get(sha(fa.state)) : null;
-    ok('A2 start → redirect to Google with 256-bit state + browser nonce cookie',
-      fa.r.status === 302 && /^[A-Za-z0-9_-]{43}$/.test(fa.state || '') && /^[A-Za-z0-9_-]{43}$/.test(fa.nonce || ''), `status=${fa.r.status}`);
-    ok('A3 nonce cookie is HttpOnly, SameSite=Lax, scoped to /auth/google',
-      /HttpOnly/i.test(fa.cookie) && /SameSite=Lax/i.test(fa.cookie) && /Path=\/auth\/google/i.test(fa.cookie));
-    ok('A4 only hashes stored; bound to initiator; ~10 min expiry',
-      row && row.user_id === A && row.nonce_hash === sha(fa.nonce) && !JSON.stringify(row).includes(fa.state)
-      && Math.abs(Date.parse(row.expires_at) - Date.now() - 600e3) < 15e3);
+    // A1 legacy start is retired: no side effects even with a valid cookie (cross-site <img>/link)
+    let r = await req('GET', '/auth/google', cookie(tA));
+    ok('A1 legacy GET /auth/google is retired: redirect only, no attempt created, no cookie set',
+      r.status === 303 && errCode(r) === 'restart_required' && count('SELECT COUNT(*) n FROM gmail_oauth_flows') === 0 && r.setCookies.length === 0);
 
-    const fb = await startFlow(tB);
-    ok('A5 concurrent flows get distinct state (no shared slot)', fb.state && fb.state !== fa.state);
+    // A2 CSRF: start requires JSON + an app Origin
+    const rText = await req('POST', '/auth/google/start', { ...cookie(tA), headers: { 'Content-Type': 'text/plain', Origin: ORIGIN }, form: '{}' });
+    const rForeign = await start(cookie(tA), { origin: 'https://evil.example' });
+    const rNoOrigin = await start(cookie(tA), { origin: null });
+    ok('A2 start refuses simple (text/plain) requests, foreign Origins and missing Origin — nothing created',
+      rText.status === 403 && rForeign.status === 403 && rNoOrigin.status === 403 && count('SELECT COUNT(*) n FROM gmail_oauth_flows') === 0);
 
-    // Account-linking attack: A's consent link completed in a different browser
-    // (no nonce cookie, victim signed in as B) must not attach anything.
-    const gtBefore = google.getTokenCalls;
-    r = await callback({ state: fa.state, code: 'victimcode' }, { plumbline_session: tB });
-    ok('A6 attack: callback without the initiating browser nonce → rejected', errCode(r) === 'state_invalid' && !gmailRow(A) && !gmailRow(B) && google.getTokenCalls === gtBefore);
-    r = await callback({ state: fa.state, code: 'codeA' }, { plumbline_goauth: fa.nonce });
-    ok('A7 state is single-use even after a rejected attempt (consumed)', errCode(r) === 'state_invalid' && !gmailRow(A));
+    // A3 start authentication: never ?token=, no conflicts, no expired/disabled sessions
+    const rQ = await req('POST', `/auth/google/start?token=${tA}`, { json: {}, headers: { Origin: ORIGIN } });
+    const rConf = await start({ token: tA, cookies: { plumbline_session: tB } });
+    const rExp = await start(bearer(mkSession(A, -1000)));
+    const tSoonSusp = mkSession(SUSP);
+    const rDis = await start(bearer(tSoonSusp));
+    ok('A3 start rejects ?token=, cookie/Bearer for different accounts, expired and disabled sessions (401)',
+      rQ.status === 401 && rConf.status === 401 && rExp.status === 401 && rDis.status === 401 && rDis.data?.code === 'ACCOUNT_DISABLED'
+      && count('SELECT COUNT(*) n FROM gmail_oauth_flows') === 0);
 
-    // Happy paths for B (in-flight) and a fresh A flow — both succeed.
-    google.emailFor['AT-codeB'] = 'b-mailbox@example.test';
-    r = await callback({ state: fb.state, code: 'codeB' }, { plumbline_goauth: fb.nonce, plumbline_session: tB });
-    ok('A8 valid callback stores tokens for the initiator only', r.status === 303 && /gmail_connected=1/.test(r.headers.get('location')) && gmailRow(B)?.email === 'b-mailbox@example.test' && !gmailRow(A));
-    ok('A9 redirect goes to the first FRONTEND_URL entry', (r.headers.get('location') || '').startsWith('https://app.example.test/?'));
-    r = await callback({ state: fb.state, code: 'codeB2' }, { plumbline_goauth: fb.nonce, plumbline_session: tB });
-    ok('A10 replay of a used state → rejected, tokens unchanged', errCode(r) === 'state_invalid' && gmailRow(B)?.access_token === 'AT-codeB');
+    // A4 start success with Bearer only (Safari: no third-party cookie)
+    r = await start(bearer(tA));
+    const t1 = ticketOf(r);
+    const f1 = lastFlow(A);
+    ok('A4 start (Bearer only, Safari-style) returns only a launch URL with a 256-bit single-use ticket on the backend host',
+      r.status === 200 && Object.keys(r.data).join() === 'launchUrl' && /^[A-Za-z0-9_-]{43}$/.test(t1 || '')
+      && r.data.launchUrl.startsWith(`${BASE_URL}/auth/google/launch?t=`));
+    ok('A5 only the ticket hash is stored (no plaintext, no state/nonce yet); responses are no-store + no-referrer',
+      f1.ticket_hash === sha(t1) && !JSON.stringify(f1).includes(t1) && !f1.state_hash && !f1.nonce_hash && f1.status === 'started'
+      && /no-store/.test(r.headers.get('cache-control') || '') && r.headers.get('referrer-policy') === 'no-referrer');
+    remember(t1);
 
-    const fa2 = await startFlow(tA);
-    r = await callback({ state: fa2.state, code: 'codeX' }, { plumbline_goauth: fa2.nonce, plumbline_session: tC });
-    ok('A11 account mismatch (signed in as another user) → rejected', errCode(r) === 'state_invalid' && !gmailRow(A) && !gmailRow(C));
+    // A6 launch (GET, a different browser with no session — Android's external browser)
+    const l1 = await launchGet(t1);
+    const st1 = stateOf(l1), n1 = nonceOf(l1);
+    const nCookie = l1.setCookies.find(c => c.startsWith('plumbline_goauth=')) || '';
+    const f1b = lastFlow(A);
+    ok('A6 launch redirects to Google (state, offline, consent; no PKCE by default) and sets the browser nonce',
+      l1.status === 303 && gUrl(l1)?.host === 'accounts.google.com' && /^[A-Za-z0-9_-]{43}$/.test(st1 || '') && /^[A-Za-z0-9_-]{43}$/.test(n1 || '')
+      && gUrl(l1).searchParams.get('prompt') === 'consent' && gUrl(l1).searchParams.get('access_type') === 'offline'
+      && !gUrl(l1).searchParams.get('code_challenge') && !gUrl(l1).searchParams.get('login_hint'));
+    ok('A7 nonce cookie is HttpOnly, SameSite=Lax, Path=/auth/google; only state/nonce hashes stored; ticket burned',
+      /HttpOnly/i.test(nCookie) && /SameSite=Lax/i.test(nCookie) && /Path=\/auth\/google/i.test(nCookie)
+      && f1b.state_hash === sha(st1) && f1b.nonce_hash === sha(n1) && !f1b.ticket_hash && f1b.status === 'launched' && !JSON.stringify(f1b).includes(st1));
+    remember(st1, n1);
+    r = await launchGet(t1);
+    ok('A8 launch ticket is single-use (replay → state_invalid, no cookie)', errCode(r) === 'state_invalid' && !r.setCookies.some(c => c.startsWith('plumbline_goauth=')));
+    r = await launchGet('not-a-ticket');
+    const rMissingT = await req('GET', '/auth/google/launch');
+    ok('A9 malformed or missing ticket → state_invalid', errCode(r) === 'state_invalid' && errCode(rMissingT) === 'state_invalid');
 
-    r = await callback({ code: 'c' }, {});
-    ok('A12 missing state → rejected', errCode(r) === 'state_invalid');
-    r = await callback({ state: 'not-a-valid-state!', code: 'c' }, {});
-    ok('A13 malformed state → rejected', errCode(r) === 'state_invalid');
-    r = await callback({ state: crypto.randomBytes(32).toString('base64url'), code: 'c' }, {});
-    ok('A14 unknown state → rejected', errCode(r) === 'state_invalid');
+    // A10 callback parks the result and lands on the app with a fragment handle only
+    const code1 = consent(l1, 'a-mailbox@example.test');
+    remember(code1, `AT-${code1}`, `RT-${code1}`);
+    r = await callback({ state: st1, code: code1 }, { plumbline_goauth: n1 });
+    const h1 = handleOf(r);
+    const f1c = lastFlow(A);
+    ok('A10 callback → 303 to <app>/#gmail_complete=<handle>: no query, no code/state/email in the URL',
+      r.status === 303 && !!h1 && (r.headers.get('location') || '') === `${ORIGIN}/#gmail_complete=${h1}`);
+    ok('A11 result is parked, not attached: no gmail_tokens row; handle stored as a hash; nonce cookie cleared',
+      !gmailRow(A) && f1c.status === 'parked' && f1c.handle_hash === sha(h1) && f1c.google_email === 'a-mailbox@example.test'
+      && !f1c.state_hash && !f1c.nonce_hash && r.setCookies.some(c => /^plumbline_goauth=;/.test(c)));
+    remember(h1);
+    r = await attempt(bearer(tA));
+    ok('A12 the app can see progress without any secret: waiting_for_confirmation', r.status === 200 && r.data?.status === 'waiting_for_confirmation' && Object.keys(r.data).join() === 'status');
 
-    const fa3 = await startFlow(tA);
-    db.prepare('UPDATE gmail_oauth_states SET expires_at = ? WHERE state_hash = ?').run(new Date(Date.now() - 1000).toISOString(), sha(fa3.state));
-    r = await callback({ state: fa3.state, code: 'codeExp' }, { plumbline_goauth: fa3.nonce, plumbline_session: tA });
-    ok('A15 expired state (1 s past) → rejected', errCode(r) === 'state_invalid' && !gmailRow(A));
+    // Safari-style completion (Bearer only)
+    r = await preview(bearer(tA), h1);
+    ok('A13 preview (Bearer only) shows the Google address and does NOT consume the handle',
+      r.status === 200 && r.data?.googleEmail === 'a-mailbox@example.test' && lastFlow(A).status === 'parked');
+    r = await complete(bearer(tA), h1, true);
+    const gA = gmailRow(A);
+    ok('A14 explicit confirm by the initiating account connects Gmail for that account only',
+      r.status === 200 && r.data?.ok === true && gA?.email === 'a-mailbox@example.test' && gA.refresh_token === `RT-${code1}` && !gmailRow(B));
+    const f1d = lastFlow(A);
+    ok('A15 parked tokens are wiped from the attempt after completion', f1d.status === 'connected' && !f1d.p_access_token && !f1d.p_refresh_token && !f1d.google_email && !f1d.handle_hash);
+    r = await complete(bearer(tA), h1, true);
+    const rPrevReplay = await preview(bearer(tA), h1);
+    ok('A16 replay of a used handle → 410 state_invalid (complete and preview)', r.status === 410 && r.data?.code === 'state_invalid' && rPrevReplay.status === 410);
+    r = await callback({ state: st1, code: code1 }, { plumbline_goauth: n1 });
+    ok('A17 replay of a used state → state_invalid', errCode(r) === 'state_invalid');
+    ok('A18 attempt status reports connected (from the attempt itself)', (await attempt(bearer(tA))).data?.status === 'connected');
 
-    const fa4 = await startFlow(tA);
-    r = await callback({ state: fa4.state, code: 'codeWrongNonce' }, { plumbline_goauth: fa.nonce, plumbline_session: tA });
-    ok('A16 wrong browser nonce → rejected', errCode(r) === 'state_invalid' && !gmailRow(A));
+    // A19 desktop: cookie session only, web form-POST launch, callback carries the same session
+    clearGmailLimits();
+    const dB = await toHandle(cookie(tB), 'b-mailbox@example.test', { via: 'post', callbackCookies: { plumbline_session: tB } });
+    remember(dB.t, dB.code, dB.handle, stateOf(dB.l), nonceOf(dB.l));
+    const pB = await preview(cookie(tB), dB.handle);
+    const cB = await complete(cookie(tB), dB.handle, true);
+    ok('A19 desktop (cookie session, form-POST launch so the ticket is not in the URL) connects for the initiator',
+      dB.l.status === 303 && pB.data?.googleEmail === 'b-mailbox@example.test' && cB.status === 200 && gmailRow(B)?.email === 'b-mailbox@example.test');
+    r = await launchPost(ticketOf(await start(cookie(tB))), 'https://evil.example');
+    ok('A20 form-POST launch from a foreign Origin is refused', errCode(r) === 'state_invalid');
 
-    const fa5 = await startFlow(tA);
+    // A21 Android: started in the WebView (Origin https://localhost), finished in the external browser
+    clearGmailLimits();
+    const wv = await toHandle({ token: tC, headers: {} }, 'c-mailbox@example.test', { origin: 'https://localhost' });
+    remember(wv.t, wv.code, wv.handle);
+    ok('A21 Android: start from the WebView origin; the external browser (no session) gets the handle on the default app origin',
+      wv.s.status === 200 && wv.handle && (wv.cb.headers.get('location') || '').startsWith(`${ORIGIN}/#gmail_complete=`));
+    r = await preview({}, wv.handle);
+    ok('A22 Android: unsigned-in external browser cannot preview or complete (401) and the handle survives',
+      r.status === 401 && (await complete({}, wv.handle)).status === 401 && lastFlow(C).status === 'parked');
+    const extLogin = await req('POST', '/auth/login', { json: { email: 'c@example.test', password: PW }, ip: '198.51.100.40' });
+    const extTok = extLogin.data?.token;
+    r = await preview(bearer(extTok), wv.handle);
+    const rWvWait = await attempt(bearer(tC));
+    const cC = await complete(bearer(extTok), wv.handle, true);
+    await req('POST', '/auth/logout', { token: extTok });
+    ok('A23 Android: after signing in as the same account in the browser, preview + confirm connect Gmail; the temporary session is then removed',
+      r.data?.googleEmail === 'c-mailbox@example.test' && rWvWait.data?.status === 'waiting_for_confirmation' && cC.status === 200
+      && gmailRow(C)?.email === 'c-mailbox@example.test' && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', extTok) === 0);
+    ok('A24 Android: the app (WebView session) sees "connected" by polling the attempt status', (await attempt(bearer(tC))).data?.status === 'connected');
+
+    // A25 return origin
+    clearGmailLimits();
+    const ro = await toHandle(bearer(tA), 'a-mailbox@example.test', { origin: 'https://second.example.test' });
+    ok('A25 an allowed non-default app origin gets the result on that same origin', (ro.cb.headers.get('location') || '').startsWith('https://second.example.test/#gmail_complete='));
+    await complete(bearer(tA), ro.handle, false);
+
+    // A26-A28 cross-account
+    clearGmailLimits();
+    const x = await toHandle(bearer(tA), 'a-second@example.test');
+    remember(x.handle, x.code);
+    r = await preview(bearer(tB), x.handle);
+    const stillParked = lastFlow(A).status === 'parked';
+    ok('A26 another account\'s preview → 403 account_mismatch without burning the handle', r.status === 403 && r.data?.code === 'account_mismatch' && stillParked);
+    const revBeforeX = google.revoked.length;
+    r = await complete(bearer(tB), x.handle, true);
+    await sleep(30);
+    const fx = lastFlow(A);
+    ok('A27 another account\'s completion → 403 and the handle is burned; parked tokens wiped; nothing attached to either account',
+      r.status === 403 && r.data?.code === 'account_mismatch' && fx.status === 'failed' && fx.failure === 'account_mismatch'
+      && !fx.p_access_token && gmailRow(A)?.email === 'a-mailbox@example.test' && gmailRow(B)?.email === 'b-mailbox@example.test');
+    ok('A28 rejected tokens are wiped locally and never revoked (a revoke would cancel the Google user\'s whole grant)',
+      google.revoked.length === revBeforeX);
+    r = await complete(bearer(tA), x.handle, true);
+    ok('A29 the initiator cannot complete a burned handle afterwards', r.status === 410);
+
+    // A30 handle injection: initiator signed in, but the result belongs to an attacker's Google
+    // address — nothing connects without an explicit confirm that names that address.
+    clearGmailLimits();
+    const inj = await toHandle(bearer(tB), 'attacker-mailbox@example.test');
+    r = await preview(bearer(tB), inj.handle);
+    ok('A30 injected result is never connected silently: preview names the Google address and the row is unchanged until confirm',
+      r.data?.googleEmail === 'attacker-mailbox@example.test' && gmailRow(B)?.email === 'b-mailbox@example.test');
+    await complete(bearer(tB), inj.handle, false);
+    ok('A31 Cancel burns the result and keeps the existing connection', gmailRow(B)?.email === 'b-mailbox@example.test'
+      && lastFlow(B).failure === 'cancelled' && !lastFlow(B).p_access_token && (await attempt(bearer(tB))).data?.reason === 'cancelled');
+
+    // A32 browser swap: the Google URL from A's launch is consented in another browser
+    clearGmailLimits();
+    const sw = await start(bearer(tA));
+    const swl = await launchGet(ticketOf(sw));
+    const swCode = consent(swl, 'victim-mailbox@example.test');
+    const tokCalls0 = google.getTokenCalls;
+    r = await callback({ state: stateOf(swl), code: swCode }, {});               // no nonce
+    await sleep(20);
+    ok('A32 browser swap (no nonce) → state_invalid; nothing parked', errCode(r) === 'state_invalid' && lastFlow(A).failure === 'browser_mismatch' && !lastFlow(A).p_access_token);
+    ok('A33 without PKCE the stranded code is redeemed once and discarded (cannot be injected later)', google.getTokenCalls === tokCalls0 + 1 && google.used.has(swCode));
+    // Attacker injects that code into their own valid flow
+    const atk = await start(bearer(tC));
+    const atkL = await launchGet(ticketOf(atk));
+    r = await callback({ state: stateOf(atkL), code: swCode }, { plumbline_goauth: nonceOf(atkL) });
+    ok('A34 code injection into another flow fails (code already used) → callback_failed, nothing parked',
+      errCode(r) === 'callback_failed' && lastFlow(C).status === 'failed' && !lastFlow(C).p_access_token);
+    r = await callback({ state: stateOf(swl), code: swCode }, { plumbline_goauth: nonceOf(swl) });
+    ok('A35 a state burned by a failed browser check cannot be retried', errCode(r) === 'state_invalid');
+
+    // A36 PKCE mode
+    clearGmailLimits();
+    process.env.GMAIL_OAUTH_PKCE = 'true';
+    const pk = await start(bearer(tA));
+    const pkl = await launchGet(ticketOf(pk));
+    const pkUrl = gUrl(pkl);
+    const pkCode = consent(pkl, 'a-pkce@example.test');
+    r = await callback({ state: stateOf(pkl), code: pkCode }, { plumbline_goauth: nonceOf(pkl) });
+    ok('A36 PKCE mode: S256 challenge sent; the verifier is used at the exchange and wiped; success parks the result',
+      pkUrl.searchParams.get('code_challenge_method') === 'S256' && /^[A-Za-z0-9_-]{43}$/.test(pkUrl.searchParams.get('code_challenge') || '')
+      && !!handleOf(r) && google.lastVerifier && !lastFlow(A).pkce_verifier);
+    await complete(bearer(tA), handleOf(r), false);
+    const pa = await start(bearer(tA)); const pal = await launchGet(ticketOf(pa));
+    const pb = await start(bearer(tB)); const pbl = await launchGet(ticketOf(pb));
+    const codeForA = consent(pal, 'victim2@example.test');
+    const tc1 = google.getTokenCalls;
+    r = await callback({ state: stateOf(pbl), code: codeForA }, { plumbline_goauth: nonceOf(pbl) });
+    ok('A37 PKCE mode: a code issued for one flow is rejected on another (verifier mismatch) → callback_failed',
+      errCode(r) === 'callback_failed' && google.getTokenCalls === tc1 + 1 && !lastFlow(B).p_access_token);
+    const tc2 = google.getTokenCalls;
+    await callback({ state: stateOf(pal), code: 'x' }, {});
+    await sleep(20);
+    ok('A38 PKCE mode: a failed browser check does not call Google (the code is bound to the wiped verifier)', google.getTokenCalls === tc2);
+    delete process.env.GMAIL_OAUTH_PKCE;
+
+    // A39-A42 interrupted flows
+    clearGmailLimits();
+    const iu = await start(bearer(tA));
+    db.prepare("UPDATE gmail_oauth_flows SET ticket_expires = ? WHERE ticket_hash = ?").run(new Date(Date.now() - 1000).toISOString(), sha(ticketOf(iu)));
+    r = await launchGet(ticketOf(iu));
+    ok('A39 an unlaunched ticket expires after 2 minutes', errCode(r) === 'state_invalid');
+    const il = await start(bearer(tA)); const ill = await launchGet(ticketOf(il));
+    db.prepare("UPDATE gmail_oauth_flows SET flow_expires = ? WHERE id = ?").run(new Date(Date.now() - 1000).toISOString(), lastFlow(A).id);
+    r = await callback({ state: stateOf(ill), code: consent(ill, 'late@example.test') }, { plumbline_goauth: nonceOf(ill) });
+    ok('A40 a callback after the 10-minute window → state_invalid', errCode(r) === 'state_invalid');
+    const ip = await toHandle(bearer(tA), 'a-abandoned@example.test');
+    db.prepare("UPDATE gmail_oauth_flows SET handle_expires = ? WHERE handle_hash = ?").run(new Date(Date.now() - 1000).toISOString(), sha(ip.handle));
+    r = await complete(bearer(tA), ip.handle, true);
+    const revBeforeExp = google.revoked.length;
+    const wiped = authRouter.expireGmailFlows();
+    await sleep(30);
+    const fip = db.prepare('SELECT * FROM gmail_oauth_flows WHERE id = (SELECT MAX(id) FROM gmail_oauth_flows WHERE user_id = ?)').get(A);
+    ok('A41 an unclaimed result expires after 10 minutes: completion refused; the sweep wipes the tokens (no revoke)',
+      r.status === 410 && wiped >= 1 && fip.status === 'expired' && !fip.p_access_token && !fip.p_refresh_token && google.revoked.length === revBeforeExp);
+    ok('A42 the app sees "expired" for an abandoned attempt', (await attempt(bearer(tA))).data?.status === 'expired');
+
+    // A43 supersede rules
+    clearGmailLimits();
+    const s1 = await start(bearer(tA)); const s2 = await start(bearer(tA));
+    r = await launchGet(ticketOf(s1));
+    ok('A43 a new start supersedes the account\'s unlaunched attempt (old ticket no longer launches)', errCode(r) === 'state_invalid'
+      && db.prepare("SELECT COUNT(*) n FROM gmail_oauth_flows WHERE user_id = ? AND failure = 'superseded'").get(A).n >= 1);
+    await launchGet(ticketOf(s2));
+    const pk1 = await toHandle(bearer(tA), 'a-p1@example.test');
+    await start(bearer(tA));
+    ok('A44 a new start never touches a parked result', db.prepare('SELECT status FROM gmail_oauth_flows WHERE handle_hash = ?').get(sha(pk1.handle))?.status === 'parked');
+    const pk2 = await toHandle(bearer(tA), 'a-p2@example.test');
+    const pk3 = await toHandle(bearer(tA), 'a-p3@example.test');
+    r = await start(bearer(tA));
+    ok('A45 start is refused while 3 results are waiting to be claimed', r.status === 429 && r.data?.code === 'too_many_attempts');
+    r = await complete(bearer(tA), pk2.handle, true);
+    ok('A46 completing one result wipes the account\'s other parked results', r.status === 200
+      && ['parked'].indexOf(db.prepare('SELECT status FROM gmail_oauth_flows WHERE handle_hash IS NULL AND google_email IS NULL AND user_id = ? ORDER BY id DESC LIMIT 1').get(A)?.status) === -1
+      && db.prepare("SELECT COUNT(*) n FROM gmail_oauth_flows WHERE user_id = ? AND status = 'parked'").get(A).n === 0
+      && (await complete(bearer(tA), pk1.handle, true)).status === 410 && (await complete(bearer(tA), pk3.handle, true)).status === 410);
+
+    // A47-A48 address change replaces the whole token set
+    clearGmailLimits();
+    ok('A47 switching Gmail address stores the NEW refresh token (never pairs a new address with an old token)',
+      gmailRow(A)?.email === 'a-p2@example.test' && gmailRow(A).refresh_token === `RT-${pk2.code}`);
+    google.noRefresh = true;
+    const nr = await toHandle(bearer(tA), 'a-different@example.test');
+    r = await complete(bearer(tA), nr.handle, true);
+    const nrSame = await toHandle(bearer(tA), 'a-p2@example.test');
+    const rSame = await complete(bearer(tA), nrSame.handle, true);
+    google.noRefresh = false;
+    ok('A48 a different address without a refresh token is refused; the same address keeps its refresh token',
+      r.status === 502 && rSame.status === 200 && gmailRow(A).email === 'a-p2@example.test' && gmailRow(A).refresh_token === `RT-${pk2.code}`);
+
+    // A49 Google outcomes
+    clearGmailLimits();
+    const ms = await start(bearer(tA)); const msl = await launchGet(ticketOf(ms));
     google.nextScope = 'https://www.googleapis.com/auth/userinfo.email';
-    const revBefore = google.revoked.length;
-    r = await callback({ state: fa5.state, code: 'codeNoScope' }, { plumbline_goauth: fa5.nonce });
+    const revMs = google.revoked.length;
+    r = await callback({ state: stateOf(msl), code: consent(msl, 'b-mailbox@example.test') }, { plumbline_goauth: nonceOf(msl) });
     google.nextScope = null;
-    ok('A17 required Gmail scopes missing → rejected and grant revoked', errCode(r) === 'missing_scopes' && !gmailRow(A) && google.revoked.length === revBefore + 1);
+    await sleep(20);
+    ok('A49 missing Gmail scopes → missing_scopes; tokens dropped, never stored or revoked',
+      errCode(r) === 'missing_scopes' && google.revoked.length === revMs && !lastFlow(A).p_access_token);
+    const ad = await start(bearer(tA)); const adl = await launchGet(ticketOf(ad));
+    r = await callback({ state: stateOf(adl), error: 'access_denied' }, { plumbline_goauth: nonceOf(adl) });
+    const oe = await start(bearer(tA)); const oel = await launchGet(ticketOf(oe));
+    const rEcho = await callback({ state: stateOf(oel), error: 'server_error<ECHO-PROBE>' }, { plumbline_goauth: nonceOf(oel) });
+    ok('A50 Google errors map to generic codes; the raw value is never logged or echoed',
+      errCode(r) === 'access_restricted' && errCode(rEcho) === 'oauth_error' && !logged.some(l => l.includes('ECHO-PROBE')) && !String(rEcho.headers.get('location')).includes('ECHO-PROBE'));
+    const bm = await start(bearer(tA)); const bml = await launchGet(ticketOf(bm));
+    r = await callback({ state: stateOf(bml), code: 'boom' }, { plumbline_goauth: nonceOf(bml) });
+    ok('A51 token-exchange failure → callback_failed; error text never logged', errCode(r) === 'callback_failed' && !logged.some(l => l.includes('SECRET-boom') || l.includes('code=boom')));
 
-    const fa6 = await startFlow(tA);
-    r = await callback({ state: fa6.state, error: 'access_denied' }, { plumbline_goauth: fa6.nonce });
-    ok('A18 Google access_denied → generic code, state consumed', errCode(r) === 'access_restricted'
-      && db.prepare('SELECT used_at FROM gmail_oauth_states WHERE state_hash = ?').get(sha(fa6.state))?.used_at);
+    // A52-A54 account state during the flow
+    clearGmailLimits();
+    const later = mkUser('later-suspended@example.test');
+    const tLater = mkSession(later);
+    const ls = await start(bearer(tLater));
+    db.prepare('UPDATE users SET is_suspended = 1 WHERE id = ?').run(later);
+    r = await launchGet(ticketOf(ls));
+    ok('A52 account suspended between start and launch → launch refused', errCode(r) === 'state_invalid');
+    db.prepare('UPDATE users SET is_suspended = 0 WHERE id = ?').run(later);
+    const tLater2 = mkSession(later);
+    const lh = await toHandle(bearer(tLater2), 'later@example.test');
+    db.prepare("UPDATE users SET access_status = 'blocked' WHERE id = ?").run(later);
+    r = await complete(bearer(tLater2), lh.handle, true);
+    ok('A53 account blocked before completion → 401 ACCOUNT_DISABLED, nothing connected', r.status === 401 && r.data?.code === 'ACCOUNT_DISABLED' && !gmailRow(later));
+    const mm = await start(bearer(tA)); const mml = await launchGet(ticketOf(mm));
+    r = await callback({ state: stateOf(mml), code: consent(mml, 'x@example.test') }, { plumbline_goauth: nonceOf(mml), plumbline_session: tC });
+    ok('A54 callback in a browser signed in as a different account → rejected with its own code (clear "sign out there" guidance)',
+      errCode(r) === 'signed_in_other_account' && lastFlow(A).failure === 'signed_in_other_account');
+    const at54 = await attempt(bearer(tA));
+    ok('A54b the app sees the same specific reason', at54.data?.status === 'failed' && at54.data?.reason === 'signed_in_other_account');
 
-    const tSuspLater = mkUser('later-suspended@example.test');
-    const tsl = mkSession(tSuspLater);
-    const fs1 = await startFlow(tsl);
-    db.prepare('UPDATE users SET is_suspended = 1 WHERE id = ?').run(tSuspLater);
-    r = await callback({ state: fs1.state, code: 'codeSusp' }, { plumbline_goauth: fs1.nonce });
-    ok('A19 initiator suspended before callback → rejected', errCode(r) === 'state_invalid' && !gmailRow(tSuspLater));
+    // A54c-e nonce cookie hygiene: a stale tab or a cross-site link cannot kill the live attempt
+    clearGmailLimits();
+    const o1 = await start(bearer(tA)); const o1l = await launchGet(ticketOf(o1));
+    const o2 = await start(bearer(tA)); const o2l = await launchGet(ticketOf(o2));          // supersedes o1 in the same browser
+    const liveNonce = nonceOf(o2l);
+    r = await callback({ state: stateOf(o1l), code: consent(o1l, 'a-mailbox@example.test') }, { plumbline_goauth: liveNonce });
+    ok('A54c a stale tab\'s callback is rejected WITHOUT clearing the browser\'s current nonce cookie',
+      errCode(r) === 'state_invalid' && !r.setCookies.some(c => c.startsWith('plumbline_goauth=')));
+    const rX = await callback({ state: 'x' }, { plumbline_goauth: liveNonce });
+    ok('A54d a cross-site navigation to the callback does not clear it either', !rX.setCookies.some(c => c.startsWith('plumbline_goauth=')));
+    r = await callback({ state: stateOf(o2l), code: consent(o2l, 'a-mailbox@example.test') }, { plumbline_goauth: liveNonce });
+    ok('A54e the live attempt still completes its callback afterwards (cookie cleared only now)',
+      !!handleOf(r) && r.setCookies.some(c => /^plumbline_goauth=;/.test(c)));
+    await complete(bearer(tA), handleOf(r), false);
 
-    google.emailFor['AT-codeA'] = 'a-mailbox@example.test';
-    const fa7 = await startFlow(tA);
-    r = await callback({ state: fa7.state, code: 'codeA' }, { plumbline_goauth: fa7.nonce });
-    ok('A20 valid flow without a session cookie (Safari/Capacitor browser) succeeds for initiator', gmailRow(A)?.email === 'a-mailbox@example.test' && gmailRow(B)?.email === 'b-mailbox@example.test');
+    // A54f-g the sweep is never on the request path; status is computed per row
+    clearGmailLimits();
+    const sw2 = await toHandle(bearer(tA), 'a-sweep@example.test');
+    db.prepare('UPDATE gmail_oauth_flows SET handle_expires = ? WHERE handle_hash = ?').run(new Date(Date.now() - 1000).toISOString(), sha(sw2.handle));
+    const atSw = await attempt(bearer(tA));
+    await start(bearer(tB));
+    const rowSw = db.prepare('SELECT status, p_access_token FROM gmail_oauth_flows WHERE handle_hash = ?').get(sha(sw2.handle));
+    ok('A54f /attempt reports "expired" for its own row while /attempt and /start leave the wiping to the timed sweep',
+      atSw.data?.status === 'expired' && rowSw?.status === 'parked' && !!rowSw.p_access_token);
+    authRouter.expireGmailFlows();
+    ok('A54g the timed sweep then wipes it', !db.prepare('SELECT p_access_token FROM gmail_oauth_flows WHERE id = (SELECT MAX(id) FROM gmail_oauth_flows WHERE user_id = ? AND google_email IS NULL AND status = ?)').get(A, 'expired')?.p_access_token
+      && count("SELECT COUNT(*) n FROM gmail_oauth_flows WHERE status = 'parked' AND handle_expires <= ?", new Date().toISOString()) === 0);
+    const plans = [
+      "SELECT 1 FROM gmail_oauth_flows WHERE status = 'parked' AND handle_expires <= '2026-01-01'",
+      "SELECT 1 FROM gmail_oauth_flows WHERE status IN ('started','launched') AND flow_expires <= '2026-01-01'",
+      "SELECT 1 FROM gmail_oauth_flows WHERE created_at <= '2026-01-01'",
+    ].map(q => db.prepare('EXPLAIN QUERY PLAN ' + q).all().map(x => x.detail).join(' '));
+    ok('A54h the sweep\'s predicates use indexes (no full scans)', plans.every(pl => /USING (COVERING )?INDEX/.test(pl)), plans.join(' | '));
 
+    // A55 rate limits
+    clearGmailLimits();
+    let lastS = null;
+    for (let i = 0; i < 11; i++) lastS = await start(bearer(tB));
+    ok('A55 starts are limited per account (10 per 10 minutes)', lastS.status === 429 && lastS.data?.code === 'too_many_attempts');
+    clearGmailLimits();
+    let lastP = null;
+    for (let i = 0; i < 21; i++) lastP = await preview(bearer(tB), crypto.randomBytes(32).toString('base64url'));
+    ok('A56 preview/complete attempts are limited per account', lastP.status === 429);
+    clearGmailLimits();
+
+    // A57 disabled feature
     process.env.GMAIL_OAUTH_ENABLED = 'false';
-    r = await callback({ state: crypto.randomBytes(32).toString('base64url'), code: 'c' }, {});
-    ok('A21 callback refused while Gmail OAuth is disabled', errCode(r) === 'oauth_disabled');
+    const ds = await start(bearer(tA));
+    const dl = await launchGet(crypto.randomBytes(32).toString('base64url'));
+    const dc = await callback({ state: crypto.randomBytes(32).toString('base64url'), code: 'c' });
     process.env.GMAIL_OAUTH_ENABLED = 'true';
+    ok('A57 with Gmail OAuth disabled: start 403 oauth_disabled; launch/callback redirect oauth_disabled',
+      ds.status === 403 && ds.data?.code === 'oauth_disabled' && errCode(dl) === 'oauth_disabled' && errCode(dc) === 'oauth_disabled');
 
-    const revB4 = google.revoked.length;
-    r = await req('DELETE', '/auth/gmail-disconnect', { token: tA });
-    await new Promise(res => setTimeout(res, 30));
-    ok('A22 disconnect deletes only own tokens and revokes at Google', r.status === 200 && !gmailRow(A) && !!gmailRow(B) && google.revoked[revB4] === 'RT-codeA');
-    ok('A23 a fresh OAuth client per request (no shared client)', google.instances >= 10, `instances=${google.instances}`);
-    const secrets = ['victimcode', 'codeA', 'codeB', 'AT-codeA', 'RT-codeA', 'AT-codeB', 'RT-codeB', fa.state, fa.nonce, fb.state, fb.nonce, 'fake-client-secret'];
-    ok('A24 no OAuth code, token, state, nonce or secret appears in logs', !logged.some(l => secrets.some(s => s && l.includes(s))));
+    // A58-A59 disconnect
+    const revD = google.revoked.length;
+    r = await req('DELETE', '/auth/gmail-disconnect', { token: tC });
+    await sleep(30);
+    ok('A58 disconnect deletes only own tokens and revokes via a body POST', r.status === 200 && !gmailRow(C) && !!gmailRow(A) && google.revoked.length === revD + 1
+      && google.revokeRequests[google.revokeRequests.length - 1].body === `token=RT-${wv.code}`);
+    db.prepare("INSERT INTO gmail_tokens (email, access_token, refresh_token, user_id) VALUES ('shared@example.test', 'AT-s1', 'RT-s1', ?)").run(C);
+    db.prepare("UPDATE gmail_tokens SET email = 'shared@example.test' WHERE user_id = ?").run(B);
+    const revS = google.revoked.length;
+    await req('DELETE', '/auth/gmail-disconnect', { token: tC });
+    await sleep(30);
+    ok('A59 disconnect skips the Google revoke when another account uses the same Gmail address', !gmailRow(C) && !!gmailRow(B) && google.revoked.length === revS);
+    r = await req('GET', `/auth/gmail-status?token=${tA}`);
+    ok('A60 Gmail endpoints never accept a session token in the URL', r.status === 401);
 
-    const fe = await startFlow(tA);
-    ok('A25 start sets Referrer-Policy: no-referrer and no-store', fe.r.headers.get('referrer-policy') === 'no-referrer' && /no-store/.test(fe.r.headers.get('cache-control') || ''));
-    ok('A26 a new start replaces the user\'s earlier unused attempts', count('SELECT COUNT(*) n FROM gmail_oauth_states WHERE user_id = ? AND used_at IS NULL', A) === 1);
-    r = await callback({ state: fe.state, error: 'server_error<ECHO-PROBE>' }, { plumbline_goauth: fe.nonce });
-    ok('A27 other Google errors map to a generic code; the raw value is not logged or echoed', errCode(r) === 'oauth_error'
-      && !logged.some(l => l.includes('ECHO-PROBE')) && !String(r.headers.get('location')).includes('ECHO-PROBE'));
-    ok('A28 callback clears the browser nonce cookie', r.setCookies.some(c => /^plumbline_goauth=;/.test(c) && /Expires=Thu, 01 Jan 1970/i.test(c)));
-    const fbm = await startFlow(tA);
-    r = await callback({ state: fbm.state, code: 'boom' }, { plumbline_goauth: fbm.nonce });
-    ok('A29 token-exchange failure → callback_failed, error text never logged', errCode(r) === 'callback_failed' && !logged.some(l => l.includes('SECRET-boom') || l.includes('code=boom')));
+    // A61 user deletion with attempts on record
     const gone = mkUser('deleted-initiator@example.test');
-    const fd = await startFlow(mkSession(gone));
+    await start(bearer(mkSession(gone)));
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(gone);
     let delErr = null;
     try { db.prepare('DELETE FROM users WHERE id = ?').run(gone); } catch (e) { delErr = e.message; }
-    ok('A30 deleting a user with an open OAuth attempt works (ON DELETE CASCADE)', delErr === null && count('SELECT COUNT(*) n FROM gmail_oauth_states WHERE user_id = ?', gone) === 0, delErr || '');
-    r = await callback({ state: fd.state, code: 'codeGone' }, { plumbline_goauth: fd.nonce });
-    ok('A31 deleted initiator → rejected', errCode(r) === 'state_invalid' && !gmailRow(gone));
-    authRouter.gmailStartLimit.clear();
-    const tLim = mkSession(B);
-    let lastLim = null;
-    for (let i = 0; i < 11; i++) lastLim = await req('GET', '/auth/google', { cookies: { plumbline_session: tLim } });
-    ok('A32 Gmail connect starts are rate-limited per user', errCode(lastLim) === 'too_many_attempts');
-    authRouter.gmailStartLimit.clear();
-    // Shared Google address: disconnecting one account must not revoke the other's grant.
-    db.prepare("INSERT INTO gmail_tokens (email, access_token, refresh_token, user_id) VALUES ('shared@example.test', 'AT-s1', 'RT-s1', ?)").run(A);
-    db.prepare("UPDATE gmail_tokens SET email = 'shared@example.test' WHERE user_id = ?").run(B);
-    const revS = google.revoked.length;
-    await req('DELETE', '/auth/gmail-disconnect', { token: tA });
-    await new Promise(res => setTimeout(res, 30));
-    ok('A33 disconnect skips the Google revoke when another account uses the same Gmail', !gmailRow(A) && !!gmailRow(B) && google.revoked.length === revS);
+    ok('A61 deleting a user with Gmail attempts works (ON DELETE CASCADE)', delErr === null && count('SELECT COUNT(*) n FROM gmail_oauth_flows WHERE user_id = ?', gone) === 0, delErr || '');
+
+    // A62 headers
+    const hs = await start(bearer(tA)); const hl = await launchGet(ticketOf(hs));
+    const hc = await callback({ state: stateOf(hl), error: 'access_denied' }, { plumbline_goauth: nonceOf(hl) });
+    const hp = await preview(bearer(tA), crypto.randomBytes(32).toString('base64url'));
+    const ha = await attempt(bearer(tA));
+    ok('A62 every OAuth response is no-store + no-referrer', [hs, hl, hc, hp, ha].every(x => /no-store/.test(x.headers.get('cache-control') || '') && x.headers.get('referrer-policy') === 'no-referrer'));
+    ok('A63 a fresh OAuth client per request (no shared client)', google.instances >= 20, `instances=${google.instances}`);
+
+    // A64 Sentry scrubbing (backend)
+    const { scrubEvent } = require(path.join(BE, 'utils/sentryScrub'));
+    const ev = scrubEvent({ request: { url: `${BASE_URL}/auth/google/callback?code=SECRETCODE&state=S#frag`, cookies: { plumbline_session: tA }, headers: { authorization: `Bearer ${tA}` }, data: '{"handle":"H"}', query_string: 'code=SECRETCODE' },
+      breadcrumbs: [{ data: { url: 'https://oauth2.googleapis.com/revoke?token=RTX', 'http.query': '?token=RTX' } }],
+      spans: [{ description: `GET ${BASE_URL}/auth/google/launch?t=TICKETX`, data: { 'http.url': `${BASE_URL}/x?t=TICKETX`, 'url.query': 't=TICKETX' } }] });
+    ok('A64 backend Sentry events carry no cookies, headers, bodies, query strings or fragments', !/SECRETCODE|TICKETX|RTX|Bearer|"H"|#frag/.test(JSON.stringify(ev)) && !JSON.stringify(ev).includes(tA));
+    const { scrubBreadcrumb } = require(path.join(BE, 'utils/sentryScrub'));
+    const ev2 = scrubEvent({ breadcrumbs: [{ category: 'console', message: '[Poller] stored from jane@example.test' }, { category: 'http', data: { url: 'https://x/y?token=Z' } }] });
+    ok('A64b console log text never reaches Sentry breadcrumbs', scrubBreadcrumb({ category: 'console', message: 'x@example.test' }) === null
+      && ev2.breadcrumbs.length === 1 && !JSON.stringify(ev2).includes('jane@') && !JSON.stringify(ev2).includes('token=Z'));
+
+    // A65 log audit across the whole section
+    const leaked = secrets.filter(s => s.length > 6 && logged.some(l => l.includes(s)));
+    const emailsLogged = logged.filter(l => /mailbox@example\.test|@example\.test/.test(l) && /Gmail OAuth|Backfill|Poller/.test(l));
+    ok('A65 no ticket, state, nonce, handle, code, token or Google address appears in any log line', leaked.length === 0 && emailsLogged.length === 0, `${leaked.length} leaked, ${emailsLogged.length} emails`);
 
     // ── B. Suspension and session expiry ────────────────────────────────────
     r = await req('POST', '/auth/login', { json: { email: 'suspended@example.test', password: PW }, ip: '198.51.100.1' });
-    ok('B1 suspended user with correct password → 403 ACCOUNT_SUSPENDED, no session', r.status === 403 && r.data?.code === 'ACCOUNT_SUSPENDED' && count('SELECT COUNT(*) n FROM sessions WHERE user_id = ?', SUSP) === 0);
+    ok('B1 suspended user with correct password → 403 ACCOUNT_DISABLED, no session', r.status === 403 && r.data?.code === 'ACCOUNT_DISABLED' && count("SELECT COUNT(*) n FROM sessions WHERE user_id = ? AND julianday(expires_at) > julianday('now')", SUSP) === 0);
     r = await req('POST', '/auth/login', { json: { email: 'suspended@example.test', password: 'wrong' }, ip: '198.51.100.1' });
     ok('B2 suspended user with wrong password → generic 401 (status not revealed)', r.status === 401 && r.data?.error === 'Invalid email or password');
     r = await req('POST', '/auth/login', { json: { email: 'c@example.test', password: PW }, ip: '198.51.100.2' });
@@ -312,11 +645,11 @@ async function run() {
     ok('B3 active user login still works', r.status === 200 && !!cTok && (await req('GET', '/api/whoami', { token: cTok })).data?.userId === C);
     db.prepare('UPDATE users SET is_suspended = 1 WHERE id = ?').run(C);
     r = await req('GET', '/api/whoami', { token: cTok });
-    ok('B4 open session stops working after suspension (401 ACCOUNT_SUSPENDED)', r.status === 401 && r.data?.code === 'ACCOUNT_SUSPENDED');
-    ok('B5 all of the suspended user\'s sessions are removed', count('SELECT COUNT(*) n FROM sessions WHERE user_id = ?', C) === 0);
+    ok('B4 open session stops working after suspension (401 ACCOUNT_DISABLED)', r.status === 401 && r.data?.code === 'ACCOUNT_DISABLED');
+    ok('B5 all of the suspended user\'s sessions are ended (none can authenticate)', count("SELECT COUNT(*) n FROM sessions WHERE user_id = ? AND julianday(expires_at) > julianday('now')", C) === 0);
     const cTok2 = mkSession(C);
     r = await req('GET', '/auth/me', { token: cTok2 });
-    ok('B6 /auth/me rejects a suspended account and removes its sessions', r.status === 401 && r.data?.code === 'ACCOUNT_SUSPENDED' && count('SELECT COUNT(*) n FROM sessions WHERE user_id = ?', C) === 0);
+    ok('B6 /auth/me rejects a suspended account and removes its sessions', r.status === 401 && r.data?.code === 'ACCOUNT_DISABLED' && count("SELECT COUNT(*) n FROM sessions WHERE user_id = ? AND julianday(expires_at) > julianday('now')", C) === 0);
     db.prepare('UPDATE users SET is_suspended = 0 WHERE id = ?').run(C);
 
     const live = mkSession(A, 2000), dead = mkSession(A, -2000);
@@ -339,6 +672,9 @@ async function run() {
     ok('B12 outbound call from a suspended account is refused (no Dial)', r.status === 200 && /not active/i.test(r.text) && !/<Dial/i.test(r.text));
 
     // ── C. Rate limits ──────────────────────────────────────────────────────
+    // Limiters use fixed windows with a weighted previous window; a run that
+    // straddles a window boundary can see ±1 attempt. Start well clear of one.
+    { const W = 15 * 60e3, left = W - (Date.now() % W); if (left < 240e3) await new Promise(res => setTimeout(res, left + 1000)); }
     Object.values(authRouter.loginLimits).forEach(l => l.clear()); authRouter.knownLoginIps.clear();
     const login = (email, password, ip) => req('POST', '/auth/login', { json: { email, password }, ip });
     for (let i = 0; i < 5; i++) await login('a@example.test', 'wrong', '203.0.113.1');
@@ -514,6 +850,11 @@ async function run() {
     const rT = await req('GET', '/api/health/push-inventory', { token: tD });
     const rAnon = await req('GET', '/api/health/push-inventory');
     ok('F4 inventory is owner-only (tester 403, anonymous 401)', rT.status === 403 && rAnon.status === 401);
+    const sess = r.data?.sessions || {};
+    const allTokens = db.prepare('SELECT token FROM sessions').all().map(x => x.token);
+    ok('F5 inventory reports session housekeeping counts only (active / in grace / eligible / unparseable), never tokens',
+      ['active', 'expiredWithinGrace', 'expiredEligible', 'unparseable'].every(k => Number.isInteger(sess[k])) && sess.active >= 1
+      && 'lastHousekeeping' in r.data && !allTokens.some(t => r.text.includes(t)));
   } catch (err) {
     fail++; say('FAIL  harness error — ' + (err.stack || err.message));
   } finally {

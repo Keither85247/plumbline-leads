@@ -2,6 +2,10 @@
 const db    = require('../db');
 const gmail = require('../services/gmailService');
 const { isInvalidGrant, invalidateToken, getAllConnectedUserIds } = gmail;
+const { isAccountActive } = require('../utils/accountStatus');
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const RESUME_MAX_DAYS = 30;
 
 // ── Durable lastPollTime ──────────────────────────────────────────────────────
 // Persisted in app_settings so server restarts don't lose our position.
@@ -139,13 +143,30 @@ async function poll() {
 
   let totalStored = 0;
   for (const userId of userIds) {
+    // Suspended / blocked accounts are not synced. The poller's checkpoint is
+    // shared by every account, so remember where this account's skipped window
+    // starts (first skip only) and backfill it if the account is reinstated.
+    if (!isAccountActive(userId)) {
+      db.prepare('UPDATE gmail_tokens SET sync_paused_at = COALESCE(sync_paused_at, ?) WHERE user_id = ?')
+        .run(lastPollTime, userId);
+      continue;
+    }
+    // The token set this poll uses — an invalid_grant only removes that one.
+    const tokenSet = db.prepare('SELECT refresh_token FROM gmail_tokens WHERE user_id = ?').get(userId);
     try {
+      const pausedAt = db.prepare('SELECT sync_paused_at FROM gmail_tokens WHERE user_id = ?').get(userId)?.sync_paused_at;
+      if (pausedAt) {
+        const daysBack = Math.min(RESUME_MAX_DAYS, Math.max(1, Math.ceil((Date.now() - pausedAt) / DAY_MS) + 1));
+        console.log(`[Poller] user=${userId}: account active again — backfilling ${daysBack} day(s) skipped while inactive`);
+        await gmail.syncRecentEmails(userId, { daysBack, maxPerLabel: 200 });
+        db.prepare('UPDATE gmail_tokens SET sync_paused_at = NULL WHERE user_id = ?').run(userId);
+      }
       const stored = await pollUser(userId);
       totalStored += stored;
     } catch (err) {
       if (isInvalidGrant(err)) {
         console.error(`[Poller] invalid_grant for user ${userId} — Gmail token revoked. Clearing token; user must reconnect.`);
-        invalidateToken(userId);
+        invalidateToken(userId, tokenSet ? tokenSet.refresh_token : undefined);
       } else {
         console.error(`[Poller] Poll error for user ${userId}:`, err.message);
       }

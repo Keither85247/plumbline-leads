@@ -18,7 +18,7 @@ import AdminPage from './components/AdminPage';
 import PaywallGate from './components/PaywallGate';
 import LoginPage from './components/LoginPage';
 import NumberPickerModal from './components/NumberPickerModal';
-import { getLeads, saveOutboundNote, getCounts, getMe, logout, updateProfile, API_BASE, AuthError } from './api';
+import { getLeads, saveOutboundNote, getCounts, getMe, getMeStrict, logout, updateProfile, API_BASE, AuthError } from './api';
 import { parseTimestamp } from './utils/phone';
 import { translations } from './i18n';
 import { useVoiceDevice } from './hooks/useVoiceDevice';
@@ -182,23 +182,29 @@ export default function App() {
   useEffect(() => {
     async function checkAuth() {
       let user = null;
-      try {
-        user = await getMe();
-      } catch {
-        // First attempt failed — likely Render cold-starting (free tier spins down).
-        // Wait 4 s and try once more before deciding the user is unauthenticated.
-        // This prevents a cold-start timeout from bouncing a logged-in user to the
-        // login page on the very first page load after a period of inactivity.
-        await new Promise(r => setTimeout(r, 4000));
+      let signedOut = false;     // the server definitively said "not signed in" (401)
+      for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          user = await getMe();
-        } catch {
-          // Second failure — genuinely unreachable; fall through with user = null
+          user = await getMeStrict();
+          break;
+        } catch (err) {
+          if (err instanceof AuthError) { signedOut = true; break; }
+          // Likely Render cold-starting (or a 5xx during a deploy). Wait 4 s and
+          // try once more before deciding; never treat this as a sign-out.
+          if (attempt === 0) await new Promise(r => setTimeout(r, 4000));
         }
+      }
+      // A session that ended while the app was closed (expired, signed out
+      // elsewhere, or the account was suspended/blocked): run the normal logout
+      // cleanup so this device's push registration and stored token are removed.
+      if (signedOut) {
+        let hadToken = false;
+        try { hadToken = !!localStorage.getItem('plumbline_token') || !!localStorage.getItem('plumbline_fcm_token'); } catch { /* no storage */ }
+        if (hadToken) await logout().catch(() => {});
       }
       setCurrentUser(user);
       if (user) {
-        Sentry.setUser({ id: String(user.id), email: user.email });
+        Sentry.setUser({ id: String(user.id) });   // no email in error reports
         await checkAssignedNumber(user);
       }
       setAuthChecked(true);
@@ -208,7 +214,7 @@ export default function App() {
 
   const handleLoginSuccess = async (user) => {
     setCurrentUser(user);
-    Sentry.setUser({ id: String(user.id), email: user.email });
+    Sentry.setUser({ id: String(user.id) });   // no email in error reports
     await checkAssignedNumber(user);
   };
 
@@ -289,7 +295,14 @@ export default function App() {
 
   const [leads, setLeads] = useState([]);
   const [loadingLeads, setLoadingLeads] = useState(true);
-  const [activeNav, setActiveNav] = useState('overview');
+  // Returning from a Gmail connection attempt opens the Email tab, where the
+  // result (toast or error banner) is shown.
+  const [activeNav, setActiveNav] = useState(() => {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      return q.get('gmail_connected') === '1' || q.get('gmail_error') ? 'email' : 'overview';
+    } catch { return 'overview'; }
+  });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [callsPagePhone, setCallsPagePhone] = useState(null);
   const [language, setLanguage] = useState(
@@ -343,6 +356,10 @@ export default function App() {
           try {
             const me = await getMe();
             if (!cancelled && !me) {
+              // Session ended server-side (expired, signed out elsewhere, or the
+              // account was suspended/blocked): run the normal logout cleanup so
+              // this device's push registration and stored token are removed too.
+              await logout().catch(() => {});
               setCurrentUser(null);
               Sentry.setUser(null);
             }
