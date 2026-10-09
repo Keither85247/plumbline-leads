@@ -1,19 +1,11 @@
 import { useState, useEffect } from 'react';
 import { normalizePhone, parseTimestamp } from '../utils/phone';
-import { API_BASE, getCallsByPhone, getEmailsByPhone, getMessageThread, getContactProfile, saveContactProfile } from '../api';
+import { getCallsByPhone, getEmailsByPhone, getMessageThread, getContactProfile, saveContactProfile } from '../api';
+import { MmsImage } from './media/TicketedMedia';
 import PhoneActionSheet from './PhoneActionSheet';
 import AddressAutocomplete from './AddressAutocomplete';
 import { translations } from '../i18n';
 
-/** Resolve a media URL — Twilio CDN URLs need to be proxied through our backend. */
-function resolveMediaUrl(url) {
-  if (!url) return url;
-  if (url.startsWith('blob:')) return url;
-  if (url.includes('api.twilio.com') || url.includes('twilio.com/2010')) {
-    return `${API_BASE}/messages/media-proxy?url=${encodeURIComponent(url)}`;
-  }
-  return url;
-}
 
 const STATUS_COLORS = {
   New:       'bg-blue-100 text-blue-800',
@@ -630,16 +622,18 @@ function TextThreadItem({ item, t }) {
                 {/* Media images */}
                 {mediaUrls.length > 0 && (
                   <div className={`flex flex-wrap gap-1 mb-1 max-w-[82%] ${isOut ? 'justify-end' : 'justify-start'}`}>
-                    {mediaUrls.map((url, j) => (
-                      <a key={j} href={resolveMediaUrl(url)} target="_blank" rel="noopener noreferrer"
-                         className="block rounded-xl overflow-hidden border border-white/20">
-                        <img
-                          src={resolveMediaUrl(url)}
-                          alt="MMS attachment"
+                    {/* Shown in place via a short-lived media ticket. No link: on
+                        Android a link would open the phone's browser and leave
+                        the media URL in its history. */}
+                    {mediaUrls.map((entry, j) => (
+                      <div key={j} className="block rounded-xl overflow-hidden border border-white/20">
+                        <MmsImage
+                          messageId={msg.id}
+                          part={j}
                           className="max-w-[140px] max-h-[140px] object-cover block"
                           loading="lazy"
                         />
-                      </a>
+                      </div>
                     ))}
                   </div>
                 )}

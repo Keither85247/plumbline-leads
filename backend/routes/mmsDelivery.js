@@ -41,6 +41,10 @@ const MMS_TMP_DIR = path.join(os.tmpdir(), 'plumbline-mms');
 
 const TOKEN_TTL_HOURS = 1;
 
+// Housekeeping: delivery tokens are only useful for an hour; drop day-old rows.
+require('../jobs/housekeeping').registerHousekeeping('expired MMS delivery tokens', async () =>
+  db.prepare("DELETE FROM mms_outbound_tokens WHERE julianday(created_at) <= julianday('now', '-1 day')").run().changes);
+
 router.get('/:token', (req, res) => {
   const token = req.params.token;
   // Strict validation: 32-byte hex = 64 chars [a-f0-9]. Reject anything else

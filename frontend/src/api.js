@@ -236,6 +236,7 @@ export async function logout() {
     body: JSON.stringify({ pushEndpoint: webSub?.endpoint, fcmToken }),
   }).catch(() => {});
   localStorage.removeItem('plumbline_token');
+  clearMediaCache();
 }
 
 /**
@@ -741,22 +742,64 @@ export async function markCallsSeen() {
   return res.json();
 }
 
-/**
- * Returns a recording/voicemail proxy URL that Safari can load in an <audio>
- * element.  Safari ITP blocks cross-origin cookies, and <audio> cannot send
- * custom headers, so we append the session token as a query param — the backend
- * reads ?token= as a third auth fallback alongside cookie and Bearer header.
- *
- * Chrome also stores the token after login so this works universally; the
- * cookie is still sent alongside it on Chrome for belt-and-suspenders.
- */
-export function recordingUrl(path) {
-  const token = typeof localStorage !== 'undefined'
-    ? localStorage.getItem('plumbline_token')
-    : null;
-  if (!token) return path;
-  return `${path}?token=${encodeURIComponent(token)}`;
+// ── Media (recordings, voicemail, MMS, greeting) ─────────────────────────────
+// Media is never addressed with a session credential. The app asks the backend
+// for a short-lived ticket for ONE owned object and loads
+// `${API_BASE}/media/stream?mt=<ticket>` (tickets: 10 minutes, bound to this
+// sign-in and that object, limited uses). Requests made within a few ms are
+// batched; URLs are cached in memory (never storage) for less than a ticket's
+// lifetime. Never log these URLs.
+const MEDIA_TICKET_CACHE_MS = 8 * 60 * 1000;
+const MEDIA_BATCH_MAX = 20;
+const mediaCache = new Map();   // key → { url, at }
+let mediaQueue = [];
+let mediaTimer = null;
+
+const mediaKey = (kind, id, part) => `${kind}:${id ?? ''}:${part}`;
+
+async function flushMediaQueue() {
+  mediaTimer = null;
+  const batch = mediaQueue.splice(0, MEDIA_BATCH_MAX);
+  if (mediaQueue.length) mediaTimer = setTimeout(flushMediaQueue, 0);
+  if (!batch.length) return;
+  let tickets = [];
+  try {
+    const res = await apiFetch(`${API_BASE}/media/tickets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: batch.map(b => b.item) }),
+      skipSentryOn: [400, 429],
+    });
+    const data = res.ok ? await res.json().catch(() => ({})) : {};
+    if (Array.isArray(data.tickets)) tickets = data.tickets;
+  } catch { /* signed out or offline → no URL */ }
+  batch.forEach((b, i) => {
+    const t = typeof tickets[i] === 'string' && /^[A-Za-z0-9_-]{43}$/.test(tickets[i]) ? tickets[i] : null;
+    const url = t ? `${API_BASE}/media/stream?mt=${t}` : null;
+    if (url) mediaCache.set(b.key, { url, at: Date.now() }); else mediaCache.delete(b.key);
+    b.resolve(url);
+  });
 }
+
+/**
+ * URL for one owned media object, or null if it is not available.
+ * kind: 'call-recording' (call id) | 'voicemail' (lead id) | 'mms' (message id
+ * + part) | 'greeting' (the signed-in account's greeting; no id).
+ * `fresh: true` skips the cache (expired ticket, used up, or a new upload).
+ */
+export function requestMediaUrl(kind, id, part = 0, { fresh = false } = {}) {
+  const key = mediaKey(kind, id, part);
+  const hit = mediaCache.get(key);
+  if (!fresh && hit && Date.now() - hit.at < MEDIA_TICKET_CACHE_MS) return Promise.resolve(hit.url);
+  const item = kind === 'greeting' ? { kind } : { kind, id, part };
+  return new Promise((resolve) => {
+    mediaQueue.push({ item, key, resolve });
+    if (!mediaTimer) mediaTimer = setTimeout(flushMediaQueue, 15);
+  });
+}
+
+/** Forget cached media URLs (e.g. on sign-out). */
+export function clearMediaCache() { mediaCache.clear(); }
 
 // ── Web Push ──────────────────────────────────────────────────────────────────
 

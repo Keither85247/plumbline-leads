@@ -1,8 +1,7 @@
 const express = require('express');
-const https = require('https');
 const router = express.Router();
 const db = require('../db');
-const { assertSafeRecordingUrl } = require('../utils/twilioRecording');
+const { publicCall } = require('../utils/mediaRefs');
 
 function normalizePhone(num) {
   if (!num) return null;
@@ -94,7 +93,7 @@ router.get('/', (req, res) => {
         }
       }
 
-      return {
+      return publicCall({
         ...c,
         contact_name:           contactName,
         key_points:             c.key_points ? JSON.parse(c.key_points) : [],
@@ -102,7 +101,7 @@ router.get('/', (req, res) => {
         voicemail_summary:      voicemailSummary,
         voicemail_key_points:   voicemailKeyPoints,
         voicemail_recording_url: voicemailRecordingUrl,
-      };
+      });
     }));
   } catch (err) {
     console.error('Error fetching calls:', err);
@@ -124,7 +123,7 @@ router.get('/by-phone/:number', (req, res) => {
 
     const matched = calls.filter(c => normalizePhone(c.from_number) === normalized);
 
-    return res.json(matched.map(c => ({
+    return res.json(matched.map(c => publicCall({
       ...c,
       key_points: c.key_points ? JSON.parse(c.key_points) : [],
     })));
@@ -134,55 +133,9 @@ router.get('/by-phone/:number', (req, res) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// GET /api/calls/:id/recording
-// Proxies the Twilio recording for a call row using Basic auth, exactly as
-// GET /api/leads/:id/voicemail does for voicemail leads.
-// The browser <audio> element hits this route — Twilio credentials never leave
-// the server.
-// ---------------------------------------------------------------------------
-router.get('/:id/recording', (req, res) => {
-  const call = db.prepare(
-    'SELECT recording_url FROM calls WHERE id = ? AND user_id = ?'
-  ).get(req.params.id, req.userId);
-
-  if (!call) return res.status(404).json({ error: 'Call not found' });
-  if (!call.recording_url) return res.status(404).json({ error: 'No recording available for this call' });
-
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken  = process.env.TWILIO_AUTH_TOKEN;
-  if (!accountSid || !authToken) {
-    return res.status(500).json({ error: 'Twilio credentials not configured' });
-  }
-
-  // DEF-2: validate the stored URL points at Twilio for THIS account before
-  // attaching credentials. Never send Basic auth to an arbitrary host.
-  let audioUrl;
-  try {
-    audioUrl = assertSafeRecordingUrl(call.recording_url);
-  } catch (err) {
-    console.warn('[Calls] Refusing to proxy unsafe recording_url', { id: req.params.id, reason: err.message });
-    return res.status(502).json({ error: 'Recording unavailable' });
-  }
-
-  const credentials     = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
-  const upstreamHeaders = { Authorization: `Basic ${credentials}` };
-  if (req.headers.range) upstreamHeaders['Range'] = req.headers.range;
-
-  https.get(audioUrl, { headers: upstreamHeaders }, (twilioRes) => {
-    const status = twilioRes.statusCode;
-    if (status !== 200 && status !== 206) {
-      twilioRes.resume();
-      return res.status(502).json({ error: `Twilio returned ${status}` });
-    }
-    res.setHeader('Content-Type',  twilioRes.headers['content-type'] || 'audio/mpeg');
-    res.setHeader('Accept-Ranges', 'bytes'); // required by Safari — declare range support unconditionally
-    if (twilioRes.headers['content-length']) res.setHeader('Content-Length', twilioRes.headers['content-length']);
-    if (twilioRes.headers['content-range'])  res.setHeader('Content-Range',  twilioRes.headers['content-range']);
-    res.status(status);
-    twilioRes.pipe(res);
-  }).on('error', () => res.status(500).json({ error: 'Failed to fetch recording' }));
-});
+// Recording playback: POST /api/media/tickets + GET /api/media/stream
+// (routes/media.js) — no session credential in any media URL, and the stored
+// Twilio URL (which embeds the Account SID) never leaves the server.
 
 // ---------------------------------------------------------------------------
 // POST /api/calls/outbound-note

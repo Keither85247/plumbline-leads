@@ -37,6 +37,7 @@ const numbersRouter    = require('./routes/numbers');
 const requireAuth      = require('./middleware/requireAuth');
 const requireOwner     = require('./middleware/requireOwner');
 const healthRouters    = require('./routes/health');
+const mediaRouters     = require('./routes/media');
 const migrateRouter    = require('./routes/migrate');
 
 const { startPolling }                                     = require('./jobs/gmailPoller');
@@ -220,6 +221,11 @@ app.use('/api/twilio/token', tokenRouter);
 // but enforces per-user ownership.
 app.use('/api/mms-delivery', mmsDeliveryRouter);
 
+// Media streaming by short-lived ticket only (routes/media.js) — the ticket is
+// the capability, so this works where the session cookie is not sent (Safari).
+// Tickets are minted by the authenticated POST /api/media/tickets below.
+app.use('/api/media', mediaRouters.publicRouter);
+
 // ── Protected routes (session cookie required) ────────────────────────────────
 // requireAuth reads req.cookies.plumbline_session, looks it up in the sessions
 // table, and sets req.userId. Returns 401 JSON on failure.
@@ -236,6 +242,7 @@ app.use('/api/admin',    adminRouter);
 app.use('/api/push',     pushRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/numbers',  numbersRouter);
+app.use('/api/media',    mediaRouters.router);
 
 // Transcribe — authenticated audio upload; leads are created for req.userId only.
 app.use('/api/transcribe', transcribeRouter);

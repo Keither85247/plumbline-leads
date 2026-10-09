@@ -241,22 +241,37 @@ async function run() {
       if (savedByp === undefined) delete process.env.TWILIO_SKIP_WEBHOOK_VALIDATION; else process.env.TWILIO_SKIP_WEBHOOK_VALIDATION = savedByp;
     }
 
-    // ───────────────────────── point 13: playback proxy user_id scoping ──────
-    // calls.js /:id/recording must still enforce user_id. Mount it behind a fake
-    // auth that sets req.userId, seed two users' calls, assert cross-account 404.
-    delete require.cache[require.resolve(path.join(BE, 'routes/calls'))];
-    const callsRouter = require(path.join(BE, 'routes/calls'));
+    // ───────────────────────── point 13: media ownership (tickets) ──────────
+    // Recordings play only through POST /api/media/tickets + /api/media/stream.
+    // A ticket is minted only for media the signed-in account owns: A cannot
+    // obtain one for B's call; the old id-based proxy route no longer exists.
+    const cookieParserC = require(path.join(BE, 'node_modules/cookie-parser'));
+    const requireAuthC  = require(path.join(BE, 'middleware/requireAuth'));
+    const media         = require(path.join(BE, 'routes/media'));
+    const callsRouter  = require(path.join(BE, 'routes/calls'));
     const uA = db.prepare("INSERT INTO users (email,is_owner) VALUES ('ra@t.local',0)").run().lastInsertRowid;
     const uB = db.prepare("INSERT INTO users (email,is_owner) VALUES ('rb@t.local',0)").run().lastInsertRowid;
-    const callB = db.prepare("INSERT INTO calls (from_number,call_sid,classification,recording_url,user_id) VALUES ('+15550001111','CA"+'3'.repeat(32)+"','Outbound',?,?)")
-      .run(`https://api.twilio.com/2010-04-01/Accounts/${ACCOUNT_SID}/Recordings/${RE}`, uB).lastInsertRowid;
+    const recUrl = `https://api.twilio.com/2010-04-01/Accounts/${ACCOUNT_SID}/Recordings/${RE}`;
+    const callB = db.prepare("INSERT INTO calls (from_number,call_sid,classification,recording_url,user_id) VALUES ('+15550001111','CA"+'3'.repeat(32)+"','Outbound',?,?)").run(recUrl, uB).lastInsertRowid;
+    const callA = db.prepare("INSERT INTO calls (from_number,call_sid,classification,recording_url,user_id) VALUES ('+15550001112','CA"+'4'.repeat(32)+"','Outbound',?,?)").run(recUrl, uA).lastInsertRowid;
+    const tokA = require('crypto').randomBytes(16).toString('hex');
+    db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(tokA, uA, new Date(Date.now() + 3600e3).toISOString());
     const appC = express();
-    appC.use((req,_res,nx)=>{ req.userId = uA; nx(); });   // authenticated as user A
+    appC.use(cookieParserC()); appC.use(express.json());
+    appC.use(requireAuthC);
     appC.use('/api/calls', callsRouter);
+    appC.use('/api/media', media.router);
     const srvC = appC.listen(0); await new Promise(r=>srvC.once('listening', r));
     const baseC = `http://127.0.0.1:${srvC.address().port}`;
-    const crossRes = await fetch(`${baseC}/api/calls/${callB}/recording`);
-    ok('13. calls recording proxy enforces user_id (A→B call = 404)', crossRes.status === 404, `status=${crossRes.status}`);
+    const mint = await fetch(`${baseC}/api/media/tickets`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokA}`, Origin: 'http://localhost:5173' },
+      body: JSON.stringify({ items: [{ kind: 'call-recording', id: Number(callB) }, { kind: 'call-recording', id: Number(callA) }] }) }).then(r => r.json());
+    ok('13. media tickets enforce ownership (A gets none for B\'s call, one for its own)',
+      Array.isArray(mint.tickets) && mint.tickets[0] === null && typeof mint.tickets[1] === 'string', JSON.stringify(mint).slice(0, 80));
+    const oldRoute = await fetch(`${baseC}/api/calls/${callB}/recording`, { headers: { Authorization: `Bearer ${tokA}` } });
+    const list = await fetch(`${baseC}/api/calls`, { headers: { Authorization: `Bearer ${tokA}` } }).then(r => r.text());
+    ok('13b. the old proxy route is gone and call lists never carry the Twilio URL / Account SID',
+      oldRoute.status === 404 && !list.includes('api.twilio.com') && !list.includes(ACCOUNT_SID));
     srvC.close();
 
   } catch (err) {

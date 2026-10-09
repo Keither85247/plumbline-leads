@@ -81,9 +81,54 @@ function resolveSafeRecordingUrl({ recordingSid, recordingUrl } = {}) {
   throw new Error('no usable recording reference');
 }
 
+// ── Inbound MMS media (MediaUrlN) ─────────────────────────────────────────────
+// https://api.twilio.com/2010-04-01/Accounts/AC…/Messages/MM…/Media/ME… (no extension)
+const MEDIA_PATH_RE = /^\/2010-04-01\/Accounts\/(AC[0-9a-f]{32})\/Messages\/((?:MM|SM)[0-9a-f]{32})\/Media\/(ME[0-9a-f]{32})$/;
+
+/**
+ * Validate a stored inbound MMS media URL. Returns the canonical URL on the
+ * configured account, or throws Error with a short, non-sensitive reason.
+ * Same exact-host / exact-path discipline as assertSafeRecordingUrl.
+ */
+function assertSafeTwilioMediaUrl(rawUrl) {
+  const accountSid = configuredAccountSid();
+  if (!accountSid) throw new Error('twilio account not configured');
+  if (typeof rawUrl !== 'string' || !rawUrl || rawUrl.length > 2048) throw new Error('missing url');
+  let u;
+  try { u = new URL(rawUrl); } catch { throw new Error('malformed url'); }
+  if (u.protocol !== 'https:')               throw new Error('non-https url');
+  if (u.username || u.password)              throw new Error('url contains credentials');
+  if (u.hostname !== TWILIO_HOST)           throw new Error('host not allowed');
+  if (u.port && u.port !== '443')           throw new Error('non-standard port');
+  const m = u.pathname.match(MEDIA_PATH_RE);
+  if (!m)                                    throw new Error('unexpected path');
+  if (m[1].toLowerCase() !== accountSid.toLowerCase()) throw new Error('account sid mismatch');
+  return `https://${TWILIO_HOST}${u.pathname}`;
+}
+
+/** First hop: only Twilio's own API host. */
+function isTwilioApiUrl(u) {
+  return u.hostname === TWILIO_HOST;
+}
+
+/**
+ * Where Twilio redirects media requests (fetched WITHOUT credentials):
+ * secured media → mms.twiliocdn.com; unsecured media →
+ * s3-external-1.amazonaws.com/media.twiliocdn.com/…  (Twilio help center,
+ * "How to Protect Media Access With HTTP Basic Authentication").
+ */
+function isTwilioMediaRedirect(u) {
+  const h = u.hostname;
+  if (h === 'mms.twiliocdn.com' || h === 'media.twiliocdn.com') return true;
+  return h === 's3-external-1.amazonaws.com' && u.pathname.startsWith('/media.twiliocdn.com/');
+}
+
 module.exports = {
   TWILIO_HOST,
   canonicalRecordingUrl,
   assertSafeRecordingUrl,
   resolveSafeRecordingUrl,
+  assertSafeTwilioMediaUrl,
+  isTwilioApiUrl,
+  isTwilioMediaRedirect,
 };

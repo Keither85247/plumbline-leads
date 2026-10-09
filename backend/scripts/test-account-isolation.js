@@ -75,8 +75,32 @@ const fakeHttps = {
     return req;
   },
 };
+
+// utils/safeFetch.js is the only outbound media client: fake its DNS + HTTPS.
+// Every request is recorded (host, path, whether credentials were attached).
+const safeFetchCalls = [];
+const fakeSafeDns = { promises: { lookup: async () => [{ address: '52.0.0.10', family: 4 }] } };
+const fakeSafeHttps = {
+  request(opts, cb) {
+    safeFetchCalls.push({ host: opts.hostname, path: opts.path, auth: !!(opts.headers && (opts.headers.Authorization || opts.headers.authorization)) });
+    recordingDownloads++;
+    const { EventEmitter: EE, PassThrough: PT } = { EventEmitter: require('events'), PassThrough: require('stream').PassThrough };
+    const req = new EE();
+    req.end = () => setImmediate(() => {
+      const res = new PT();
+      res.statusCode = 200;
+      res.headers = { 'content-type': 'audio/mpeg' };
+      cb(res);
+      res.end(Buffer.from('fake-mp3-bytes'));
+    });
+    req.destroy = () => {};
+    return req;
+  },
+};
 const origLoad = Module._load;
 Module._load = function (request, parent, isMain) {
+  if (request === 'https' && parent && /utils[\\/]safeFetch\.js$/.test(parent.filename)) return fakeSafeHttps;
+  if (request === 'dns' && parent && /utils[\\/]safeFetch\.js$/.test(parent.filename)) return fakeSafeDns;
   if (request === 'https' && parent && /routes[\\/]twilio\.js$/.test(parent.filename)) return fakeHttps;
   if (request === 'openai') {
     return class OpenAI {

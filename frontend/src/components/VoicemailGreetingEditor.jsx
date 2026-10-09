@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { getAppSettings, uploadVoicemailGreeting, deleteVoicemailGreeting, API_BASE } from '../api';
+import { getAppSettings, uploadVoicemailGreeting, deleteVoicemailGreeting } from '../api';
+import { TicketedAudio } from './media/TicketedMedia';
 
 // ── WAV Recorder ──────────────────────────────────────────────────────────────
 // Records mono PCM audio via Web Audio API and encodes it as a WAV blob.
@@ -95,24 +96,19 @@ export default function VoicemailGreetingEditor({ t = {} }) {
   const timerRef     = useRef(null);
   const fileInputRef = useRef(null);
 
-  // The backend returns a per-user tokenised audio URL. We never construct it
-  // on the client — the token is the only credential that authorises playback,
-  // and it is bound to the logged-in user's voicemail row server-side.
-  const [savedAudioUrl, setSavedAudioUrl] = useState(null);
-  // Bump on every save so the <audio> element reloads even if the URL is unchanged
+  // Whether a recorded greeting exists. Playback uses a short-lived media
+  // ticket for this account's greeting — the durable token Twilio uses for
+  // <Play> is never sent to the browser.
+  const [audioReady, setAudioReady] = useState(false);
+  // Bump on every save so playback picks up the new recording (fresh ticket)
   const [audioReloadKey, setAudioReloadKey] = useState(0);
-
-  // Build the full URL with an additional cache-buster query param the server ignores
-  const audioSrc = savedAudioUrl
-    ? `${API_BASE}${savedAudioUrl}${savedAudioUrl.includes('?') ? '&' : '?'}_cb=${audioReloadKey}`
-    : null;
 
   // ── Load current state ──────────────────────────────────────────────────────
   useEffect(() => {
     getAppSettings()
       .then(s => {
         setGreetingType(s.voicemail_greeting_type ?? 'tts');
-        setSavedAudioUrl(s.voicemail_audio_url ?? null);
+        setAudioReady(!!s.voicemail_audio_ready);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -185,8 +181,7 @@ export default function VoicemailGreetingEditor({ t = {} }) {
     try {
       const result = await uploadVoicemailGreeting(previewBlob);
       setGreetingType('audio');
-      // Server returns the new tokenised URL — never build it on the client
-      setSavedAudioUrl(result?.voicemail_audio_url ?? null);
+      setAudioReady(!!result?.voicemail_audio_ready);
       setAudioReloadKey(k => k + 1);
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       setPreviewBlob(null);
@@ -212,7 +207,7 @@ export default function VoicemailGreetingEditor({ t = {} }) {
     try {
       await deleteVoicemailGreeting();
       setGreetingType('tts');
-      setSavedAudioUrl(null);
+      setAudioReady(false);
       setPhase('idle');
     } catch (e) {
       setError(t.vmErrReset || 'Failed to reset greeting.');
@@ -247,11 +242,12 @@ export default function VoicemailGreetingEditor({ t = {} }) {
         </div>
 
         {/* Saved greeting playback */}
-        {greetingType === 'audio' && audioSrc && phase !== 'preview' && phase !== 'uploading' && (
-          <audio
+        {greetingType === 'audio' && audioReady && phase !== 'preview' && phase !== 'uploading' && (
+          <TicketedAudio
             key={audioReloadKey}
+            kind="greeting"
+            version={audioReloadKey}
             controls
-            src={audioSrc}
             className="w-full h-9"
           />
         )}

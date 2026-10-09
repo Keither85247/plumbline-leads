@@ -5,8 +5,8 @@ const { transcribeRateLimit } = require('../utils/aiBudget');
 const MAX_MANUAL_TRANSCRIPT = 20000;
 const OpenAI = require('openai');
 const db = require('../db');
+const { publicLead } = require('../utils/mediaRefs');
 const { classifyVoicemailIntent } = require('../utils/voicemailClassifier');
-const { assertSafeRecordingUrl } = require('../utils/twilioRecording');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -314,7 +314,7 @@ router.post('/', transcribeRateLimit, async (req, res) => {
       language: req.body.language || undefined,
       userId:   req.userId,   // ← scoped to the logged-in user
     });
-    return res.status(201).json(newLead);
+    return res.status(201).json(publicLead(newLead));
   } catch (err) {
     // Codes only: provider and parser messages can carry account details or
     // fragments of the transcript / model output.
@@ -354,7 +354,7 @@ router.get('/', (req, res) => {
     query += ' ORDER BY l.created_at DESC';
 
     const leads = db.prepare(query).all(...params);
-    const result = leads.map(lead => ({
+    const result = leads.map(lead => publicLead({
       ...lead,
       key_points: JSON.parse(lead.key_points),
     }));
@@ -373,59 +373,8 @@ router.get('/', (req, res) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// GET /api/leads/:id/voicemail — proxy Twilio recording audio with Basic auth
-// ---------------------------------------------------------------------------
-router.get('/:id/voicemail', (req, res) => {
-  const lead = db.prepare(
-    'SELECT recording_url FROM leads WHERE id = ? AND user_id = ?'
-  ).get(req.params.id, req.userId);
-
-  if (!lead) {
-    console.warn(`[Leads] Voicemail: lead ${req.params.id} not found or not owned by user ${req.userId}`);
-    return res.status(404).json({ error: 'Lead not found' });
-  }
-  if (!lead.recording_url) {
-    return res.status(404).json({ error: 'No recording available for this lead' });
-  }
-
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken  = process.env.TWILIO_AUTH_TOKEN;
-  if (!accountSid || !authToken) {
-    return res.status(500).json({ error: 'Twilio credentials not configured' });
-  }
-
-  // DEF-2: validate the stored URL points at Twilio for THIS account before
-  // attaching credentials. Never send Basic auth to an arbitrary host.
-  let audioUrl;
-  try {
-    audioUrl = assertSafeRecordingUrl(lead.recording_url);
-  } catch (err) {
-    console.warn('[Leads] Refusing to proxy unsafe recording_url', { id: req.params.id, reason: err.message });
-    return res.status(502).json({ error: 'Recording unavailable' });
-  }
-
-  const credentials  = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
-  const protocol     = require('https');
-  const upstreamHeaders = { Authorization: `Basic ${credentials}` };
-  if (req.headers.range) upstreamHeaders['Range'] = req.headers.range;
-
-  protocol.get(audioUrl, { headers: upstreamHeaders }, (twilioRes) => {
-    const status = twilioRes.statusCode;
-    if (status !== 200 && status !== 206) {
-      twilioRes.resume();
-      return res.status(502).json({ error: `Twilio returned ${status}` });
-    }
-    res.setHeader('Content-Type',  twilioRes.headers['content-type'] || 'audio/mpeg');
-    res.setHeader('Accept-Ranges', 'bytes'); // required by Safari — declare range support unconditionally
-    if (twilioRes.headers['content-length']) res.setHeader('Content-Length', twilioRes.headers['content-length']);
-    if (twilioRes.headers['content-range'])  res.setHeader('Content-Range',  twilioRes.headers['content-range']);
-    res.status(status);
-    twilioRes.pipe(res);
-  }).on('error', (err) => {
-    res.status(500).json({ error: 'Failed to fetch recording' });
-  });
-});
+// Voicemail playback: POST /api/media/tickets + GET /api/media/stream
+// (routes/media.js).
 
 // ---------------------------------------------------------------------------
 // PATCH /api/leads/:id/status
@@ -447,7 +396,7 @@ router.patch('/:id/status', (req, res) => {
 
     const updated = db.prepare('SELECT * FROM leads WHERE id = ?').get(id);
     updated.key_points = JSON.parse(updated.key_points);
-    return res.json(updated);
+    return res.json(publicLead(updated));
   } catch (err) {
     console.error('Error updating status:', err);
     return res.status(500).json({ error: 'Failed to update status' });
@@ -474,7 +423,7 @@ router.patch('/:id/category', (req, res) => {
 
     const updated = db.prepare('SELECT * FROM leads WHERE id = ?').get(id);
     updated.key_points = JSON.parse(updated.key_points);
-    return res.json(updated);
+    return res.json(publicLead(updated));
   } catch (err) {
     console.error('Error updating category:', err);
     return res.status(500).json({ error: 'Failed to update category' });
@@ -497,7 +446,7 @@ router.patch('/:id/archive', (req, res) => {
 
     const updated = db.prepare('SELECT * FROM leads WHERE id = ?').get(id);
     updated.key_points = JSON.parse(updated.key_points);
-    return res.json(updated);
+    return res.json(publicLead(updated));
   } catch (err) {
     console.error('Error archiving lead:', err);
     return res.status(500).json({ error: 'Failed to archive lead' });

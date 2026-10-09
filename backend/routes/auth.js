@@ -10,6 +10,7 @@ const { createBaseClient, syncRecentEmails } = require('../services/gmailService
 const { revokeGoogleToken, addressInUse } = require('../utils/googleRevoke');   // disconnect only
 const { sessionCandidates, resolveSession, revokeUserSessions, ACCOUNT_DISABLED_ERROR } = require('../utils/session');
 const { isDisabledRow, isAccountActive } = require('../utils/accountStatus');
+const { frontendOrigins, originAllowed, requireAppRequest } = require('../utils/appRequest');
 const { createLimiter, createRecentSet } = require('../utils/rateLimiter');
 const { clientIpKey, wideIpKey } = require('../utils/clientIp');
 const { ENDPOINT_MAX, FCM_TOKEN_MAX, isDeletableIdentifier } = require('../utils/pushValidation');
@@ -440,19 +441,9 @@ const gmailLaunchIpLimit = createLimiter({ name: 'gmail-oauth-launch-ip',  windo
 const gmailCallbackIpLimit = createLimiter({ name: 'gmail-oauth-callback-ip', windowMs: 10 * MIN, max: 30 });
 const MAX_LIVE_PARKED = 3;
 
-const CAPACITOR_ORIGINS = new Set(['https://localhost', 'capacitor://localhost']);
-function frontendOrigins() {
-  return (process.env.FRONTEND_URL || '').split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean);
-}
 // FRONTEND_URL may be a comma-separated CORS list; the default landing is the first entry.
 function frontendBase() {
   return frontendOrigins()[0] || 'http://localhost:5173';
-}
-function originAllowed(origin) {
-  if (typeof origin !== 'string' || !origin) return false;
-  if (CAPACITOR_ORIGINS.has(origin)) return true;
-  const list = frontendOrigins();
-  return list.length ? list.includes(origin) : process.env.NODE_ENV !== 'production';
 }
 function backendOrigin() {
   try { return new URL(process.env.GOOGLE_REDIRECT_URI).origin; } catch { return ''; }
@@ -489,14 +480,8 @@ function oauthNonceCookieOptions(withMaxAge) {
 }
 const oauthLog = (event) => console.log(`[Gmail OAuth] ${event}`);
 
-// JSON + allowed Origin: forces a CORS preflight, so other sites cannot start,
-// preview or complete a connection with the user's cookie.
-function requireAppRequest(req, res, next) {
-  if (!req.is('application/json') || !originAllowed(req.headers.origin)) {
-    return res.status(403).json({ error: 'Request not allowed', code: 'bad_request' });
-  }
-  next();
-}
+// JSON + allowed Origin (utils/appRequest.js): forces a CORS preflight, so
+// other sites cannot start, preview or complete a connection with the cookie.
 
 function failFlow(id, code) {
   db.prepare(`

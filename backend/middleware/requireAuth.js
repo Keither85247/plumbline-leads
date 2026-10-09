@@ -6,6 +6,9 @@
  * Fallback: reads `Authorization: Bearer <token>` header (Safari — ITP blocks
  *           SameSite=None cookies from third-party domains, so we fall back to
  *           a token stored in localStorage and sent as a header instead).
+ * A session token in the URL (`?token=`) is NEVER accepted: URLs end up in
+ * history, logs and copied links. Media uses short-lived tickets instead
+ * (routes/media.js).
  *
  * Sets req.userId to the owning user's integer ID.
  * Returns 401 JSON (never HTML) if no valid session is found.
@@ -13,8 +16,8 @@
 
 const { resolveSession, revokeUserSessions, clearSessionCookieOptions, ACCOUNT_DISABLED_ERROR } = require('../utils/session');
 
-function authenticate(req, res, next, { allowQuery }) {
-  const r = resolveSession(req, { allowQuery });
+function authenticate(req, res, next) {
+  const r = resolveSession(req);
 
   if (r.status === 'none') {
     return res.status(401).json({ error: 'Not authenticated' });
@@ -39,17 +42,12 @@ function authenticate(req, res, next, { allowQuery }) {
   next();
 }
 
-// Cookie, Bearer (Safari ITP) and ?token= are all considered —
-// <audio>/<video> elements make raw resource fetches and cannot send
-// headers, so the frontend appends ?token=<session_token> to recording URLs.
+// Cookie or Bearer only — never a session token in a URL.
 function requireAuth(req, res, next) {
-  return authenticate(req, res, next, { allowQuery: true });
+  return authenticate(req, res, next);
 }
 
-// Cookie or Bearer only — never a session token in a URL. Used by the Gmail
-// connection endpoints.
-requireAuth.strict = function requireAuthStrict(req, res, next) {
-  return authenticate(req, res, next, { allowQuery: false });
-};
+// Kept as an alias (Gmail connection endpoints); identical to requireAuth.
+requireAuth.strict = requireAuth;
 
 module.exports = requireAuth;

@@ -1,6 +1,6 @@
 import { EVENT_META } from './normalizeEvent';
 import { parseTimestamp } from '../../utils/phone';
-import { API_BASE, recordingUrl } from '../../api';
+import { TicketedAudio } from '../media/TicketedMedia';
 import { translations } from '../../i18n';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -331,15 +331,16 @@ export default function EventRow({ event, expanded, onToggle, onContactClick, t:
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">
                 {t.callsRecording}
               </p>
-              <audio
+              <TicketedAudio
+                kind="call-recording"
+                id={event.id}
                 controls
                 preload="metadata"
-                src={recordingUrl(`${API_BASE}/calls/${event.id}/recording`)}
                 className="w-full h-9"
                 style={{ colorScheme: 'light' }}
               >
                 {t.callsAudioNotSupported}
-              </audio>
+              </TicketedAudio>
             </div>
           )}
 
@@ -349,15 +350,16 @@ export default function EventRow({ event, expanded, onToggle, onContactClick, t:
               <p className="text-[10px] font-semibold text-indigo-400 uppercase tracking-widest mb-2">
                 {t.callsVoicemail}
               </p>
-              <audio
+              <TicketedAudio
+                kind="voicemail"
+                id={event.voicemailLeadId}
                 controls
                 preload="metadata"
-                src={recordingUrl(`${API_BASE}/leads/${event.voicemailLeadId}/voicemail`)}
                 className="w-full h-9"
                 style={{ colorScheme: 'light' }}
               >
                 {t.callsAudioNotSupported}
-              </audio>
+              </TicketedAudio>
             </div>
           )}
         </div>

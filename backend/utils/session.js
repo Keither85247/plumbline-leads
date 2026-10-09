@@ -26,8 +26,11 @@ const lookupStmt = db.prepare(`
 
 const MAX_TOKEN_LEN = 256;
 
-/** Every credential the request carries, in order: cookie, Bearer, then (optionally) ?token=. */
-function sessionCandidates(req, { allowQuery = false } = {}) {
+/**
+ * Every credential the request carries, in order: cookie, then Bearer.
+ * A session token in the URL (?token=) is never accepted.
+ */
+function sessionCandidates(req) {
   const out = [];
   const cookie = req.cookies?.plumbline_session;
   if (typeof cookie === 'string' && cookie) out.push({ src: 'cookie', token: cookie });
@@ -36,15 +39,12 @@ function sessionCandidates(req, { allowQuery = false } = {}) {
     const bearer = auth.slice(7).trim();
     if (bearer) out.push({ src: 'bearer', token: bearer });
   }
-  if (allowQuery && typeof req.query?.token === 'string' && req.query.token.trim()) {
-    out.push({ src: 'query', token: req.query.token.trim() });
-  }
   return out;
 }
 
-/** First credential the request carries (cookie, then Bearer, then optional ?token=). */
-function getSessionToken(req, opts) {
-  return sessionCandidates(req, opts)[0]?.token || null;
+/** First credential the request carries (cookie, then Bearer). */
+function getSessionToken(req) {
+  return sessionCandidates(req)[0]?.token || null;
 }
 
 /**
@@ -68,8 +68,8 @@ function lookupSession(token) {
  *         | { status: 'conflict', staleCookie: boolean }    valid for different accounts
  *         | { status: 'ok', session, token, staleCookie }}  staleCookie: an invalid cookie accompanied a valid credential
  */
-function resolveSession(req, opts) {
-  const candidates = sessionCandidates(req, opts);
+function resolveSession(req) {
+  const candidates = sessionCandidates(req);
   if (!candidates.length) return { status: 'none' };
   let found = null;
   let staleCookie = false;

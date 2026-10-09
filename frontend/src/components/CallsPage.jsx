@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { getCalls, getVoicemailLeads, markCallsSeen, API_BASE, recordingUrl } from '../api';
+import { getCalls, getVoicemailLeads, markCallsSeen } from '../api';
+import { TicketedAudio } from './media/TicketedMedia';
+import { useMediaSrc } from '../hooks/useMediaSrc';
 import { parseTimestamp } from '../utils/phone';
 import PhoneActionSheet from './PhoneActionSheet';
 import SwipeableRow from './ui/SwipeableRow';
@@ -449,15 +451,16 @@ function RecentRow({ call, t, expanded, onToggle, onOpenActions, onCallback, onJ
           {call.recording_url && (
             <div className="rounded-xl bg-ink-800 ring-1 ring-ink-700 px-3 py-2.5">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-400 mb-2">{t.callsRecording}</p>
-              <audio
+              <TicketedAudio
+                kind="call-recording"
+                id={call.id}
                 controls
                 preload="metadata"
-                src={recordingUrl(`${API_BASE}/calls/${call.id}/recording`)}
                 className="w-full h-9"
                 style={{ colorScheme: 'light' }}
               >
                 {t.callsAudioNotSupported}
-              </audio>
+              </TicketedAudio>
             </div>
           )}
         </div>
@@ -482,7 +485,10 @@ function VoicemailRow({ vm, t, expanded, onToggle, onCallback, highlighted }) {
   // isn't stored). The comp renders the caller's words in quotes.
   const quote = vm.transcript || vm.raw_text || vm.summary || '';
 
-  const src = vm.recording_url ? recordingUrl(`${API_BASE}/leads/${vm.id}/voicemail`) : null;
+  // Short-lived media ticket — never a session credential in the URL. Minted
+  // only once the row is expanded (the player is not rendered before that).
+  const media = useMediaSrc('voicemail', vm.id, 0, { enabled: !!vm.recording_url && expanded });
+  const src = media.src;
   const audioRef = useRef(null);
   const [playing, setPlaying]   = useState(false);
   const [clock, setClock]       = useState(null);  // total duration, "1:15"
@@ -590,7 +596,8 @@ function VoicemailRow({ vm, t, expanded, onToggle, onCallback, highlighted }) {
                 ref={audioRef}
                 preload="metadata"
                 src={src}
-                onLoadedMetadata={e => setClock(formatClock(e.target.duration))}
+                onLoadedMetadata={e => { media.onLoadedMetadata(e); setClock(formatClock(e.target.duration)); }}
+                onError={e => { setPlaying(false); media.onError(e); }}
                 onTimeUpdate={handleTimeUpdate}
                 onPlay={() => setPlaying(true)}
                 onPause={() => setPlaying(false)}

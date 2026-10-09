@@ -87,7 +87,7 @@ router.get('/', (req, res) => {
       voicemail_greeting:      DEFAULT_GREETING,
       voicemail_greeting_type: 'tts',
       voicemail_greeting_file: null,
-      voicemail_audio_url:     null,
+      voicemail_audio_ready:   false,
     });
   }
 
@@ -97,10 +97,10 @@ router.get('/', (req, res) => {
     voicemail_greeting:      row.tts_text || DEFAULT_GREETING,
     voicemail_greeting_type: row.type || 'tts',
     voicemail_greeting_file: audioReady ? row.audio_file : null,
-    // Tokenised URL the frontend (and Twilio) use to stream the audio.
-    // The token is per-user, rotates on every upload, and is the ONLY way
-    // to access the file. No userId is exposed in the URL.
-    voicemail_audio_url:     audioReady ? `/twilio/voicemail-audio?t=${row.public_token}` : null,
+    // The app previews the greeting with a short-lived media ticket
+    // (routes/media.js, kind 'greeting'). The durable public token is used
+    // only in the TwiML <Play> URL Twilio fetches; it never reaches the browser.
+    voicemail_audio_ready:   !!audioReady,
   });
 });
 
@@ -198,7 +198,7 @@ router.post(
     return res.json({
       ok: true,
       filename,
-      voicemail_audio_url: `/twilio/voicemail-audio?t=${newToken}`,
+      voicemail_audio_ready: true,
     });
   }
 );

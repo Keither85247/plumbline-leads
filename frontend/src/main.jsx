@@ -14,13 +14,17 @@ import './index.css';
 // Captures: JS exceptions, unhandled promise rejections, React render errors,
 // and failed network requests via browserTracingIntegration.
 if (import.meta.env.VITE_SENTRY_DSN) {
-  // Never report query strings or fragments: recording URLs carry ?token=, and
-  // the Gmail completion handle travels in a fragment. Console breadcrumbs
+  // Never report query strings or fragments: media URLs carry a short-lived
+  // ticket (?mt=), and the Gmail completion handle travels in a fragment. Console breadcrumbs
   // (raw log text) are dropped.
   const scrubData = (d) => {
     if (!d || typeof d !== 'object') return;
-    for (const k of ['url', 'from', 'to', 'http.url', 'url.full']) if (typeof d[k] === 'string') d[k] = scrubUrl(d[k]);
     for (const k of ['http.query', 'http.fragment', 'url.query', 'url.fragment']) delete d[k];
+    // Any URL-valued field (url, from, to, http.url, url.full, lcp.url, …):
+    // media tickets live in query strings, the Gmail handle in a fragment.
+    for (const k of Object.keys(d)) {
+      if (typeof d[k] === 'string' && /^(https?:)?\/\/|^\/[^/]/.test(d[k])) d[k] = scrubUrl(d[k]);
+    }
   };
   const scrubEvent = (event) => {
     if (event?.request?.url) event.request.url = scrubUrl(event.request.url);
@@ -44,7 +48,7 @@ if (import.meta.env.VITE_SENTRY_DSN) {
       // URL (with its fragment) even after the address bar is cleaned.
       Sentry.browserTracingIntegration({
         instrumentPageLoad: !sawGmailHandle(),
-        // Recording/voicemail <audio> URLs carry the session token as ?token=.
+        // Recording/voicemail <audio> URLs carry a media ticket (?mt=).
         ignoreResourceSpans: ['resource.audio', 'resource.video'],
       }),
     ],

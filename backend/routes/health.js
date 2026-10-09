@@ -13,6 +13,7 @@
 
 const express = require('express');
 const db      = require('../db');
+const { assertSafeRecordingUrl, assertSafeTwilioMediaUrl } = require('../utils/twilioRecording');
 const { getLastHousekeeping, SESSION_GRACE_SECONDS } = require('../jobs/housekeeping');
 const { validateWebPushEndpoint, validateSubscriptionKeys, validateFcmToken } = require('../utils/pushValidation');
 const { clientIpKey } = require('../utils/clientIp');
@@ -54,6 +55,43 @@ ownerRouter.get('/owner', (_req, res) => {
 
 // Push-registration inventory — owner only, READ-ONLY, counts only. Never
 // returns endpoints, tokens, or IP addresses.
+const CRED_RE = /[?&#](token|t|mt|access_token|auth|key|sig|signature|password)=/i;
+function classifyUrl(v, validate) {
+  if (typeof v !== 'string' || !v.trim()) return 'empty';
+  if (CRED_RE.test(v) || /^[a-z]+:\/\/[^/]*@/i.test(v)) return 'credentialBearing';
+  try { validate(v); return 'twilio'; } catch { /* not a valid Twilio reference */ }
+  if (/\/api\/messages\/media-proxy\?/.test(v)) return 'legacyProxy';
+  if (/\/api\/messages\/media\/mms-/.test(v)) return 'localUpload';
+  return 'other';
+}
+function tally(values, validate) {
+  const out = { total: 0, twilio: 0, localUpload: 0, legacyProxy: 0, credentialBearing: 0, other: 0 };
+  for (const v of values) {
+    const c = classifyUrl(v, validate);
+    if (c === 'empty') continue;
+    out.total++; out[c]++;
+  }
+  return out;
+}
+function mediaInventory() {
+  const recs = (table) => db.prepare(`SELECT recording_url AS v FROM ${table} WHERE recording_url IS NOT NULL AND recording_url <> ''`).all().map(r => r.v);
+  const mmsItems = [];
+  let rowsWithMedia = 0, unparseable = 0;
+  for (const r of db.prepare("SELECT media_urls AS v FROM messages WHERE media_urls IS NOT NULL AND media_urls <> ''").all()) {
+    let list;
+    try { list = JSON.parse(r.v); } catch { unparseable++; continue; }
+    if (!Array.isArray(list) || !list.length) continue;
+    rowsWithMedia++;
+    for (const x of list) mmsItems.push(x);
+  }
+  return {
+    callRecordings:     tally(recs('calls'), assertSafeRecordingUrl),
+    voicemailRecordings: tally(recs('leads'), assertSafeRecordingUrl),
+    mms: { rowsWithMedia, unparseableRows: unparseable, items: tally(mmsItems, assertSafeTwilioMediaUrl) },
+    greetingsWithAudio: db.prepare("SELECT COUNT(*) AS n FROM voicemail_greetings WHERE type = 'audio' AND audio_file IS NOT NULL").get().n,
+  };
+}
+
 ownerRouter.get('/push-inventory', (req, res) => {
   try {
     const n = (sql) => db.prepare(sql).get().n;
@@ -88,6 +126,10 @@ ownerRouter.get('/push-inventory', (req, res) => {
         unparseable:        n('SELECT COUNT(*) AS n FROM sessions WHERE julianday(expires_at) IS NULL'),
       },
       lastHousekeeping: getLastHousekeeping(),
+      // Stored media references, classified server-side — COUNTS ONLY, never
+      // values. credentialBearing = a query string carrying a token-like
+      // parameter or userinfo; nothing is modified.
+      media: mediaInventory(),
     });
   } catch (err) {
     console.error('[Health] push inventory failed:', err.message);

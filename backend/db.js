@@ -287,6 +287,33 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_gmail_oauth_flows_expires ON gmail_oauth
 db.exec('CREATE INDEX IF NOT EXISTS idx_gmail_oauth_flows_status ON gmail_oauth_flows(status, handle_expires)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_gmail_oauth_flows_created ON gmail_oauth_flows(created_at)');
 
+// ── Media tickets ─────────────────────────────────────────────────────────────
+// Short-lived capabilities for playing / showing one owned media object without
+// a session credential in the URL (routes/media.js). Only SHA-256 hashes are
+// stored; each ticket is bound to the account, the minting session, one object
+// and one operation, expires after 10 minutes and has a small use limit.
+// Additive table: older code ignores it.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS media_tickets (
+    ticket_hash TEXT    PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id  INTEGER NOT NULL,
+    session_fp  TEXT,
+    kind        TEXT    NOT NULL,
+    object_id   INTEGER NOT NULL,
+    part        INTEGER NOT NULL DEFAULT 0,
+    op          TEXT    NOT NULL,
+    max_uses    INTEGER NOT NULL,
+    uses        INTEGER NOT NULL DEFAULT 0,
+    expires_at  TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL
+  )
+`);
+// Tickets minted before session_fp existed carry NULL and are refused.
+try { db.exec('ALTER TABLE media_tickets ADD COLUMN session_fp TEXT'); } catch {}
+db.exec('CREATE INDEX IF NOT EXISTS idx_media_tickets_expires ON media_tickets(expires_at)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_media_tickets_user ON media_tickets(user_id)');
+
 // ── user_id scaffolding on data tables ────────────────────────────────────────
 // All nullable so existing rows stay intact on first migration.
 // Legacy rows (user_id IS NULL) are stamped to the owner account below so that

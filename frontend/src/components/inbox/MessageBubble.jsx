@@ -2,9 +2,10 @@
 // Messages from the same sender within 5 minutes are grouped — only the
 // first in a group shows the timestamp; the last shows the "tail" shape.
 import { parseTimestamp } from '../../utils/phone';
-import { API_BASE } from '../../api';
 import { translations } from '../../i18n';
 import SafeImage from './SafeImage';
+import { useMediaSrc } from '../../hooks/useMediaSrc';
+import { BrokenImageIcon } from '../media/TicketedMedia';
 
 function getLocale() {
   const lang = localStorage.getItem('language') || 'en';
@@ -56,20 +57,41 @@ export function DaySeparator({ ts }) {
 }
 
 /**
- * Resolve a media URL for display in the browser.
- *
- * - Object URLs (blob:…) — optimistic previews from our own file picker; use as-is.
- * - Twilio CDN URLs (api.twilio.com/…) — require Basic auth; route through our proxy.
- * - Our own temp-file URLs (/api/messages/media/…) — use as-is (served by our backend).
- * - Anything else — use as-is.
+ * One attachment thumbnail.
+ * - Optimistic previews from our own file picker are local blob: URLs.
+ * - Stored attachments arrive from the API as opaque markers ("media:0", …):
+ *   the image is loaded with a short-lived media ticket for (message, part).
+ *   No Twilio URL, Account SID or session credential ever reaches the page.
  */
-function resolveMediaUrl(url) {
-  if (!url) return url;
-  if (url.startsWith('blob:')) return url;
-  if (url.includes('api.twilio.com') || url.includes('twilio.com/2010')) {
-    return `${API_BASE}/messages/media-proxy?url=${encodeURIComponent(url)}`;
-  }
-  return url;
+function Attachment({ messageId, entry, part, onOpen }) {
+  const isBlob = typeof entry === 'string' && entry.startsWith('blob:');
+  const isStored = typeof entry === 'string' && /^media:\d+$/.test(entry) && messageId != null;
+  const media = useMediaSrc('mms', isStored ? messageId : null, part, { enabled: isStored });
+  const src = isBlob ? entry : media.src;
+  return (
+    <button
+      type="button"
+      onClick={() => src && onOpen?.(src)}
+      aria-label="View attachment"
+      className="block rounded-xl overflow-hidden border border-white/20 shadow-sm bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
+    >
+      {src ? (
+        <SafeImage
+          src={src}
+          alt="MMS attachment"
+          className="max-w-[200px] max-h-[200px] object-cover block"
+          loading="lazy"
+          onLoadError={isBlob ? undefined : media.onError}
+        />
+      ) : (
+        <div className="w-[120px] h-[120px] flex items-center justify-center text-gray-300"
+          role={media.unavailable ? 'img' : undefined} aria-label={media.unavailable ? 'Attachment unavailable' : undefined}
+          aria-hidden={media.unavailable ? undefined : 'true'}>
+          {media.unavailable && <BrokenImageIcon />}
+        </div>
+      )}
+    </button>
+  );
 }
 
 export default function MessageBubble({
@@ -109,37 +131,22 @@ export default function MessageBubble({
         </span>
       )}
 
-      {/* Media images — rendered above the text bubble.
-          Tapping a thumbnail opens an in-app preview (handled by
-          MessageThread). Previously this was an <a target="_blank">
-          which opened a new external browser tab — that tab has no
-          session cookie for /api/messages/media/... so it landed on
-          "Not Authenticated". A real <button> keeps the user inside
-          the authenticated webview where the media route works.
-          Keyed by URL (not index) so when an optimistic message is
-          replaced by the server version the old blob: <img> unmounts
-          cleanly and the new /api/messages/media/... <img> mounts fresh. */}
+      {/* Media images — rendered above the text bubble. Tapping a thumbnail
+          opens the in-app preview (MessageThread) — never an external browser
+          tab. Stored attachments load through short-lived media tickets.
+          Keyed per message + entry so an optimistic (blob:) message replaced
+          by the server version remounts cleanly. */}
       {hasMedia && (
         <div className={`flex flex-wrap gap-1.5 mb-1 max-w-[72%] sm:max-w-xs lg:max-w-sm xl:max-w-md ${isOut ? 'justify-end' : 'justify-start'}`}>
-          {mediaUrls.map(url => {
-            const resolved = resolveMediaUrl(url);
-            return (
-              <button
-                key={resolved}
-                type="button"
-                onClick={() => onOpenMediaPreview?.(resolved)}
-                aria-label="View attachment"
-                className="block rounded-xl overflow-hidden border border-white/20 shadow-sm bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
-              >
-                <SafeImage
-                  src={resolved}
-                  alt="MMS attachment"
-                  className="max-w-[200px] max-h-[200px] object-cover block"
-                  loading="lazy"
-                />
-              </button>
-            );
-          })}
+          {mediaUrls.map((entry, i) => (
+            <Attachment
+              key={`${message.id ?? 'pending'}-${entry}`}
+              messageId={message.id}
+              entry={entry}
+              part={i}
+              onOpen={onOpenMediaPreview}
+            />
+          ))}
         </div>
       )}
 

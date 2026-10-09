@@ -4,6 +4,7 @@ const multer = require('multer');
 const fs = require('fs');
 const OpenAI = require('openai');
 const { createLeadFromTranscript } = require('./leads');
+const { publicLead } = require('../utils/mediaRefs');
 const { transcribeLimits, transcribeRateLimit } = require('../utils/aiBudget');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -61,7 +62,7 @@ router.post('/', transcribeRateLimit, upload.single('audio'), async (req, res) =
       userId: req.userId,
     });
 
-    return res.status(201).json({ transcript, lead: newLead });
+    return res.status(201).json({ transcript, lead: publicLead(newLead) });
   } catch (err) {
     // Clean up the upload whichever name it has
     try { fs.unlinkSync(filePath); } catch {}

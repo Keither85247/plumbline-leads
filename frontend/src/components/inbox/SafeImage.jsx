@@ -26,7 +26,7 @@
 // <img>. All other props pass through (loading, draggable, onClick, etc).
 import { useEffect, useState } from 'react';
 
-export default function SafeImage({ src, alt = '', className = '', ...imgProps }) {
+export default function SafeImage({ src, alt = '', className = '', onLoadError, ...imgProps }) {
   // 'loading' | 'loaded' | 'error'
   const [status, setStatus] = useState('loading');
 
@@ -58,7 +58,7 @@ export default function SafeImage({ src, alt = '', className = '', ...imgProps }
       // Async decode prevents partial-decode paint on mobile webviews.
       decoding="async"
       onLoad={() => setStatus('loaded')}
-      onError={() => setStatus('error')}
+      onError={(e) => { setStatus('error'); onLoadError?.(e); }}
       // opacity-0 until decoded — the wrapping element's bg shows the
       // skeleton. transition-opacity smooths the reveal so the image
       // doesn't pop in jarringly.

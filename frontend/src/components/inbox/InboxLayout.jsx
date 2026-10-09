@@ -6,9 +6,9 @@ import NewMessageModal from './NewMessageModal';
 import { getConversations, getMessageThread, sendMessage, markMessagesRead, deleteConversation } from '../../api';
 import { translations } from '../../i18n';
 
-// Revoke any blob: URLs owned by an optimistic message. Server URLs (e.g.
-// /api/messages/media/...) are skipped, so this is always safe to call on
-// any message shape — including server-only rows that have media_urls.
+// Revoke any blob: URLs owned by an optimistic message. Server entries (opaque
+// "media:N" markers, loaded via media tickets) are skipped, so this is always
+// safe to call on any message shape — including server rows with media_urls.
 //
 // media_urls is stored as a JSON string in the DB / API but our optimistic
 // path also writes it as the same JSON string format, so a single parse

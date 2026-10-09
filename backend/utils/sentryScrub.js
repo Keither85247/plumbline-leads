@@ -52,13 +52,18 @@ function scrubBreadcrumb(b) {
 function sentryPrivacyOptions(Sentry) {
   return {
     sendDefaultPii: false,
+    // No sentry-trace / baggage headers on outbound requests (Twilio, Google, …).
+    tracePropagationTargets: [],
     integrations: [
       Sentry.requestDataIntegration({ include: { cookies: false, data: false, headers: false, query_string: false, ip: false } }),
       Sentry.httpIntegration({
         maxIncomingRequestBodySize: 'none',
         // OAuth endpoints carry codes, state, tickets and handles: never traced.
         ignoreIncomingRequests: (urlPath) => typeof urlPath === 'string' && urlPath.startsWith('/auth/'),
-        ignoreOutgoingRequests: (url) => typeof url === 'string' && /(^|\/\/)(oauth2\.googleapis\.com|accounts\.google\.com)/.test(url),
+        // Google OAuth and Twilio media/recording fetches: their paths carry
+        // account / message / recording identifiers — never traced.
+        ignoreOutgoingRequests: (url) => typeof url === 'string'
+          && /(^|\/\/)(oauth2\.googleapis\.com|accounts\.google\.com|api\.twilio\.com|[a-z0-9-]+\.twiliocdn\.com|s3-external-1\.amazonaws\.com)([:/]|$)/i.test(url),
       }),
     ],
     beforeSend: scrubEvent,

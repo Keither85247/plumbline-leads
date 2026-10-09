@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const log = require('../logger').for('Twilio');
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -16,7 +15,10 @@ const { getDataDir } = require('../utils/dataDir');
 const verifyTwilioSignature = require('../middleware/verifyTwilioSignature');
 const requireAuth = require('../middleware/requireAuth');
 const requireOwner = require('../middleware/requireOwner');
-const { resolveSafeRecordingUrl } = require('../utils/twilioRecording');
+const { resolveSafeRecordingUrl, isTwilioApiUrl, isTwilioMediaRedirect } = require('../utils/twilioRecording');
+const { safeGet } = require('../utils/safeFetch');
+const { parseRange, fileRange } = require('../utils/httpRange');
+const crypto = require('crypto');
 const { isAccountActive } = require('../utils/accountStatus');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -121,44 +123,54 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// `safeUrl` MUST already have passed resolveSafeRecordingUrl — this function
-// attaches Twilio Basic credentials, so it must only ever be handed a URL
-// proven to point at api.twilio.com for the configured account. We assert https
-// as a second belt: the validator guarantees it, and node's http/https .get
-// does NOT follow redirects, so credentials can never be re-sent to a 3xx
-// Location target (a non-200/redirect is simply treated as a failed attempt).
-function attemptDownload(safeUrl, destPath) {
+// `safeUrl` MUST already have passed resolveSafeRecordingUrl. The download goes
+// through the host-pinned client (utils/safeFetch.js): credentials are sent to
+// api.twilio.com only (DNS-vetted, connection pinned), and Twilio's one CDN
+// redirect, if any, is followed WITHOUT credentials. Neither the URL nor the
+// credentials are ever logged.
+const MAX_RECORDING_BYTES = 50 * 1024 * 1024;
+async function attemptDownload(safeUrl, destPath) {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
+  if (!accountSid || !authToken) throw new Error('twilio credentials not configured');
 
-  if (!accountSid || !authToken) {
-    return Promise.reject(new Error('TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN is not set in .env'));
-  }
-  if (!safeUrl.startsWith('https://')) {
-    return Promise.reject(new Error('refusing to attach credentials to non-https url'));
-  }
-
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destPath);
-    const credentials = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
-
-    const options = { headers: { Authorization: `Basic ${credentials}` } };
-
-    https.get(safeUrl, options, (res) => {
-      if (res.statusCode !== 200) {
-        // Includes 3xx redirects — we never follow them, so credentials are
-        // never forwarded to a redirect target.
-        res.resume();
-        file.close(() => { try { fs.unlinkSync(destPath); } catch {} });
-        return reject(new Error(`HTTP ${res.statusCode}`));
-      }
-      res.pipe(file);
-      file.on('finish', () => file.close(() => resolve(destPath)));
-    }).on('error', (err) => {
-      file.close(() => { try { fs.unlinkSync(destPath); } catch {} });
-      reject(err);
-    });
+  const res = await safeGet(safeUrl, {
+    headers: { Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}` },
+    isAllowed: isTwilioApiUrl,
+    redirect: { max: 1, isAllowed: isTwilioMediaRedirect },
+    timeoutMs: 30_000,
   });
+  if (res.statusCode !== 200) {
+    res.resume();
+    throw new Error(`HTTP ${res.statusCode}`);
+  }
+  await new Promise((resolve, reject) => {
+    // 'wx': never overwrite — the path is a fresh random name (see tempAudioPath).
+    const file = fs.createWriteStream(destPath, { flags: 'wx', mode: 0o600 });
+    let bytes = 0;
+    let failed = false;
+    // Remove the partial file only once the stream has closed (it may not
+    // have been opened yet), so a retry never meets a stale file.
+    const fail = (err) => {
+      if (failed) return;
+      failed = true;
+      res.destroy();
+      file.once('close', () => fs.unlink(destPath, () => {}));
+      file.destroy();
+      reject(err);
+    };
+    res.on('data', (chunk) => { bytes += chunk.length; if (bytes > MAX_RECORDING_BYTES) fail(new Error('too large')); });
+    res.on('error', fail);
+    file.on('error', fail);
+    file.on('finish', resolve);
+    res.pipe(file);
+  });
+  return destPath;
+}
+
+/** A fresh, unguessable temp path per download (no cross-call collisions). */
+function tempAudioPath(prefix) {
+  return path.join(os.tmpdir(), `${prefix}-${crypto.randomBytes(16).toString('hex')}.mp3`);
 }
 
 // Twilio occasionally returns 404 right after the webhook fires because
@@ -170,19 +182,19 @@ async function downloadToTemp(safeUrl, destPath) {
   let lastError;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    log.info(`Recording download attempt ${attempt}/${MAX_ATTEMPTS}`, { url: safeUrl });
+    log.info(`Recording download attempt ${attempt}/${MAX_ATTEMPTS}`);
     try {
       await attemptDownload(safeUrl, destPath);
       log.info(`Recording download succeeded`, { attempt });
       return destPath;
     } catch (err) {
       lastError = err;
-      log.warn(`Recording download attempt ${attempt} failed`, { err: err.message });
+      log.warn(`Recording download attempt ${attempt} failed`, { err: err.code || err.message });
       if (attempt < MAX_ATTEMPTS) await sleep(RETRY_DELAY_MS);
     }
   }
 
-  log.error(`All ${MAX_ATTEMPTS} download attempts failed`, { err: lastError.message });
+  log.error(`All ${MAX_ATTEMPTS} download attempts failed`, { err: lastError.code || lastError.message });
   throw lastError;
 }
 
@@ -238,19 +250,22 @@ router.get('/voicemail-audio', (req, res) => {
   // Private cache only — tokens rotate, never let an intermediary share them
   res.setHeader('Cache-Control', 'private, max-age=300');
 
-  const rangeHeader = req.headers['range'];
-  if (rangeHeader) {
-    const parts = rangeHeader.replace(/bytes=/, '').split('-');
-    const start = parseInt(parts[0], 10) || 0;
-    const end   = parts[1] !== '' ? parseInt(parts[1], 10) : total - 1;
-    res.setHeader('Content-Range',  `bytes ${start}-${end}/${total}`);
-    res.setHeader('Content-Length', end - start + 1);
-    res.status(206);
-    fs.createReadStream(filepath, { start, end }).pipe(res);
-  } else {
-    res.setHeader('Content-Length', total);
-    fs.createReadStream(filepath).pipe(res);
+  // Single, bounded ranges only; malformed → whole file; unsatisfiable → 416.
+  const r = fileRange(parseRange(req.headers['range']), total);
+  if (r.unsatisfiable) {
+    res.status(416).setHeader('Content-Range', `bytes */${total}`);
+    return res.end();
   }
+  if (r.status === 206) {
+    res.setHeader('Content-Range', `bytes ${r.start}-${r.end}/${total}`);
+    res.status(206);
+  }
+  res.setHeader('Content-Length', total === 0 ? 0 : r.end - r.start + 1);
+  if (total === 0) return res.end();
+  const stream = fs.createReadStream(filepath, { start: r.start, end: r.end });
+  stream.on('error', () => res.destroy());
+  res.on('close', () => stream.destroy());      // client aborted: release the fd
+  stream.pipe(res);
 });
 
 // ---------------------------------------------------------------------------
@@ -558,7 +573,7 @@ router.post('/voicemail', express.urlencoded({ extended: true }), verifyTwilioSi
 
   log.info('Voicemail received', { from: From || 'unknown', userId });
 
-  const tempPath = path.join(os.tmpdir(), `twilio-vm-${Date.now()}.mp3`);
+  const tempPath = tempAudioPath('twilio-vm');
 
   try {
     await downloadToTemp(safeUrl, tempPath);
@@ -657,7 +672,7 @@ router.post('/recording', express.urlencoded({ extended: true }), verifyTwilioSi
   }
   const fromNumber = callRow.from_number || null;
 
-  const tempPath = path.join(os.tmpdir(), `twilio-call-${Date.now()}.mp3`);
+  const tempPath = tempAudioPath('twilio-call');
 
   try {
     await downloadToTemp(safeUrl, tempPath);
