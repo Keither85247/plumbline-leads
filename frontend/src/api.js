@@ -73,9 +73,11 @@ import * as Sentry from '@sentry/react';
  * Callers that need to react (e.g. polling loops) catch this and clear auth state.
  */
 export class AuthError extends Error {
-  constructor() {
+  /** @param {string|null} code  server reason, e.g. 'ACCOUNT_DISABLED' */
+  constructor(code = null) {
     super('Session expired or not authenticated');
     this.name = 'AuthError';
+    this.code = code;
   }
 }
 
@@ -125,7 +127,14 @@ async function apiFetch(url, options = {}) {
   // 401 = auth state (not logged in / session expired).
   // This is never a bug — throw a typed error so callers can detect it,
   // but do NOT report it to Sentry.
-  if (res.status === 401) throw new AuthError();
+  if (res.status === 401) {
+    // Keep the server's reason (e.g. ACCOUNT_DISABLED, sent only on the first
+    // request after a suspension) so the app can say why it signed out.
+    let code = null;
+    try { code = (await res.clone().json())?.code || null; } catch { /* no JSON body */ }
+    if (code === 'ACCOUNT_DISABLED') accountDisabled = true;
+    throw new AuthError(typeof code === 'string' ? code : null);
+  }
 
   if (!res.ok && !skipSentryOn.includes(res.status)) {
     Sentry.captureException(
@@ -138,12 +147,108 @@ async function apiFetch(url, options = {}) {
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
+const TOKEN_KEY = 'plumbline_token';
+// Set when a sign-out could not be confirmed by the server: the httpOnly
+// session cookie may still be valid, so the app must not resume that session
+// on its own (it retries the sign-out instead). Holds no credential.
+const LOGOUT_PENDING_KEY = 'plumbline_logout_pending';
+const LOGOUT_TIMEOUT_MS = 8000;
+// Bumped by every sign-in: a sign-out that finishes after a newer sign-in
+// must not touch that sign-in's credentials.
+let authEpoch = 0;
+// After a sign-out the server could not confirm, the old session's token is
+// kept IN MEMORY ONLY (never storage, never attached to other requests) so
+// "Try again" on this page can still present it — on Safari the cookie is
+// not sent, so without it the server could never end that session.
+let retryCredential = null;
+// A 401 that said ACCOUNT_DISABLED — from ANY request — so the app can say why
+// it signed out even when that request was not the one that noticed. Cleared
+// by the next sign-in.
+let accountDisabled = false;
+// The sign-out request in flight, if any: a sign-in waits for it, so that
+// response's cleared cookie can never land after the new sign-in's cookie.
+let inflightLogout = null;
+
+/**
+ * Keep a fresh session's raw token (the server returns it exactly once) for
+ * the Safari ITP Bearer fallback, and hand the caller the user WITHOUT it, so
+ * the credential never sits in React state or anywhere else.
+ */
+function acceptSession(data) {
+  const { token, ...user } = data || {};
+  authEpoch += 1;
+  accountDisabled = false;
+  // A previous sign-out the server never confirmed: end that old session now
+  // (best effort; it stays in memory for another try if this fails).
+  endOrphanedSession();
+  try {
+    if (typeof token === 'string' && token) localStorage.setItem(TOKEN_KEY, token);
+    localStorage.removeItem(LOGOUT_PENDING_KEY);
+  } catch { /* no storage: the cookie still works */ }
+  return user;
+}
+
+/**
+ * End a session whose sign-out the server never confirmed, presenting ONLY its
+ * own token (no cookies, which may belong to a newer sign-in). On failure the
+ * token stays in page memory for the next attempt; it is never stored.
+ * @returns {Promise<boolean>} true when there is nothing left to end
+ */
+export async function endOrphanedSession() {
+  const old = retryCredential;
+  if (!old) return true;
+  retryCredential = null;
+  try {
+    const res = await globalThis.fetch(`${AUTH_BASE}/logout`, {
+      method: 'POST', credentials: 'omit',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${old}` }, body: '{}',
+    });
+    if (res.ok) return true;
+  } catch { /* offline */ }
+  if (!retryCredential) retryCredential = old;
+  return false;
+}
+
+/** True once any request this sign-in made was refused as ACCOUNT_DISABLED. */
+export function accountDisabledSeen() { return accountDisabled; }
+
+/** Remove every local credential and per-session state (idempotent). */
+export function clearLocalAuth() {
+  try { localStorage.removeItem(TOKEN_KEY); } catch { /* no storage */ }
+  accountDisabled = false;
+  clearMediaCache();
+}
+
+/**
+ * True while a sign-out still awaits confirmation from the server. A marker
+ * found next to a stored token is stale (a newer sign-in happened, e.g. in
+ * another tab or an older app version) and is discarded — it must never end
+ * that newer session.
+ */
+export function hasPendingLogout() {
+  try {
+    if (!localStorage.getItem(LOGOUT_PENDING_KEY)) return false;
+    if (localStorage.getItem(TOKEN_KEY)) { localStorage.removeItem(LOGOUT_PENDING_KEY); return false; }
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * Record a sign-out whose reply will not be seen. kind 'unload': it was sent
+ * while the page closed, carrying the token itself; a later retry that finds
+ * nothing left to present is then settled quietly.
+ */
+export function markLogoutPending(kind = '1') {
+  try { localStorage.setItem(LOGOUT_PENDING_KEY, kind); } catch { /* no storage */ }
+}
+
 /**
  * Log in with email + password.
  * On success the backend sets an httpOnly session cookie — no token to store.
  * @returns {{ id: number, email: string, display_name: string }}
  */
 export async function login(email, password) {
+  if (inflightLogout) await inflightLogout.catch(() => {});
   try {
     const res = await apiFetch(`${AUTH_BASE}/login`, {
       method:  'POST',
@@ -156,10 +261,7 @@ export async function login(email, password) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'Login failed');
     }
-    const user = await res.json();
-    // Store token for Safari ITP fallback (cookie blocked on cross-origin requests)
-    if (user.token) localStorage.setItem('plumbline_token', user.token);
-    return user;
+    return acceptSession(await res.json());
   } catch (err) {
     // 401 from /auth/login = wrong email or password, not a session expiry event.
     // Translate to a human-readable message rather than letting AuthError surface.
@@ -174,6 +276,7 @@ export async function login(email, password) {
  * @returns {{ id, email, display_name, is_owner, token, assignedNumber }}
  */
 export async function register({ email, password, displayName, businessName }) {
+  if (inflightLogout) await inflightLogout.catch(() => {});
   try {
     const res = await apiFetch(`${AUTH_BASE}/register`, {
       method:  'POST',
@@ -189,9 +292,7 @@ export async function register({ email, password, displayName, businessName }) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'Sign up failed');
     }
-    const user = await res.json();
-    if (user.token) localStorage.setItem('plumbline_token', user.token);
-    return user;
+    return acceptSession(await res.json());
   } catch (err) {
     if (err instanceof AuthError) throw new Error('Sign up failed. Please try again.');
     throw err;
@@ -213,9 +314,35 @@ export async function activateTesterBypass() {
 }
 
 /**
- * Log out — deletes the server-side session and clears the cookie.
+ * Log out — asks the server to delete the session (and this device's push
+ * registration) and clear the cookie, then ALWAYS clears local credentials,
+ * whatever the outcome.
+ *
+ * Never pretends. Resolves { serverConfirmed, unverifiable }:
+ *   serverConfirmed — the server processed this device's credential (a 2xx
+ *     with presented > 0; a credential it no longer knows is already signed
+ *     out there).
+ *   unverifiable    — the server was reached but received no credential at all
+ *     (the token is gone and the cookie is not sent, e.g. Safari after a
+ *     reload), so nothing more can be done from this device; the old session
+ *     simply expires. No retry is scheduled.
+ *   otherwise       — unreachable (network error, timeout, 5xx): unless
+ *     `markPendingOnFailure` is false (forced sign-outs, where the server has
+ *     already ended the session) a pending sign-out is recorded, so the app
+ *     retries it instead of resuming the session from its cookie.
  */
-export async function logout() {
+export function logout(opts) {
+  const p = doLogout(opts);
+  inflightLogout = p;
+  p.finally(() => { if (inflightLogout === p) inflightLogout = null; }).catch(() => {});
+  return p;
+}
+
+async function doLogout({ markPendingOnFailure = true } = {}) {
+  const epoch = authEpoch;
+  let stored = null;
+  try { stored = localStorage.getItem(TOKEN_KEY); } catch { /* no storage */ }
+  const credential = stored || retryCredential;
   // Identify THIS device's push registration so the backend can remove it —
   // otherwise the device keeps receiving the account's notifications.
   let webSub = null;
@@ -230,13 +357,60 @@ export async function logout() {
   // deletes the session AND this device's push rows, THEN clear localStorage
   // so Safari cleans up too. The browser subscription itself is kept; the
   // next sign-in re-binds it to that account (usePushNotifications).
-  await apiFetch(`${AUTH_BASE}/logout`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pushEndpoint: webSub?.endpoint, fcmToken }),
-  }).catch(() => {});
-  localStorage.removeItem('plumbline_token');
-  clearMediaCache();
+  let outcome = 'unreachable';   // 'confirmed' | 'unverifiable' | 'unreachable'
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), LOGOUT_TIMEOUT_MS) : null;
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    // apiFetch attaches the stored token itself; a retry presents the
+    // in-memory credential instead.
+    if (!stored && credential) headers.Authorization = `Bearer ${credential}`;
+    const res = await apiFetch(`${AUTH_BASE}/logout`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ pushEndpoint: webSub?.endpoint, fcmToken }),
+      ...(ctl ? { signal: ctl.signal } : {}),
+      skipSentryOn: [502, 503, 504],
+    });
+    if (res.ok) {
+      const body = await res.json().catch(() => ({}));
+      // A reply without the count (an older server) only confirms what this
+      // request itself presented.
+      outcome = typeof body?.presented === 'number'
+        ? (body.presented === 0 ? 'unverifiable' : 'confirmed')
+        : (credential ? 'confirmed' : 'unverifiable');
+    }
+  } catch (err) {
+    if (err instanceof AuthError) outcome = 'confirmed';   // no such session on the server
+  } finally {
+    clearTimeout(timer);
+  }
+  // Signed in again while this was in flight (here or in another tab): the
+  // new sign-in is not ours to clear.
+  let now = null;
+  try { now = localStorage.getItem(TOKEN_KEY); } catch { /* no storage */ }
+  if (epoch !== authEpoch || (now && now !== stored)) {
+    return { serverConfirmed: outcome === 'confirmed', unverifiable: false, superseded: true };
+  }
+  clearLocalAuth();
+  retryCredential = outcome === 'unreachable' && markPendingOnFailure ? credential : null;
+  try {
+    if (outcome === 'unreachable' && markPendingOnFailure) localStorage.setItem(LOGOUT_PENDING_KEY, '1');
+    else localStorage.removeItem(LOGOUT_PENDING_KEY);
+  } catch { /* no storage */ }
+  return { serverConfirmed: outcome === 'confirmed', unverifiable: outcome === 'unverifiable' };
+}
+
+/**
+ * Retry a sign-out the server never confirmed (presents the in-memory token,
+ * or the session cookie). quiet: an unload-time sign-out already carried the
+ * token, so finding nothing left to present needs no notice.
+ */
+export async function retryPendingLogout() {
+  let kind = null;
+  try { kind = localStorage.getItem(LOGOUT_PENDING_KEY); } catch { /* no storage */ }
+  const result = await logout();
+  return kind === 'unload' && result.unverifiable ? { ...result, quiet: true } : result;
 }
 
 /**
@@ -754,6 +928,7 @@ const MEDIA_BATCH_MAX = 20;
 const mediaCache = new Map();   // key → { url, at }
 let mediaQueue = [];
 let mediaTimer = null;
+let mediaEpoch = 0;             // bumped on sign-out: late batches are discarded
 
 const mediaKey = (kind, id, part) => `${kind}:${id ?? ''}:${part}`;
 
@@ -762,6 +937,7 @@ async function flushMediaQueue() {
   const batch = mediaQueue.splice(0, MEDIA_BATCH_MAX);
   if (mediaQueue.length) mediaTimer = setTimeout(flushMediaQueue, 0);
   if (!batch.length) return;
+  const epoch = mediaEpoch;
   let tickets = [];
   try {
     const res = await apiFetch(`${API_BASE}/media/tickets`, {
@@ -773,6 +949,7 @@ async function flushMediaQueue() {
     const data = res.ok ? await res.json().catch(() => ({})) : {};
     if (Array.isArray(data.tickets)) tickets = data.tickets;
   } catch { /* signed out or offline → no URL */ }
+  if (epoch !== mediaEpoch) { batch.forEach(b => b.resolve(null)); return; }   // signed out meanwhile
   batch.forEach((b, i) => {
     const t = typeof tickets[i] === 'string' && /^[A-Za-z0-9_-]{43}$/.test(tickets[i]) ? tickets[i] : null;
     const url = t ? `${API_BASE}/media/stream?mt=${t}` : null;
@@ -798,8 +975,16 @@ export function requestMediaUrl(kind, id, part = 0, { fresh = false } = {}) {
   });
 }
 
-/** Forget cached media URLs (e.g. on sign-out). */
-export function clearMediaCache() { mediaCache.clear(); }
+/** Forget cached media URLs and drop queued / in-flight requests (sign-out). */
+export function clearMediaCache() {
+  mediaEpoch += 1;
+  mediaCache.clear();
+  clearTimeout(mediaTimer);
+  mediaTimer = null;
+  const dropped = mediaQueue;
+  mediaQueue = [];
+  dropped.forEach(b => b.resolve(null));
+}
 
 // ── Web Push ──────────────────────────────────────────────────────────────────
 

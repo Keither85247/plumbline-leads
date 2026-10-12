@@ -29,6 +29,15 @@ export function isMicPermissionError(err) {
   return /PermissionDeniedError|NotAllowedError|Permission denied|denied permission to user media|microphone (access|permission)/i.test(msg);
 }
 
+/** The voice token request was refused because the session is gone (401). */
+export class VoiceAuthError extends Error {
+  /** @param {string|null} code  server reason, e.g. 'ACCOUNT_DISABLED' */
+  constructor(code = null) { super('Session ended'); this.name = 'VoiceAuthError'; this.code = code; }
+}
+
+// Returns { token, identity } — the identity is checked against the account
+// the device is being built for, so a token minted for another account (a
+// sign-in that changed underneath us) is never used.
 async function fetchToken() {
   const storedToken = typeof localStorage !== 'undefined'
     ? localStorage.getItem('plumbline_token')
@@ -40,15 +49,35 @@ async function fetchToken() {
     credentials: 'include',
     headers,
   });
+  if (res.status === 401) {
+    const body = await res.json().catch(() => ({}));
+    throw new VoiceAuthError(typeof body?.code === 'string' ? body.code : null);
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to fetch voice token');
   }
-  const { token } = await res.json();
-  return token;
+  const { token, identity } = await res.json();
+  return { token, identity };
 }
 
-export function useVoiceDevice() {
+const identityFor = (userId) => `user_${userId}`;
+
+/**
+ * Twilio Voice for the signed-in account.
+ *
+ * The Device lives only as long as the sign-in that created it:
+ *   initialize(userId) builds a Device registered as client:user_<userId>
+ *     (tearing down any Device of a different account first), and
+ *   teardown(reason) destroys it — rejecting/ending calls, stopping alerts,
+ *     removing the visibility/focus/ringtone listeners, cancelling pending
+ *     refresh work and timers, and forgetting the identity. Idempotent and
+ *     safe at any point, including mid-initialization.
+ * Every async path re-checks a generation counter after each await, so work
+ * started for one sign-in can never build or update a Device after teardown.
+ * A 401 on the voice token calls onAuthLost (the session ended server-side).
+ */
+export function useVoiceDevice({ onAuthLost } = {}) {
   // status: 'idle' | 'registering' | 'ready' | 'incoming' | 'dialing' | 'ringing' | 'connected' | 'ended' | 'failed'
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState(null);
@@ -81,6 +110,27 @@ export function useVoiceDevice() {
 
   const deviceRef   = useRef(null);
   const ringtoneRef = useRef(null);
+
+  // ── Session binding ────────────────────────────────────────────────────────
+  // generationRef: bumped by every teardown; async work and device events
+  //   that belong to an older generation are ignored.
+  // activeUserIdRef: the account voice is currently enabled for (null = off).
+  // deviceUserIdRef: the account the current Device was built for.
+  // voiceActive: drives the visibility/focus listeners (attached only while on).
+  const generationRef   = useRef(0);
+  const activeUserIdRef = useRef(null);
+  const deviceUserIdRef = useRef(null);
+  const timersRef       = useRef(new Set());
+  const unlockRef       = useRef(null);
+  const onAuthLostRef   = useRef(onAuthLost);
+  onAuthLostRef.current = onAuthLost;
+  const [voiceActive, setVoiceActive] = useState(false);
+
+  function later(fn, ms) {
+    const id = setTimeout(() => { timersRef.current.delete(id); fn(); }, ms);
+    timersRef.current.add(id);
+    return id;
+  }
 
   // True while a token refresh / device reinit is in flight. Used to
   // dedupe concurrent triggers (tokenWillExpire + visibilitychange + focus
@@ -116,6 +166,7 @@ export function useVoiceDevice() {
   const titleTimerRef    = useRef(null);
 
   function startTitleFlash(from) {
+    clearInterval(titleTimerRef.current);
     const alert = `📞 ${from || 'Incoming call'}`;
     let on = true;
     titleTimerRef.current = setInterval(() => {
@@ -189,6 +240,10 @@ export function useVoiceDevice() {
   //     is traceable end-to-end in production logs.
   function wireCallEvents(call, { isInbound = false, phone = null } = {}) {
     const MIN_REAL_CALL_MS = 3000;
+    // A call outlives nothing: once voice is torn down (sign-out or account
+    // change) its late events must not log it or prompt under another account.
+    const generation = generationRef.current;
+    const stale = () => generation !== generationRef.current;
     // Captured in closure so the disconnect handler can compute call duration
     // without racing the React state setter for `status`.
     let acceptedAt = null;
@@ -209,6 +264,7 @@ export function useVoiceDevice() {
     });
 
     call.on('ringing', (hasEarlyMedia) => {
+      if (stale()) return;
       console.log('[VoiceDevice] Event: ringing', {
         callSid: initialCallSid,
         hasEarlyMedia,
@@ -218,6 +274,7 @@ export function useVoiceDevice() {
     });
 
     call.on('accept', () => {
+      if (stale()) return;
       acceptedAt = Date.now();
       console.log('[VoiceDevice] Event: accept (call truly connected)', {
         callSid: initialCallSid,
@@ -234,6 +291,7 @@ export function useVoiceDevice() {
     });
 
     call.on('disconnect', () => {
+      if (stale()) return;
       const disconnectedAt = Date.now();
       const duration = acceptedAt ? disconnectedAt - acceptedAt : 0;
       const reallyConnected = acceptedAt !== null && duration >= MIN_REAL_CALL_MS;
@@ -311,10 +369,11 @@ export function useVoiceDevice() {
       }
 
       // Brief "ended" display, then back to ready
-      setTimeout(() => setStatus(deviceRef.current ? 'ready' : 'idle'), 1500);
+      later(() => setStatus(deviceRef.current ? 'ready' : 'idle'), 1500);
     });
 
     call.on('cancel', () => {
+      if (stale()) return;
       console.log('[VoiceDevice] Event: cancel', {
         callSid: initialCallSid,
         acceptedAt,
@@ -329,6 +388,7 @@ export function useVoiceDevice() {
     });
 
     call.on('error', (err) => {
+      if (stale()) return;
       stopAllAlerts();
       console.error('[VoiceDevice] Event: error', {
         callSid: initialCallSid,
@@ -362,19 +422,25 @@ export function useVoiceDevice() {
   // include the proper Twilio-SDK token-lifecycle hooks (tokenWillExpire +
   // error code 20104) so we no longer rely on a brittle setTimeout that
   // gets throttled while the app is backgrounded.
-  const createDevice = useCallback((token) => {
+  const createDevice = useCallback((token, userId) => {
     const device = new Device(token, {
       logLevel: 'debug',
       codecPreferences: ['opus', 'pcmu'],
     });
+    // Events from a Device that is no longer THE device (replaced during
+    // recovery, or torn down — destroy() emits 'unregistered' synchronously)
+    // are ignored: they must never start recovery or touch call state.
+    const current = () => deviceRef.current === device;
 
     device.on('registered', () => {
+      if (!current()) return;
       console.log('[VoiceDevice] Registered — ready for calls');
       setError(null);   // clear any stale reconnect error
       setStatus('ready');
     });
 
     device.on('unregistered', () => {
+      if (!current()) return;
       console.log('[VoiceDevice] Unregistered', { destroyingByUs: destroyingRef.current });
       // If WE triggered the destroy (recovery, unmount), the SDK fires this
       // as part of the teardown — no recovery needed; the new device's
@@ -395,6 +461,7 @@ export function useVoiceDevice() {
     // restored, so we recover immediately rather than waiting for the user
     // to attempt a call and hit a 31009.
     device.on('offline', () => {
+      if (!current()) return;
       console.warn('[VoiceDevice] Event: offline — websocket transport lost');
       if (destroyingRef.current) return;  // our own destroy fires offline too
       setStatus('registering');
@@ -407,11 +474,13 @@ export function useVoiceDevice() {
     // (the SDK fires it as soon as the page is foregrounded if the time
     // has already passed).
     device.on('tokenWillExpire', () => {
+      if (!current()) return;
       console.log('[VoiceDevice] tokenWillExpire — refreshing');
       refreshVoiceSession('token_will_expire');
     });
 
     device.on('error', (err) => {
+      if (!current()) return;
       console.error('[VoiceDevice] Device error', {
         code: err.code,
         message: err.message,
@@ -448,6 +517,7 @@ export function useVoiceDevice() {
     });
 
     device.on('incoming', (call) => {
+      if (!current() || activeUserIdRef.current === null) { try { call.reject(); } catch { /* gone */ } return; }
       const from = call.parameters?.From || call.customParameters?.get('From') || 'Unknown';
       console.log('[VoiceDevice] Incoming call from:', from);
       setRemoteIdentity(from);
@@ -459,10 +529,63 @@ export function useVoiceDevice() {
       wireCallEvents(call, { isInbound: true, phone: from });
     });
 
-    device.register();
+    deviceRef.current = device;
+    deviceUserIdRef.current = userId;
+    Promise.resolve(device.register()).catch((err) => {
+      console.warn('[VoiceDevice] register() rejected', { code: err?.code });
+    });
     return device;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Teardown ───────────────────────────────────────────────────────────────
+  // The single way voice ends. Idempotent: safe to call repeatedly, with no
+  // Device, or while initialize/refresh/recover is awaiting a token (their
+  // results are discarded by the generation check).
+  const teardown = useCallback((reason = 'teardown') => {
+    generationRef.current += 1;
+    activeUserIdRef.current = null;
+    refreshingRef.current = false;
+    callInFlightRef.current = false;
+    transportErrorWindowRef.current = [];
+    stopAllAlerts();
+    for (const id of timersRef.current) clearTimeout(id);
+    timersRef.current.clear();
+    if (unlockRef.current) {
+      document.removeEventListener('touchstart', unlockRef.current, { capture: true });
+      document.removeEventListener('click', unlockRef.current, { capture: true });
+      unlockRef.current = null;
+    }
+    const device = deviceRef.current;
+    deviceRef.current = null;          // before destroy(): its events are now stale
+    deviceUserIdRef.current = null;
+    if (device) {
+      destroyingRef.current = true;
+      try { device.destroy(); } catch (e) {
+        console.warn('[VoiceDevice] destroy() threw during teardown', { err: e?.message });
+      } finally {
+        destroyingRef.current = false;
+      }
+    }
+    ringtoneRef.current = null;
+    setVoiceActive(false);
+    setStatus('idle');
+    setError(null);
+    setIncomingCall(null);
+    setActiveCall(null);
+    setRemoteIdentity(null);
+    setPendingPostCallNote(null);
+    setMicBlockedState(false);
+    console.log('[VoiceDevice] teardown', { reason, hadDevice: !!device });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The session behind the voice token is gone: tear down and tell the app
+  // (with the server's reason, e.g. ACCOUNT_DISABLED).
+  const authLost = useCallback((err) => {
+    teardown('voice_token_401');
+    onAuthLostRef.current?.(err?.code || null);
+  }, [teardown]);
 
   // HARD recovery — always destroys + recreates the Twilio Device. Used for
   // transport-level failures where updateToken cannot help:
@@ -483,6 +606,8 @@ export function useVoiceDevice() {
   // tap Retry; that bypasses the burst guard because it goes through the
   // same function but with `reason='manual_retry'` which we always honour.
   const recoverVoiceTransport = useCallback(async (reason) => {
+    const userId = activeUserIdRef.current;
+    if (userId === null) return;            // voice is off (signed out)
     if (refreshingRef.current) {
       console.log('[VoiceDevice] recover already in flight — skipping', { reason });
       return;
@@ -514,11 +639,14 @@ export function useVoiceDevice() {
     }
 
     refreshingRef.current = true;
+    const generation = generationRef.current;
     console.log('[VoiceDevice] recoverVoiceTransport start', { reason });
     setStatus('registering');
 
     try {
-      const token = await fetchToken();
+      const { token, identity } = await fetchToken();
+      if (generation !== generationRef.current) return;      // torn down meanwhile
+      if (identity !== identityFor(userId)) throw new Error('Voice session belongs to another account');
 
       if (deviceRef.current) {
         try {
@@ -532,18 +660,20 @@ export function useVoiceDevice() {
         deviceRef.current = null;
       }
 
-      deviceRef.current = createDevice(token);
+      createDevice(token, userId);
       setError(null);
       console.log('[VoiceDevice] transport restored', { reason });
       // status flips to 'ready' via the new device's 'registered' event
     } catch (err) {
+      if (generation !== generationRef.current) return;
+      if (err instanceof VoiceAuthError) { authLost(err); return; }
       console.error('[VoiceDevice] recoverVoiceTransport failed', { reason, err: err.message });
       setError(err.message);
       setStatus('failed');
     } finally {
-      refreshingRef.current = false;
+      if (generation === generationRef.current) refreshingRef.current = false;
     }
-  }, [createDevice]);
+  }, [createDevice, authLost]);
 
   // SOFT refresh — token-only path. All token-related triggers
   // (tokenWillExpire, error 20104, visibilitychange→visible, window focus)
@@ -556,6 +686,8 @@ export function useVoiceDevice() {
   // a long background and the websocket is dead, in which case updateToken
   // alone wouldn't fix anything.
   const refreshVoiceSession = useCallback(async (reason) => {
+    const userId = activeUserIdRef.current;
+    if (userId === null) return;            // voice is off (signed out)
     if (refreshingRef.current) {
       console.log('[VoiceDevice] refresh already in flight — skipping', { reason });
       return;
@@ -581,13 +713,28 @@ export function useVoiceDevice() {
       return recoverVoiceTransport(`promoted_${reason}`);
     }
 
+    const generation = generationRef.current;
     try {
-      const newToken = await fetchToken();
+      const { token: newToken, identity } = await fetchToken();
+      if (generation !== generationRef.current) return;      // torn down meanwhile
+      if (identity !== identityFor(userId)) throw new Error('Voice session belongs to another account');
+
+      if (deviceRef.current && deviceUserIdRef.current !== userId) {
+        // Never re-point a Device at another identity with updateToken():
+        // rebuild it (teardown already does this on an account change).
+        destroyingRef.current = true;
+        try { deviceRef.current.destroy(); } catch { /* already gone */ }
+        finally { destroyingRef.current = false; }
+        deviceRef.current = null;
+      }
 
       if (deviceRef.current) {
         try {
           deviceRef.current.updateToken(newToken);
           console.log('[VoiceDevice] updateToken succeeded', { reason });
+          // updateToken does not re-emit 'registered' on a Device that already
+          // is: settle the dialer back to ready ourselves.
+          if (deviceRef.current.state === 'registered' && !callInFlightRef.current) setStatus('ready');
         } catch (updateErr) {
           // If updateToken throws (device in a fatal state, destroyed, etc.),
           // recreate the Device with the fresh token.
@@ -600,25 +747,38 @@ export function useVoiceDevice() {
           } catch {}
           finally { destroyingRef.current = false; }
           deviceRef.current = null;
-          deviceRef.current = createDevice(newToken);
+          createDevice(newToken, userId);
         }
       } else {
-        deviceRef.current = createDevice(newToken);
+        createDevice(newToken, userId);
       }
 
       setError(null);
       // status will move to 'ready' via the device 'registered' event
     } catch (err) {
+      if (generation !== generationRef.current) return;
+      if (err instanceof VoiceAuthError) { authLost(err); return; }
       console.error('[VoiceDevice] refreshVoiceSession failed', { reason, err: err.message });
       setError(err.message);
       setStatus('failed');
     } finally {
-      refreshingRef.current = false;
+      if (generation === generationRef.current) refreshingRef.current = false;
     }
-  }, [createDevice, recoverVoiceTransport]);
+  }, [createDevice, recoverVoiceTransport, authLost]);
 
-  const initialize = useCallback(async () => {
-    if (deviceRef.current) return; // already initialized
+  // Build the Device for `userId` (the signed-in account). A Device or an
+  // initialization in progress for another account is torn down first, so a
+  // new account can never stay registered as the previous client:user_<id>.
+  const initialize = useCallback(async (userId) => {
+    if (userId === null || userId === undefined) return;
+    if (activeUserIdRef.current !== null && activeUserIdRef.current !== userId) teardown('account_changed');
+    else if (deviceRef.current && deviceUserIdRef.current !== userId) teardown('account_changed');
+    if (activeUserIdRef.current === userId) return;   // already on (or starting) for this account
+
+    activeUserIdRef.current = userId;
+    const generation = generationRef.current;
+    refreshingRef.current = true;            // refresh/recover wait for initialization
+    setVoiceActive(true);
     setStatus('registering');
     setError(null);
 
@@ -636,19 +796,31 @@ export function useVoiceDevice() {
       // Fix: on the very next touch or click after init, call play()+pause() to
       // "unlock" the audio element. After that, play() works from any context.
       const unlockRingtone = () => {
+        if (unlockRef.current === unlockRingtone) {
+          document.removeEventListener('touchstart', unlockRingtone, { capture: true });
+          document.removeEventListener('click', unlockRingtone, { capture: true });
+          unlockRef.current = null;
+        }
         ringtone.play().then(() => ringtone.pause()).catch(() => {});
       };
+      unlockRef.current = unlockRingtone;
       document.addEventListener('touchstart', unlockRingtone, { once: true, capture: true, passive: true });
       document.addEventListener('click',      unlockRingtone, { once: true, capture: true });
 
-      const token = await fetchToken();
-      deviceRef.current = createDevice(token);
+      const { token, identity } = await fetchToken();
+      if (generation !== generationRef.current) return;      // torn down meanwhile
+      if (identity !== identityFor(userId)) throw new Error('Voice session belongs to another account');
+      createDevice(token, userId);
     } catch (err) {
+      if (generation !== generationRef.current) return;
+      if (err instanceof VoiceAuthError) { authLost(err); return; }
       console.error('[VoiceDevice] Init failed:', err.message);
       setError(err.message);
       setStatus('failed');
+    } finally {
+      if (generation === generationRef.current) refreshingRef.current = false;
     }
-  }, [createDevice]);
+  }, [createDevice, teardown, authLost]);
 
   // ── Microphone-permission recovery ─────────────────────────────────────────
 
@@ -708,8 +880,12 @@ export function useVoiceDevice() {
     setMicBlockedState(false);
     setError(null);
 
-    if (!deviceRef.current) {
-      await initialize();
+    if (activeUserIdRef.current === null) {
+      return;                                 // signed out: nothing to bring back
+    } else if (!deviceRef.current) {
+      const userId = activeUserIdRef.current;
+      teardown('mic_reinit');                 // fresh start for the same account
+      await initialize(userId);
     } else if (deviceRef.current.state !== 'registered') {
       await recoverVoiceTransport(`mic_granted_${reason}`);
     } else if (!callInFlightRef.current) {
@@ -717,7 +893,7 @@ export function useVoiceDevice() {
       // card was up — only settle back to ready when the line is idle.
       setStatus('ready');
     }
-  }, [initialize, recoverVoiceTransport]);
+  }, [initialize, recoverVoiceTransport, teardown]);
 
   // "Try Again" on the mic card.
   //   • granted → clear the card, dialer back to ready. The call that failed
@@ -725,7 +901,11 @@ export function useVoiceDevice() {
   //   • denied ("Don't ask again" / browser block) → the card stays up,
   //     exactly one warning, Open Settings is the way out.
   const retryMicPermission = useCallback(async (reason = 'try_again') => {
+    const generation = generationRef.current;
     const granted = await probeMicPermission(reason);
+    // Signed out (or switched account) while the browser prompt was open:
+    // this answer belongs to that ended sign-in.
+    if (generation !== generationRef.current || activeUserIdRef.current === null) return false;
     if (granted === true) {
       await clearMicWarningAndReady(reason);
       return true;
@@ -751,8 +931,10 @@ export function useVoiceDevice() {
   // notice the change. Gated on micBlockedRef, so this only ever runs while
   // the warning is actually up: a normal resume never touches the microphone.
   const recheckMicPermission = useCallback(async (reason) => {
-    if (!micBlockedRef.current) return;
+    if (!micBlockedRef.current || activeUserIdRef.current === null) return;
+    const generation = generationRef.current;
     const granted = await probeMicPermission(reason);
+    if (generation !== generationRef.current || activeUserIdRef.current === null) return;
     if (granted === true) {
       await clearMicWarningAndReady(reason);
     }
@@ -765,6 +947,7 @@ export function useVoiceDevice() {
   // When the user returns we re-validate the session: refreshVoiceSession
   // is idempotent + deduplicated, and skipped during active calls.
   useEffect(() => {
+    if (!voiceActive) return undefined;      // attached only while voice is on
     function onVisible() {
       if (document.visibilityState === 'visible') {
         refreshVoiceSession('visibility_visible');
@@ -781,7 +964,7 @@ export function useVoiceDevice() {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onFocus);
     };
-  }, [refreshVoiceSession, recheckMicPermission]);
+  }, [voiceActive, refreshVoiceSession, recheckMicPermission]);
 
   // Manual retry surface for the UI — clears the error and triggers a
   // refresh. Bound at module scope so the Dialer / failure card can wire
@@ -799,6 +982,7 @@ export function useVoiceDevice() {
 
   const makeCall = useCallback(async (to) => {
     const device = deviceRef.current;
+    const generation = generationRef.current;
     if (!device) {
       setError('Voice device not initialized. Tap the mic button to connect.');
       return;
@@ -817,6 +1001,7 @@ export function useVoiceDevice() {
       setStatus('registering'); // reuse 'registering' label so Dialer shows "Connecting to voice…"
 
       while (Date.now() < deadline) {
+        if (generation !== generationRef.current) return;   // signed out / switched
         try {
           const res = await fetch(`${API_BASE}/health`);
           if (res.ok) { backendReady = true; break; }
@@ -831,6 +1016,17 @@ export function useVoiceDevice() {
       }
     }
 
+    // Voice was torn down while we waited (sign-out, account change): drop the
+    // attempt. The Device may also have been rebuilt for the SAME sign-in
+    // (transport recovery): then the call goes out on the live one.
+    if (generation !== generationRef.current) return;
+    const liveDevice = deviceRef.current;
+    if (!liveDevice) {
+      setError('Call did not connect. Please try again.');
+      setStatus('failed');
+      return;
+    }
+
     const e164 = toE164(to);
     setRemoteIdentity(e164);
     setStatus('dialing');
@@ -838,7 +1034,7 @@ export function useVoiceDevice() {
 
     try {
       console.log('[VoiceDevice] makeCall → device.connect', { to: e164, at: Date.now() });
-      const call = await device.connect({ params: { To: e164 } });
+      const call = await liveDevice.connect({ params: { To: e164 } });
       console.log('[VoiceDevice] device.connect resolved', {
         to: e164,
         callSid: call?.parameters?.CallSid || null,
@@ -891,6 +1087,9 @@ export function useVoiceDevice() {
     if (!incomingCall) return;
     stopAllAlerts();
     incomingCall.reject();
+    // A rejected call emits only 'reject' (no 'disconnect'): clear the
+    // in-flight flag here or every later refresh/recovery stays deferred.
+    callInFlightRef.current = false;
     setIncomingCall(null);
     setStatus('ready');
   }, [incomingCall]);
@@ -900,6 +1099,7 @@ export function useVoiceDevice() {
   const hangUp = useCallback(() => {
     activeCall?.disconnect();
     incomingCall?.reject();
+    if (incomingCall && !activeCall) { stopAllAlerts(); callInFlightRef.current = false; }
     setActiveCall(null);
     setIncomingCall(null);
   }, [activeCall, incomingCall]);
@@ -913,18 +1113,7 @@ export function useVoiceDevice() {
 
   // ── Cleanup on unmount ─────────────────────────────────────────────────────
 
-  useEffect(() => {
-    return () => {
-      stopAllAlerts();
-      if (deviceRef.current) {
-        // Flag so the unregistered/offline handlers don't try to recover
-        // during our own teardown.
-        destroyingRef.current = true;
-        try { deviceRef.current.destroy(); } catch {}
-        deviceRef.current = null;
-      }
-    };
-  }, []);
+  useEffect(() => () => teardown('unmount'), [teardown]);
 
   return {
     status,            // 'idle' | 'registering' | 'ready' | 'incoming' | 'dialing' | 'ringing' | 'connected' | 'ended' | 'failed'
@@ -934,7 +1123,8 @@ export function useVoiceDevice() {
     remoteIdentity,
     isReady: status === 'ready' || status === 'ended',
     pendingPostCallNote, // { phone } | null — set after an outbound call ends
-    initialize,
+    initialize,          // (userId) — build/register the Device for that account
+    teardown,            // (reason) — destroy the Device; idempotent
     makeCall,
     answerCall,
     rejectCall,

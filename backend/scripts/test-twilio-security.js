@@ -51,6 +51,9 @@ require.cache[pushPath] = { id: pushPath, filename: pushPath, loaded: true, expo
 const express = require(path.join(BE, 'node_modules/express'));
 const twilio  = require(path.join(BE, 'node_modules/twilio'));
 const db      = require(path.join(BE, 'db'));
+// Session fixtures go through the real session layer: only storageKey(token)
+// is stored in sessions.token; the raw token is used for Bearer requests.
+const { createSession } = require(path.join(BE, 'utils/session'));
 
 // ── Test harness ─────────────────────────────────────────────────────────────
 let pass = 0, fail = 0;
@@ -191,16 +194,14 @@ async function run() {
     ok('14a. /diag anonymous → 401', diagAnon.status === 401, `status=${diagAnon.status}`);
     // Seed a normal tester + session → 403 (requireOwner)
     const testerId = db.prepare("INSERT INTO users (email,is_owner) VALUES ('t@t.local',0)").run().lastInsertRowid;
-    const tTok = crypto.randomBytes(16).toString('hex');
-    db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(tTok, testerId, new Date(Date.now()+3600e3).toISOString());
+    const tTok = createSession(testerId, 3600e3).token;
     const diagTester = await fetch(`${BASE}/api/twilio/diag`, { headers: { Authorization: `Bearer ${tTok}` } });
     ok('14b. /diag as normal tester → 403', diagTester.status === 403, `status=${diagTester.status}`);
     // 14c. Owner PASSES the guard. We assert this against the SAME guard pair
     // (requireAuth + requireOwner) that gates /diag, on a no-op route — hitting
     // the real /diag as owner would make a live Twilio API call, which tests
     // must never do. Anon/tester rejection is already proven on the real route.
-    const oTok = crypto.randomBytes(16).toString('hex');
-    db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(oTok, ownerId, new Date(Date.now()+3600e3).toISOString());
+    const oTok = createSession(ownerId, 3600e3).token;
     const requireAuth  = require(path.join(BE, 'middleware/requireAuth'));
     const requireOwner = require(path.join(BE, 'middleware/requireOwner'));
     const guardApp = express();
@@ -254,8 +255,7 @@ async function run() {
     const recUrl = `https://api.twilio.com/2010-04-01/Accounts/${ACCOUNT_SID}/Recordings/${RE}`;
     const callB = db.prepare("INSERT INTO calls (from_number,call_sid,classification,recording_url,user_id) VALUES ('+15550001111','CA"+'3'.repeat(32)+"','Outbound',?,?)").run(recUrl, uB).lastInsertRowid;
     const callA = db.prepare("INSERT INTO calls (from_number,call_sid,classification,recording_url,user_id) VALUES ('+15550001112','CA"+'4'.repeat(32)+"','Outbound',?,?)").run(recUrl, uA).lastInsertRowid;
-    const tokA = require('crypto').randomBytes(16).toString('hex');
-    db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(tokA, uA, new Date(Date.now() + 3600e3).toISOString());
+    const tokA = createSession(uA, 3600e3).token;
     const appC = express();
     appC.use(cookieParserC()); appC.use(express.json());
     appC.use(requireAuthC);
@@ -267,7 +267,7 @@ async function run() {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokA}`, Origin: 'http://localhost:5173' },
       body: JSON.stringify({ items: [{ kind: 'call-recording', id: Number(callB) }, { kind: 'call-recording', id: Number(callA) }] }) }).then(r => r.json());
     ok('13. media tickets enforce ownership (A gets none for B\'s call, one for its own)',
-      Array.isArray(mint.tickets) && mint.tickets[0] === null && typeof mint.tickets[1] === 'string', JSON.stringify(mint).slice(0, 80));
+      Array.isArray(mint.tickets) && mint.tickets[0] === null && typeof mint.tickets[1] === 'string', JSON.stringify((mint.tickets || []).map(t => (t === null ? null : typeof t))));
     const oldRoute = await fetch(`${baseC}/api/calls/${callB}/recording`, { headers: { Authorization: `Bearer ${tokA}` } });
     const list = await fetch(`${baseC}/api/calls`, { headers: { Authorization: `Bearer ${tokA}` } }).then(r => r.text());
     ok('13b. the old proxy route is gone and call lists never carry the Twilio URL / Account SID',

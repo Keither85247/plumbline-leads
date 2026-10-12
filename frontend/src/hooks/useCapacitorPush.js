@@ -29,6 +29,11 @@ const FCM_TOKEN_KEY = 'plumbline_fcm_token';
 
 export function useCapacitorPush({ onNotification, userId } = {}) {
   const registered = useRef(false);
+  // Token rotations are sent only while someone is signed in: after a sign-out
+  // (even one the server could not confirm) this device must not re-attach
+  // itself to the old account through a leftover cookie.
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
 
   const sendTokenToBackend = useCallback(async (token) => {
     try {
@@ -72,7 +77,7 @@ export function useCapacitorPush({ onNotification, userId } = {}) {
         PushNotifications.addListener('registration', (token) => {
           console.log('[CapacitorPush] FCM token received');
           try { localStorage.setItem(FCM_TOKEN_KEY, token.value); } catch { /* no storage */ }
-          sendTokenToBackend(token.value);
+          if (userIdRef.current) sendTokenToBackend(token.value);
         });
 
         // Register with FCM

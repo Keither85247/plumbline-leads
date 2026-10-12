@@ -97,6 +97,8 @@ Module._load = function (request, parent, isMain) {
 const express      = require(path.join(BE, 'node_modules/express'));
 const cookieParser = require(path.join(BE, 'node_modules/cookie-parser'));
 const db           = require(path.join(BE, 'db'));
+const { createSession } = require(path.join(BE, 'utils/session'));
+const { storageKey, STORAGE_PREFIX } = require(path.join(BE, 'utils/sessionToken'));
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { (cond ? pass++ : fail++); say(`${cond ? 'PASS' : 'FAIL'}  ${name}${extra ? '  — ' + extra : ''}`); };
@@ -106,11 +108,17 @@ const sha = (v) => crypto.createHash('sha256').update(v).digest('hex');
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 const mkUser = (email, extra = {}) => Number(db.prepare('INSERT INTO users (email, display_name, is_owner, is_suspended) VALUES (?,?,?,?)')
   .run(email, email, extra.owner ? 1 : 0, extra.suspended ? 1 : 0).lastInsertRowid);
+// Sessions are created the way login does (only storageKey(raw) is stored);
+// the raw token is kept for requests and for the leak checks below, never printed.
+const issuedSessions = [];
 function mkSession(uid, ms = 3600e3) {
-  const t = crypto.randomBytes(16).toString('hex');
-  db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(t, uid, new Date(Date.now() + ms).toISOString());
+  const t = createSession(uid, ms).token;
+  issuedSessions.push(t);
   return t;
 }
+// True when any session token issued in this run — raw, or its stored key
+// (checked by its hex digest, which also covers the full 'h1:' form) — appears in s.
+const sessionLeak = (s) => issuedSessions.some(t => s.includes(t) || s.includes(storageKey(t).slice(STORAGE_PREFIX.length)));
 const OWNER = mkUser('owner@example.test', { owner: true });
 const A = mkUser('a@example.test'), B = mkUser('b@example.test'), D = mkUser('d@example.test');
 const hex = (n) => crypto.randomBytes(n).toString('hex');
@@ -376,12 +384,12 @@ async function run() {
     const tL = mkSession(A);
     r = await mint(tL, [{ kind: 'call-recording', id: callA }]);
     const tkL = r.data.tickets[0];
-    db.prepare('DELETE FROM sessions WHERE token = ?').run(tL);
+    const loggedOut = db.prepare('DELETE FROM sessions WHERE token = ?').run(storageKey(tL)).changes;
     const afterLogout = await stream(tkL);
     const tE = mkSession(A);
     r = await mint(tE, [{ kind: 'call-recording', id: callA }]);
     const tkE = r.data.tickets[0];
-    db.prepare('UPDATE sessions SET expires_at = ? WHERE token = ?').run(new Date(Date.now() - 1000).toISOString(), tE);
+    const expired = db.prepare('UPDATE sessions SET expires_at = ? WHERE token = ?').run(new Date(Date.now() - 1000).toISOString(), storageKey(tE)).changes;
     const afterExpiry = await stream(tkE);
     const tD = mkSession(D);
     const callD = Number(insCall.run('+15550000008', 'CA' + hex(16), 'Lead', recUrl(RE_A), D).lastInsertRowid);
@@ -389,22 +397,22 @@ async function run() {
     const tkD = r.data.tickets[0];
     db.prepare('UPDATE users SET is_suspended = 1 WHERE id = ?').run(D);
     const afterSuspend = await stream(tkD);
-    ok('S18 tickets die with their sign-in: logout, session expiry, or the account being suspended → 404',
-      afterLogout.status === 404 && afterExpiry.status === 404 && afterSuspend.status === 404);
+    ok('S18 tickets die with their sign-in: logout, session expiry, or the account being suspended → 404 (session rows addressed by their stored key)',
+      loggedOut === 1 && expired === 1 && afterLogout.status === 404 && afterExpiry.status === 404 && afterSuspend.status === 404);
     // SQLite gives the next row the rowid of a deleted newest row: a sign-out
     // followed by a new sign-in of the same account must not revive a ticket.
     const tR1 = mkSession(A);
-    const rid = (tok) => db.prepare('SELECT rowid AS r FROM sessions WHERE token = ?').get(tok).r;
+    const rid = (tok) => db.prepare('SELECT rowid AS r FROM sessions WHERE token = ?').get(storageKey(tok)).r;
     const rid1 = rid(tR1);
     const tkR = (await mint(tR1, [{ kind: 'call-recording', id: callA }])).data.tickets[0];
     const beforeOut = (await stream(tkR)).status;
-    db.prepare('DELETE FROM sessions WHERE token = ?').run(tR1);
+    const signedOut = db.prepare('DELETE FROM sessions WHERE token = ?').run(storageKey(tR1)).changes;
     const tR2 = mkSession(A);
     const rid2 = rid(tR2);
     const reused = (await stream(tkR)).status;
     const freshR = (await stream((await mint(tR2, [{ kind: 'call-recording', id: callA }])).data.tickets[0])).status;
     ok('S22 a ticket stays dead after sign-out even when the next sign-in of the same account reuses the session rowid',
-      beforeOut === 200 && rid1 === rid2 && reused === 404 && freshR === 200, JSON.stringify({ beforeOut, rid1, rid2, reused, freshR }));
+      beforeOut === 200 && signedOut === 1 && rid1 === rid2 && reused === 404 && freshR === 200, JSON.stringify({ beforeOut, signedOut, rid1, rid2, reused, freshR }));
     for (let i = 0; i < 1500; i++) media.streamLimit.hit(String(A));
     const limited = await stream((await mint(tA, [{ kind: 'call-recording', id: callA }])).data.tickets[0]);
     media.streamLimit.clear();
@@ -597,8 +605,9 @@ async function run() {
       await req('GET', '/api/messages/+15550000021', { token: tA }),
     ];
     const blob = lists.map(x => x.text).join('\n');
-    ok('R1 call / lead / message responses carry no Twilio URL, Account SID, recording / media SID, CDN URL or backend media path',
-      lists.every(x => x.status === 200) && !/api\.twilio\.com|twiliocdn|AC[0-9a-f]{32}|RE[0-9a-f]{32}|ME[0-9a-f]{32}|\/api\/messages\/media|LEGACYSESSIONSECRET/i.test(blob));
+    ok('R1 call / lead / message responses carry no Twilio URL, Account SID, recording / media SID, CDN URL or backend media path (nor any raw session token or stored session key)',
+      lists.every(x => x.status === 200) && !/api\.twilio\.com|twiliocdn|AC[0-9a-f]{32}|RE[0-9a-f]{32}|ME[0-9a-f]{32}|\/api\/messages\/media|LEGACYSESSIONSECRET/i.test(blob)
+      && !sessionLeak(blob));
     const callObj = lists[0].data.find(c => c.id === callA);
     const msgObj = lists[4].data.find(m => m.id === msgA);
     ok('R2 presence is kept as flags / opaque markers so the app still knows what to show', callObj?.recording_url === true
@@ -611,16 +620,17 @@ async function run() {
         && !x.buf.equals(audio) && !x.buf.equals(image) && !x.buf.equals(localBytes) && !/audio|image/.test(x.headers.get('content-type') || '')));
     const inv = await req('GET', '/api/health/push-inventory', { token: tO });
     const m = inv.data?.media;
-    ok('R4 owner inventory classifies stored media references by COUNT only (no values)', inv.status === 200 && m
+    ok('R4 owner inventory classifies stored media references by COUNT only (no values; no session token or stored key anywhere in the response)', inv.status === 200 && m
       && m.callRecordings.total === 8 && m.callRecordings.twilio === 5 && m.callRecordings.credentialBearing === 1 && m.callRecordings.other === 2
       && m.mms.items.total === 9 && m.mms.items.twilio === 2 && m.mms.items.localUpload >= 1 && m.mms.items.legacyProxy === 2
-      && !/twilio\.com|AC[0-9a-f]{32}|mms-\d|LEGACYSESSIONSECRET/.test(JSON.stringify(m)), JSON.stringify(m));
+      && !/twilio\.com|AC[0-9a-f]{32}|mms-\d|LEGACYSESSIONSECRET/.test(JSON.stringify(m)) && !sessionLeak(inv.text), JSON.stringify(m));
 
     // ── L. Logs, Sentry, housekeeping ─────────────────────────────────────────
     const allTickets = db.prepare('SELECT COUNT(*) n FROM media_tickets').get().n;
     const leakedTicket = seenTickets.concat(mmsT.filter(Boolean), [vmTicket, gT, tkImg]).filter(Boolean).some(t => logged.some(l => l.includes(t)));
-    ok('L1 no ticket, Twilio URL, Account SID, auth token, Basic credential, CDN signature or file path appears in any log line',
-      !leakedTicket && !logged.some(l => secrets.some(s => l.includes(s)) || /api\.twilio\.com|AC[0-9a-f]{32}|twiliocdn|plumbline-mms|Recordings\/RE/.test(l)), `tickets=${allTickets}`);
+    ok('L1 no ticket, Twilio URL, Account SID, auth token, Basic credential, CDN signature or file path appears in any log line (nor any raw session token or stored session key)',
+      !leakedTicket && !logged.some(l => secrets.some(s => l.includes(s)) || /api\.twilio\.com|AC[0-9a-f]{32}|twiliocdn|plumbline-mms|Recordings\/RE/.test(l))
+      && !logged.some(sessionLeak), `tickets=${allTickets}`);
     const so = sentryPrivacyOptions({ requestDataIntegration: (o) => o, httpIntegration: (o) => o });
     const http = so.integrations[1];
     ok('L2 backend Sentry: Twilio / CDN / S3 requests are never traced and no trace headers are propagated',

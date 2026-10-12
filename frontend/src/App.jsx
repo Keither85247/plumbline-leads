@@ -18,10 +18,10 @@ import AdminPage from './components/AdminPage';
 import PaywallGate from './components/PaywallGate';
 import LoginPage from './components/LoginPage';
 import NumberPickerModal from './components/NumberPickerModal';
-import { getLeads, saveOutboundNote, getCounts, getMe, getMeStrict, logout, updateProfile, API_BASE, AuthError } from './api';
+import { getLeads, saveOutboundNote, getCounts, updateProfile, API_BASE, AuthError } from './api';
 import { parseTimestamp } from './utils/phone';
 import { translations } from './i18n';
-import { useVoiceDevice } from './hooks/useVoiceDevice';
+import { useAuthSession } from './hooks/useAuthSession';
 import { usePushNotifications } from './hooks/usePushNotifications';
 import { useCapacitorPush } from './hooks/useCapacitorPush';
 
@@ -158,12 +158,10 @@ function sortLeads(leads) {
 
 export default function App() {
   // ── Authentication ────────────────────────────────────────────────────────
-  // On mount: ask the backend whether the session cookie is still valid.
-  // While checking: render nothing (avoids flash of login page on reload).
-  // If unauthenticated: show LoginPage.
-  // If authenticated: render the full app and update Sentry user context.
-  const [currentUser, setCurrentUser] = useState(null);
-  const [authChecked, setAuthChecked] = useState(false);
+  // useAuthSession owns the signed-in account and every way a sign-in ends
+  // (cold start, logout, forced sign-out, account change) — and tears the
+  // Twilio Voice device down first on each. While checking: render nothing
+  // (avoids a flash of the login page on reload).
   // null = not checked yet; false = needs to pick a number; object = has a number
   const [assignedNumber, setAssignedNumber] = useState(null);
 
@@ -179,52 +177,60 @@ export default function App() {
     setAssignedNumber(user?.assignedNumber || false);
   };
 
-  useEffect(() => {
-    async function checkAuth() {
-      let user = null;
-      let signedOut = false;     // the server definitively said "not signed in" (401)
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          user = await getMeStrict();
-          break;
-        } catch (err) {
-          if (err instanceof AuthError) { signedOut = true; break; }
-          // Likely Render cold-starting (or a 5xx during a deploy). Wait 4 s and
-          // try once more before deciding; never treat this as a sign-out.
-          if (attempt === 0) await new Promise(r => setTimeout(r, 4000));
-        }
+  // Per-account data held in App state must never be shown to the next
+  // account that signs in on this device (the component stays mounted).
+  // Called synchronously by useAuthSession when a sign-in ends or changes.
+  const leadsGenRef = useRef(0);          // bumped per sign-in: late responses are dropped
+  const resetAccountState = () => {
+    leadsGenRef.current += 1;
+    setLeads([]);
+    setLoadingLeads(true);
+    setCallsBadge(0);
+    setRemoteCounts({ texts: 0, emails: 0 });
+    setActiveNav('overview');
+    setSettingsOpen(false);
+    setCallsPagePhone(null);
+    setAssignedNumber(null);
+    setContractorName('');
+    setBusinessName('');
+  };
+
+  // The contractor/business names used in follow-up texts are per account.
+  const loadAccountProfile = (user) => {
+    const k = (name) => `${name}:${user.id}`;
+    let contractor = localStorage.getItem(k('contractorName'));
+    let business   = localStorage.getItem(k('businessName'));
+    if (contractor === null) {
+      // One-time move of the old device-wide values, only if they evidently
+      // belong to this account (they are left for the account they belong to
+      // otherwise); else start from the account's own profile.
+      const legacy = localStorage.getItem('contractorName');
+      if (legacy && legacy === user.display_name) {
+        contractor = legacy;
+        business = business ?? localStorage.getItem('businessName');
+        localStorage.removeItem('contractorName');
+        localStorage.removeItem('businessName');
+      } else {
+        contractor = user.display_name || '';
       }
-      // A session that ended while the app was closed (expired, signed out
-      // elsewhere, or the account was suspended/blocked): run the normal logout
-      // cleanup so this device's push registration and stored token are removed.
-      if (signedOut) {
-        let hadToken = false;
-        try { hadToken = !!localStorage.getItem('plumbline_token') || !!localStorage.getItem('plumbline_fcm_token'); } catch { /* no storage */ }
-        if (hadToken) await logout().catch(() => {});
-      }
-      setCurrentUser(user);
-      if (user) {
-        Sentry.setUser({ id: String(user.id) });   // no email in error reports
-        await checkAssignedNumber(user);
-      }
-      setAuthChecked(true);
+      localStorage.setItem(k('contractorName'), contractor);
     }
-    checkAuth();
-  }, []);
-
-  const handleLoginSuccess = async (user) => {
-    setCurrentUser(user);
-    Sentry.setUser({ id: String(user.id) });   // no email in error reports
-    await checkAssignedNumber(user);
+    if (business === null) business = user.business_name || '';
+    if (business) localStorage.setItem(k('businessName'), business);
+    setContractorName(contractor || '');
+    setBusinessName(business || '');
   };
 
-  const handleLogout = async () => {
-    await logout().catch(() => {});
-    setCurrentUser(null);
-    Sentry.setUser(null);
-  };
-
-  const voiceDevice = useVoiceDevice();
+  const auth = useAuthSession({
+    onSignedIn: (user) => { loadAccountProfile(user); return checkAssignedNumber(user); },
+    onSignedOut: resetAccountState,
+    // No Voice device while a paywall or the number picker is shown (no call UI there).
+    voiceAllowed: (user) => paywallCleared(user) && assignedNumber !== null && assignedNumber !== false,
+  });
+  const {
+    currentUser, authChecked, voiceDevice,
+    handleLoginSuccess, handleLogout, handleUnauthorized, updateUser,
+  } = auth;
   const push = usePushNotifications({ userId: currentUser?.id });
   // Native FCM push for Android (Capacitor). No-op on web.
   useCapacitorPush({ userId: currentUser?.id });
@@ -247,10 +253,8 @@ export default function App() {
     && (push.permission === 'default' || push.permission === 'granted')
     && !pushBannerDismissed;
 
-  // Register the voice device on mount so inbound calls ring in the app
-  useEffect(() => {
-    if (currentUser) voiceDevice.initialize();
-  }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The voice device is registered for the signed-in account (and torn down
+  // when it changes) by useAuthSession.
 
   // ── Calls-data refresh signal ─────────────────────────────────────────────
   // Sourced from the refresh bus (see refreshBus.jsx). The bus's
@@ -314,12 +318,9 @@ export default function App() {
   const [onboardingSeen, setOnboardingSeen] = useState(
     () => localStorage.getItem('plOnboardingSeen') === '1'
   );
-  const [contractorName, setContractorName] = useState(
-    () => localStorage.getItem('contractorName') || ''
-  );
-  const [businessName, setBusinessName] = useState(
-    () => localStorage.getItem('businessName') || ''
-  );
+  // Loaded per account on sign-in (loadAccountProfile).
+  const [contractorName, setContractorName] = useState('');
+  const [businessName, setBusinessName] = useState('');
 
   // ── Nav badge counts ──────────────────────────────────────────────────────
   // callsBadge is intentionally separate so it can ONLY be zeroed by the
@@ -350,22 +351,9 @@ export default function App() {
       } catch (err) {
         if (cancelled) return;
         if (err instanceof AuthError) {
-          // Don't trust a single 401 from a background poll — it could be a
-          // cold-start race right after login. Re-verify with /auth/me before
-          // clearing the session, so a transient blip doesn't boot the user out.
-          try {
-            const me = await getMe();
-            if (!cancelled && !me) {
-              // Session ended server-side (expired, signed out elsewhere, or the
-              // account was suspended/blocked): run the normal logout cleanup so
-              // this device's push registration and stored token are removed too.
-              await logout().catch(() => {});
-              setCurrentUser(null);
-              Sentry.setUser(null);
-            }
-          } catch {
-            // Network error on the re-check — leave auth state alone.
-          }
+          // Re-verified with /auth/me before anything ends: only a definitive
+          // 401 signs out (voice torn down, this device cleaned up, notice shown).
+          await handleUnauthorized(err);
         }
         // Network blips, 5xx: ignore silently — badge just doesn't update this tick.
       }
@@ -407,8 +395,10 @@ export default function App() {
   };
 
   const fetchLeads = useCallback(async () => {
+    const gen = leadsGenRef.current;
     try {
       const data = await getLeads();
+      if (gen !== leadsGenRef.current) return;   // answered for an ended sign-in
       setLeads(data);
     } catch (err) {
       if (err instanceof AuthError) {
@@ -419,7 +409,7 @@ export default function App() {
       }
       console.error('Failed to load leads:', err);
     } finally {
-      setLoadingLeads(false);
+      if (gen === leadsGenRef.current) setLoadingLeads(false);
     }
   }, []);
 
@@ -462,11 +452,14 @@ export default function App() {
     // Persist to localStorage as local cache
     setContractorName(saved.display_name ?? displayName);
     setBusinessName(saved.business_name ?? bizName);
-    localStorage.setItem('contractorName', saved.display_name ?? displayName);
-    localStorage.setItem('businessName',   saved.business_name ?? bizName);
+    const uid = auth.currentUser?.id;
+    if (uid != null) {
+      localStorage.setItem(`contractorName:${uid}`, saved.display_name ?? displayName);
+      localStorage.setItem(`businessName:${uid}`,   saved.business_name ?? bizName);
+    }
     // Refresh display name in header
-    setCurrentUser(prev => prev ? { ...prev, display_name: saved.display_name } : prev);
-  }, []);
+    updateUser(prev => prev ? { ...prev, display_name: saved.display_name } : prev);
+  }, [updateUser, auth.currentUser?.id]);
 
   const handleLeadCreated = (newLead) => setLeads(prev => sortLeads([newLead, ...prev]));
   const handleLeadUpdated = (updatedLead) =>
@@ -505,7 +498,12 @@ export default function App() {
   if (!currentUser) {
     return (
       <Sentry.ErrorBoundary fallback={<div className="h-dvh flex items-center justify-center"><p className="text-sm text-gray-500">Something went wrong.</p></div>}>
-        <LoginPage onSuccess={handleLoginSuccess} />
+        <LoginPage
+          onSuccess={handleLoginSuccess}
+          notice={auth.notice}
+          onDismissNotice={auth.dismissNotice}
+          onRetryLogout={auth.retryLogout}
+        />
       </Sentry.ErrorBoundary>
     );
   }
@@ -517,7 +515,7 @@ export default function App() {
       <PaywallGate
         user={currentUser}
         onBypass={(updatedUser) => {
-          setCurrentUser(updatedUser);
+          updateUser(updatedUser);
           // If the user still has no number, checkAssignedNumber will handle it
           checkAssignedNumber(updatedUser);
         }}
@@ -625,6 +623,7 @@ export default function App() {
             {/* Log out — light gray circle */}
             <button
               onClick={handleLogout}
+              disabled={auth.loggingOut}
               className="w-11 h-11 rounded-full bg-[#F3F4F6] text-[#344054] active:bg-[#E5E7EB]
                          flex items-center justify-center transition-colors"
               aria-label="Log out"

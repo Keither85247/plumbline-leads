@@ -11,8 +11,12 @@ import { translations } from '../i18n';
  *
  * After successful sign-in OR sign-up, calls onSuccess(user) which
  * App.jsx uses to transition into the main app.
+ *
+ * `notice` (from useAuthSession) explains why the user is here: the session
+ * ended, the account is not active, the server could not be reached, or a
+ * sign-out could not be confirmed (with a retry). Never technical detail.
  */
-export default function LoginPage({ onSuccess }) {
+export default function LoginPage({ onSuccess, notice = null, onDismissNotice, onRetryLogout }) {
   const lang = localStorage.getItem('language') || 'en';
   const t = translations[lang] || translations.en;
 
@@ -82,6 +86,20 @@ export default function LoginPage({ onSuccess }) {
     }
   };
 
+  const [retrying, setRetrying] = useState(false);
+  const noticeText = notice && {
+    expired:            t.authNoticeExpired || 'Your session ended. Please sign in again.',
+    disabled:           t.authNoticeDisabled || 'This account is not active. Contact support if you think this is a mistake.',
+    offline:            t.authNoticeOffline || 'Couldn’t reach the server. Check your connection and try again.',
+    logout_unconfirmed: t.authNoticeLogoutUnconfirmed || 'You’re signed out on this device, but sign-out couldn’t be confirmed with the server. Please try again when you’re online.',
+    logout_unverifiable: t.authNoticeLogoutUnverifiable || 'You’re signed out on this device. The server couldn’t confirm it, so that sign-in will expire on its own.',
+  }[notice.kind];
+  const retrySignOut = async () => {
+    if (loading || retrying) return;      // never alongside a sign-in
+    setRetrying(true);
+    try { await onRetryLogout?.(); } finally { setRetrying(false); }
+  };
+
   // ── Shared input class ─────────────────────────────────────────────────────
   const inputCls = 'w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow disabled:bg-gray-50 disabled:cursor-not-allowed';
 
@@ -98,6 +116,31 @@ export default function LoginPage({ onSuccess }) {
             {mode === 'signin' ? t.loginSubtitle : t.loginModeCreate}
           </p>
         </div>
+
+        {noticeText && (
+          <div role="status" className="mb-5 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5 flex items-start gap-3">
+            <p className="flex-1 text-sm text-amber-800">{noticeText}</p>
+            {notice.kind === 'logout_unconfirmed' && onRetryLogout ? (
+              <button
+                type="button"
+                onClick={retrySignOut}
+                disabled={retrying || loading}
+                className="shrink-0 text-xs font-semibold px-2.5 py-1 rounded-md text-amber-800 bg-white border border-amber-200 hover:bg-amber-100 disabled:opacity-50"
+              >
+                {t.authRetrySignOut || 'Try again'}
+              </button>
+            ) : onDismissNotice ? (
+              <button
+                type="button"
+                onClick={onDismissNotice}
+                aria-label={t.authDismiss || 'Dismiss'}
+                className="shrink-0 text-amber-700 hover:text-amber-900 text-sm leading-none px-1"
+              >
+                ×
+              </button>
+            ) : null}
+          </div>
+        )}
 
         {/* Mode toggle tabs */}
         <div className="flex rounded-xl overflow-hidden border border-gray-200 mb-5 bg-white">
@@ -144,7 +187,7 @@ export default function LoginPage({ onSuccess }) {
                   onChange={e => setEmail(e.target.value)}
                   className={inputCls}
                   placeholder={t.loginEmailPH}
-                  disabled={loading}
+                  disabled={loading || retrying}
                 />
               </div>
 
@@ -161,7 +204,7 @@ export default function LoginPage({ onSuccess }) {
                   onChange={e => setPassword(e.target.value)}
                   className={inputCls}
                   placeholder={t.loginPasswordPH}
-                  disabled={loading}
+                  disabled={loading || retrying}
                 />
               </div>
 
@@ -173,7 +216,7 @@ export default function LoginPage({ onSuccess }) {
 
               <button
                 type="submit"
-                disabled={loading || !email || !password}
+                disabled={loading || retrying || !email || !password}
                 className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
               >
                 {loading ? (
@@ -205,7 +248,7 @@ export default function LoginPage({ onSuccess }) {
                   onChange={e => setDisplayName(e.target.value)}
                   className={inputCls}
                   placeholder={t.loginNamePH}
-                  disabled={loading}
+                  disabled={loading || retrying}
                 />
               </div>
 
@@ -221,7 +264,7 @@ export default function LoginPage({ onSuccess }) {
                   onChange={e => setBusinessName(e.target.value)}
                   className={inputCls}
                   placeholder={t.loginBizNamePH}
-                  disabled={loading}
+                  disabled={loading || retrying}
                 />
               </div>
 
@@ -238,7 +281,7 @@ export default function LoginPage({ onSuccess }) {
                   onChange={e => setEmail(e.target.value)}
                   className={inputCls}
                   placeholder={t.loginEmailPH}
-                  disabled={loading}
+                  disabled={loading || retrying}
                 />
               </div>
 
@@ -255,7 +298,7 @@ export default function LoginPage({ onSuccess }) {
                   onChange={e => setPassword(e.target.value)}
                   className={inputCls}
                   placeholder={t.loginPasswordPH}
-                  disabled={loading}
+                  disabled={loading || retrying}
                 />
               </div>
 
@@ -272,7 +315,7 @@ export default function LoginPage({ onSuccess }) {
                   onChange={e => setConfirmPw(e.target.value)}
                   className={inputCls}
                   placeholder={t.loginPasswordPH}
-                  disabled={loading}
+                  disabled={loading || retrying}
                 />
               </div>
 
@@ -284,7 +327,7 @@ export default function LoginPage({ onSuccess }) {
 
               <button
                 type="submit"
-                disabled={loading || !email || !password || !displayName || !confirmPw}
+                disabled={loading || retrying || !email || !password || !displayName || !confirmPw}
                 className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
               >
                 {loading ? (

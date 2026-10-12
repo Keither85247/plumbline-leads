@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { getMeStrict, login, logout, previewGmailCompletion, completeGmailConnection, getGmailAttempt, AuthError, AUTH_BASE } from '../api';
+import { getMeStrict, login, logout, previewGmailCompletion, completeGmailConnection, getGmailAttempt, AuthError, AUTH_BASE, hasPendingLogout, retryPendingLogout, markLogoutPending } from '../api';
 import { getGmailHandle, clearGmailHandle, getGmailError, clearGmailError, sawGmailHandle } from '../oauthReturn';
 import { gmailErrorCopy } from '../gmailCopy';
 
@@ -69,9 +69,21 @@ export default function GmailConnectionView({ onDone }) {
   useEffect(() => {
     const onHide = () => {
       if (!tempSession.current) return;
+      const token = storageGet('plumbline_token');
       storageSet('plumbline_token', null);
       storageSet(TEMP_MARK, null);
-      try { fetch(`${AUTH_BASE}/logout`, { method: 'POST', credentials: 'include', keepalive: true }); } catch { /* best effort */ }
+      // Its reply will never be seen: record the sign-out as pending so the
+      // app retries it instead of resuming this temporary session later.
+      markLogoutPending('unload');
+      // A text/plain body needs no CORS preflight, so it can still be sent
+      // while the page closes — and it carries the token itself, so the
+      // session ends even where the cookie is not sent (Safari).
+      try {
+        fetch(`${AUTH_BASE}/logout`, {
+          method: 'POST', credentials: 'include', keepalive: true,
+          headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(token ? { token } : {}),
+        });
+      } catch { /* best effort */ }
     };
     window.addEventListener('pagehide', onHide);
     return () => window.removeEventListener('pagehide', onHide);
@@ -108,6 +120,12 @@ export default function GmailConnectionView({ onDone }) {
   // Signed in? null = definitely not; throws = could not check (retried once,
   // then a "Try again" screen — never mistaken for a signed-out browser).
   async function checkSession() {
+    // A sign-out that was never confirmed here: finish it first and treat this
+    // browser as signed out (never resume that session from its cookie).
+    if (hasPendingLogout()) {
+      await retryPendingLogout();
+      return { me: null };
+    }
     for (let i = 0; i < 2; i++) {
       try { return { me: await getMeStrict() }; }
       catch (e) {

@@ -57,6 +57,12 @@ const mintLimit = createLimiter({ name: 'media-ticket-mint', windowMs: 10 * 60 *
 const streamLimit = createLimiter({ name: 'media-stream', windowMs: 10 * 60 * 1000, max: 1500 });
 
 const sha256 = (v) => crypto.createHash('sha256').update(v).digest('hex');
+// Ties a ticket to one stored session row (see the mint handler).
+const sessionFingerprint = (sessionKey) => sha256(`plumbline/media-ticket-session/v1\0${sessionKey}`);
+// Constant-time equality of two SHA-256 hex digests; false (never a throw) for anything else.
+const HEX64 = /^[0-9a-f]{64}$/;
+const sameHex = (a, b) => typeof a === 'string' && typeof b === 'string' && HEX64.test(a) && HEX64.test(b)
+  && crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 const nowIso = () => new Date().toISOString();
 const mediaLog = (event) => console.log(`[Media] ${event}`);
 
@@ -75,13 +81,12 @@ router.post('/tickets', requireAppRequest, (req, res) => {
 
   // Bind tickets to the minting session: signing out ends them. The rowid
   // alone is not enough (SQLite reuses the rowid of a deleted newest row), so
-  // the ticket also stores a fingerprint of the session token itself.
+  // the ticket also stores a fingerprint of the session's STORED key (the
+  // raw token is never available here), under its own domain tag.
   const r = resolveSession(req);
-  const sessionId = r.status === 'ok'
-    ? db.prepare('SELECT rowid AS rid FROM sessions WHERE token = ?').get(r.token)?.rid
-    : null;
+  const sessionId = r.status === 'ok' ? r.session.sessionId : null;
   if (!sessionId) return res.status(401).json({ error: 'Not authenticated' });
-  const sessionFp = sha256(`session:${r.token}`);
+  const sessionFp = sessionFingerprint(r.session.sessionKey);
 
   // Storage bound: drop this account's expired tickets; beyond MAX_LIVE live
   // ones the account's oldest are retired (a player whose ticket was retired
@@ -235,12 +240,9 @@ publicRouter.get('/stream', async (req, res) => {
   // Everything is re-checked on every use.
   if (!isAccountActive(row.userId)) return notFound(res);
   const session = db.prepare(`
-    SELECT token FROM sessions WHERE rowid = ? AND user_id = ? AND julianday(expires_at) > julianday('now')
+    SELECT token AS sessionKey FROM sessions WHERE rowid = ? AND user_id = ? AND julianday(expires_at) > julianday('now')
   `).get(row.sessionId, row.userId);
-  if (!session || typeof row.sessionFp !== 'string'
-      || !crypto.timingSafeEqual(Buffer.from(sha256(`session:${session.token}`)), Buffer.from(row.sessionFp.padEnd(64).slice(0, 64)))) {
-    return notFound(res);
-  }
+  if (!session || !sameHex(sessionFingerprint(session.sessionKey), row.sessionFp)) return notFound(res);
   const ref = resolveOwnedMedia(row.userId, row.kind, row.objectId, row.part);   // ownership check #2
   if (!ref || ref.op !== row.op) return notFound(res);
 

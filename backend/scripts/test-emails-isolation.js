@@ -15,7 +15,6 @@
 const path = require('path');
 const os   = require('os');
 const fs   = require('fs');
-const crypto = require('crypto');
 const Module = require('module');
 
 // ── Hermetic DB ---------------------------------------------------------------
@@ -44,16 +43,16 @@ const cookieParser= require(path.join(BE, 'node_modules/cookie-parser'));
 const db          = require(path.join(BE, 'db'));
 const requireAuth = require(path.join(BE, 'middleware/requireAuth'));
 const emailsRouter= require(path.join(BE, 'routes/emails'));
+const { createSession } = require(path.join(BE, 'utils/session'));
 
 // ── Seed two accounts, sessions, one email each -------------------------------
 // A is the OWNER (to prove owner status does NOT bypass ownership scoping).
 const userA = db.prepare("INSERT INTO users (email, display_name, is_owner) VALUES ('a@test.local','A',1)").run().lastInsertRowid;
 const userB = db.prepare("INSERT INTO users (email, display_name, is_owner) VALUES ('b@test.local','B',0)").run().lastInsertRowid;
-const tokenA = crypto.randomBytes(16).toString('hex');
-const tokenB = crypto.randomBytes(16).toString('hex');
-const exp = new Date(Date.now() + 3600_000).toISOString();
-db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(tokenA, userA, exp);
-db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(tokenB, userB, exp);
+// Sessions are created through the real helper: only storageKey(token) is
+// written to sessions.token; the raw token is kept here for Bearer requests.
+const tokenA = createSession(userA, 3600_000).token;
+const tokenB = createSession(userB, 3600_000).token;
 const A_SECRET = 'A private subject';
 const B_SECRET = 'B PRIVATE subject';
 const emailA = db.prepare(

@@ -234,9 +234,13 @@ try { db.exec('ALTER TABLE users ADD COLUMN business_name TEXT'); } catch {}
 try { db.exec("ALTER TABLE users ADD COLUMN access_status TEXT NOT NULL DEFAULT 'unknown'"); } catch {}
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
-// One row per active login. Token is a 32-byte random hex string stored in an
-// httpOnly cookie. Rows are invalidated by deleting them (logout) or by
-// expires_at passing (checked on every protected request).
+// One row per login. The `token` column holds only the session token's
+// storage key — 'h1:' + domain-separated SHA-256 (utils/sessionToken.js); the
+// raw token exists only on the client (httpOnly cookie / Bearer). Lookups hash
+// the presented token and use this primary key. Rows created before hashing
+// hold the raw 64-hex token until the one-time revocation retires them.
+// Rows are invalidated by deleting them (logout) or by expires_at passing
+// (checked on every protected request).
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
@@ -246,7 +250,7 @@ db.exec(`
   )
 `);
 // Housekeeping (jobs/housekeeping.js) range-scans expires_at to delete expired
-// rows in small batches; revokeUserSessions deletes by user_id.
+// rows in small batches; revokeUserSessions expires by user_id.
 db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)');
 

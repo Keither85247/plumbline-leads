@@ -152,6 +152,10 @@ const express      = require(path.join(BE, 'node_modules/express'));
 const cookieParser = require(path.join(BE, 'node_modules/cookie-parser'));
 const twilio       = require(path.join(BE, 'node_modules/twilio'));
 const db           = require(path.join(BE, 'db'));
+// Session helpers (after DB_PATH is set): sessions.token holds only the
+// storage key; the raw token is what clients present.
+const { createSession } = require(path.join(BE, 'utils/session'));
+const { storageKey }    = require(path.join(BE, 'utils/sessionToken'));
 // The fresh temp DB must come out of db.js with the final contacts schema
 // (previously the contacts migration failed on brand-new databases).
 const freshContactsOk = (() => {
@@ -170,10 +174,10 @@ const nowIso = () => new Date().toISOString();
 function mkUser(email, isOwner) {
   return Number(db.prepare('INSERT INTO users (email, display_name, is_owner) VALUES (?,?,?)').run(email, email, isOwner ? 1 : 0).lastInsertRowid);
 }
+// Real session issuance: only storageKey(raw) is stored; the raw token is
+// returned for requests.
 function mkSession(userId) {
-  const t = crypto.randomBytes(16).toString('hex');
-  db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(t, userId, new Date(Date.now() + 3600_000).toISOString());
-  return t;
+  return createSession(userId, 3600_000).token;
 }
 const OWNER = mkUser('owner@test.local', true);
 const A     = mkUser('a@test.local', false);
@@ -318,11 +322,14 @@ async function run() {
 
     // Logout removes THIS device only, and only rows the session owns.
     const tA2 = mkSession(A);
+    const tA2RowBefore = count('SELECT COUNT(*) n FROM sessions WHERE token = ?', storageKey(tA2));
     r = await req('POST', '/auth/logout', { token: tA2, json: { pushEndpoint: 'https://fcm.googleapis.com/fcm/send/a1', fcmToken: 'fcm-a:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ' } });
     ok('C9 logout removes this device web subscription', r.status === 200 && count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint = 'https://fcm.googleapis.com/fcm/send/a1'") === 0);
     ok('C10 logout removes this device FCM token', count("SELECT COUNT(*) n FROM fcm_subscriptions WHERE fcm_token = 'fcm-a:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ'") === 0);
     ok('C11 logout keeps A other devices', count('SELECT COUNT(*) n FROM push_subscriptions WHERE user_id = ?', A) === 2);
-    ok('C12 logout session is deleted', count('SELECT COUNT(*) n FROM sessions WHERE token = ?', tA2) === 0);
+    ok('C12 logout session is deleted (stored key row existed, now gone)',
+      tA2RowBefore === 1 && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', storageKey(tA2)) === 0,
+      `before=${tA2RowBefore}`);
     const tA3 = mkSession(A);
     await req('POST', '/auth/logout', { token: tA3, json: { pushEndpoint: 'https://fcm.googleapis.com/fcm/send/b1', fcmToken: 'fcm-b:APA91bQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ' } });
     ok('C13 logout cannot remove another account device', count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint = 'https://fcm.googleapis.com/fcm/send/b1' AND user_id = ?", B) === 1

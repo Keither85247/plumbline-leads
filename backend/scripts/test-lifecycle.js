@@ -134,6 +134,10 @@ const cookieParser = require(path.join(BE, 'node_modules/cookie-parser'));
 const twilio       = require(path.join(BE, 'node_modules/twilio'));
 const bcrypt       = require(path.join(BE, 'node_modules/bcrypt'));
 const db           = require(path.join(BE, 'db'));
+// Sessions are stored only as storageKey(raw token); fixtures go through the
+// same helpers as the app (never a raw token in sessions.token).
+const { createSession } = require(path.join(BE, 'utils/session'));
+const { newSessionToken, storageKey } = require(path.join(BE, 'utils/sessionToken'));
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { (cond ? pass++ : fail++); say(`${cond ? 'PASS' : 'FAIL'}  ${name}${extra ? '  — ' + extra : ''}`); };
@@ -147,10 +151,12 @@ function mkUser(email, { owner = false, suspended = false, status = 'tester' } =
   return Number(db.prepare('INSERT INTO users (email, display_name, password_hash, is_owner, is_suspended, access_status) VALUES (?,?,?,?,?,?)')
     .run(email, email, HASH, owner ? 1 : 0, suspended ? 1 : 0, status).lastInsertRowid);
 }
+// Every raw session token this run hands out (for the "never logged" checks; never printed).
+const ISSUED = [];
 function mkSession(userId, msFromNow = 3600e3) {
-  const t = crypto.randomBytes(16).toString('hex');
-  db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(t, userId, new Date(Date.now() + msFromNow).toISOString());
-  return t;
+  const { token } = createSession(userId, msFromNow);
+  ISSUED.push(token);
+  return token;
 }
 const OWNER = mkUser('owner@example.test', { owner: true, status: 'unknown' });
 const ACT   = mkUser('active@example.test');
@@ -267,6 +273,7 @@ async function run() {
     ok('L2 wrong password on a blocked account gets the normal generic 401 (status not revealed)', r.status === 401 && r.data?.error === 'Invalid email or password');
     const rU = await login('unknown@example.test'), rT = await login('trial@example.test');
     ok('L3 paywall states (unknown, trial) still sign in — they are not disabled', rU.status === 200 && rT.status === 200);
+    for (const x of [rU, rT]) if (typeof x.data?.token === 'string') ISSUED.push(x.data.token);
 
     const tB = mkSession(ACT);
     ok('L4 control: an active session works', (await req('GET', '/api/whoami', { token: tB })).status === 200);
@@ -274,7 +281,7 @@ async function run() {
     r = await req('GET', '/api/whoami', { token: tB });
     ok('L5 blocking an account ends its existing sessions on the next request (expired, kept for logout cleanup)', r.status === 401 && r.data?.code === 'ACCOUNT_DISABLED'
       && count("SELECT COUNT(*) n FROM sessions WHERE user_id = ? AND julianday(expires_at) > julianday('now')", ACT) === 0
-      && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', tB) === 1 && r.setCookies.some(c => c.startsWith('plumbline_session=;')));
+      && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', storageKey(tB)) === 1 && r.setCookies.some(c => c.startsWith('plumbline_session=;')));
     setStatus(ACT, { status: 'tester' });
     const tS = mkSession(ACT);
     setStatus(ACT, { suspended: true });
@@ -291,7 +298,8 @@ async function run() {
     r = await req('GET', '/api/whoami', { token: tReinstated });
     ok('L6c reinstating an account does not revive its old sessions', r.status === 401);
 
-    const good = mkSession(ACT), stale = crypto.randomBytes(16).toString('hex');
+    // Stale cookie: a well-formed token that was never issued (unknown-token branch, not malformed).
+    const good = mkSession(ACT), stale = newSessionToken();
     r = await req('GET', '/api/whoami', { token: good, cookies: { plumbline_session: stale } });
     ok('L7 a stale cookie no longer hides a valid Bearer session; the stale cookie is cleared', r.status === 200 && r.data?.userId === ACT && r.setCookies.some(c => c.startsWith('plumbline_session=;')));
     const other = mkSession(UNK);
@@ -312,8 +320,10 @@ async function run() {
       && count('SELECT COUNT(*) n FROM fcm_subscriptions WHERE fcm_token = ?', devX.fcm) === 0
       && count('SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint = ?', devKeep.endpoint) === 1);
     const lo1 = mkSession(ACT), lo2 = mkSession(ACT);
+    const loRows = () => count('SELECT COUNT(*) n FROM sessions WHERE token IN (?,?)', storageKey(lo1), storageKey(lo2));
+    const loBefore = loRows();
     await req('POST', '/auth/logout', { token: lo1, cookies: { plumbline_session: lo2 } });
-    ok('L10 logout ends both the cookie and the Bearer session it presents', count('SELECT COUNT(*) n FROM sessions WHERE token IN (?,?)', lo1, lo2) === 0);
+    ok('L10 logout ends both the cookie and the Bearer session it presents (rows matched by storage key)', loBefore === 2 && loRows() === 0);
     const tBlk = mkSession(BLK);
     r = await req('POST', '/auth/tester-bypass', { token: tBlk });
     ok('L11 a blocked account cannot use tester-bypass to unblock itself', r.status === 401
@@ -497,18 +507,29 @@ async function run() {
 
     // ── H. Expired-session housekeeping ───────────────────────────────────────
     db.prepare('DELETE FROM sessions').run();
-    const ins = (token, exp) => db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(token, OWNER, exp);
+    // Each labelled row is a real (well-formed) token stored only as storageKey(raw)
+    // with the exact expires_at value/format under test; the raw token is kept for lookups.
+    const HTOK = new Map(), HLABEL = new Map();         // label -> raw token; storage key -> label
+    const ins = (label, exp) => {
+      const raw = newSessionToken(), key = storageKey(raw);
+      HTOK.set(label, raw); HLABEL.set(key, label); ISSUED.push(raw);
+      db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(key, OWNER, exp);
+      return raw;
+    };
+    const tok = (label) => HTOK.get(label);
+    const keyOf = (label) => storageKey(HTOK.get(label));
+    const leftLabels = () => new Set(db.prepare('SELECT token FROM sessions').all().map(x => HLABEL.get(x.token) ?? '(unlabelled row)'));
     const iso = (ms) => new Date(Date.now() + ms).toISOString();
     const sqlUtc = (ms) => new Date(Date.now() + ms).toISOString().replace('T', ' ').slice(0, 19);
     ins('h-old', iso(-8 * 864e5)); ins('h-grace', iso(-6 * 864e5)); ins('h-soon', iso(2000)); ins('h-live', iso(3600e3));
     ins('h-legacy-old', sqlUtc(-9 * 864e5)); ins('h-legacy-today-future', sqlUtc(30 * 60e3)); ins('h-nomillis-old', iso(-10 * 864e5).replace(/\.\d{3}Z$/, 'Z'));
     ins('h-garbage', 'not-a-date');
     let removed = await hk.purgeExpiredSessions();
-    const left = new Set(db.prepare('SELECT token FROM sessions').all().map(x => x.token));
+    const left = leftLabels();
     ok('H1 default run removes only rows expired more than the 7-day grace; active and in-grace rows stay',
       removed === 3 && !left.has('h-old') && !left.has('h-legacy-old') && !left.has('h-nomillis-old')
       && left.has('h-grace') && left.has('h-soon') && left.has('h-live') && left.has('h-legacy-today-future'), `removed=${removed}`);
-    ok('H2 unparseable expiry values are never deleted by cleanup (and never authenticate)', left.has('h-garbage') && session.lookupSession('h-garbage') === null);
+    ok('H2 unparseable expiry values are never deleted by cleanup (and never authenticate)', left.has('h-garbage') && session.lookupSession(tok('h-garbage')) === null);
     // A legacy-format row on the cutoff DATE but inside the grace must be kept
     // (the text range alone would include it; the julianday() grace test decides).
     db.prepare('DELETE FROM sessions').run();
@@ -516,24 +537,24 @@ async function run() {
     ins('g-legacy-in-grace', sqlUtc(-graceMs + 60e3));
     ins('g-legacy-past-grace', sqlUtc(-graceMs - 60e3));
     await hk.purgeExpiredSessions();
-    const leftG = new Set(db.prepare('SELECT token FROM sessions').all().map(x => x.token));
+    const leftG = leftLabels();
     ok('H2b a legacy-format row expired just inside the 7-day grace is kept; one just past it is removed',
       leftG.has('g-legacy-in-grace') && !leftG.has('g-legacy-past-grace'));
     db.prepare('DELETE FROM sessions').run();
     ins('b-past1s', iso(-1000)); ins('b-future1s', iso(1500)); ins('b-past10ms', iso(-10)); ins('b-future-legacy', sqlUtc(65e3));
     removed = await hk.purgeExpiredSessions({ graceSeconds: 0 });
-    const left2 = new Set(db.prepare('SELECT token FROM sessions').all().map(x => x.token));
+    const left2 = leftLabels();
     ok('H3 boundary with zero grace: just-expired rows go, rows expiring in ~1s stay and still authenticate',
       !left2.has('b-past1s') && !left2.has('b-past10ms') && left2.has('b-future1s') && left2.has('b-future-legacy')
-      && session.lookupSession('b-future1s') !== null && session.lookupSession('b-future-legacy') !== null, `removed=${removed}`);
+      && session.lookupSession(tok('b-future1s')) !== null && session.lookupSession(tok('b-future-legacy')) !== null, `removed=${removed}`);
     // No active session can ever be removed: every row lookupSession accepts survives any run.
     db.prepare('DELETE FROM sessions').run();
     const mixed = [];
     for (let i = 0; i < 400; i++) { const ms = (i - 200) * 997; const t = `m-${i}`; ins(t, i % 3 ? iso(ms) : sqlUtc(ms)); mixed.push(t); }
-    const activeBefore = mixed.filter(t => session.lookupSession(t));
+    const activeBefore = mixed.filter(t => session.lookupSession(tok(t)));
     await hk.purgeExpiredSessions({ graceSeconds: 0 });
     ok('H4 a zero-grace run over 400 mixed-format rows (±200 s) never removes a row that still authenticates',
-      activeBefore.every(t => count('SELECT COUNT(*) n FROM sessions WHERE token = ?', t) === 1) && activeBefore.length > 100);
+      activeBefore.every(t => count('SELECT COUNT(*) n FROM sessions WHERE token = ?', keyOf(t)) === 1) && activeBefore.length > 100);
     db.prepare('DELETE FROM sessions').run();
     const many = db.transaction(() => { for (let i = 0; i < 1200; i++) ins(`x-${i}`, iso(-8 * 864e5 - i * 1000)); });
     many();
@@ -545,12 +566,16 @@ async function run() {
     ok('H6 cleanup uses the expires_at index (range search, not a full scan)', plan.some(p => /idx_sessions_expires/.test(p.detail)) && !plan.some(p => /^SCAN sessions$/.test(p.detail)), plan.map(p => p.detail).join(' | '));
     const exp = mkSession(ACT, -3600e3);
     r = await req('GET', '/api/whoami', { token: exp });
-    ok('H7 requests never purge (no per-request scan): an expired token is refused but its row is left for housekeeping', r.status === 401 && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', exp) === 1);
+    ok('H7 requests never purge (no per-request scan): an expired token is refused but its row is left for housekeeping', r.status === 401 && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', storageKey(exp)) === 1);
     logged.length = 0;
-    db.prepare('UPDATE sessions SET expires_at = ? WHERE token = ?').run(iso(-8 * 864e5), exp);
+    db.prepare('UPDATE sessions SET expires_at = ? WHERE token = ?').run(iso(-8 * 864e5), storageKey(exp));
     const exp2 = mkSession(ACT, -9 * 864e5);
     await hk.runHousekeeping();
-    ok('H8 housekeeping logs counts only (no tokens)', logged.some(l => /\[Housekeeping\] expired sessions: removed \d+/.test(l)) && !logged.some(l => l.includes(exp) || l.includes(exp2)));
+    // Neither a raw token issued in this run nor any stored 'h1:' key may appear in the log.
+    const rawSecrets = [exp, exp2, ...ISSUED], storedKeys = rawSecrets.map(storageKey);
+    const leaksToken = (l) => /pl1_[A-Za-z0-9_-]{43}/.test(l) || /h1:[0-9a-f]{64}/.test(l)
+      || rawSecrets.some(s => l.includes(s)) || storedKeys.some(k => l.includes(k) || l.includes(k.slice(3)));
+    ok('H8 housekeeping logs counts only (no tokens: neither raw tokens nor stored keys)', logged.some(l => /\[Housekeeping\] expired sessions: removed \d+/.test(l)) && !logged.some(leaksToken));
 
     // Concurrency (in-process): many authenticated requests racing repeated cleanup runs.
     db.prepare('DELETE FROM sessions').run();
@@ -561,23 +586,22 @@ async function run() {
     const results = await Promise.all(racers.map(t => req('GET', '/api/whoami', { token: t })));
     stop = true; await purgeLoop;
     ok('H9 60 concurrent requests during repeated cleanup runs: all authenticate, no active row removed',
-      results.every(x => x.status === 200) && racers.every(t => count('SELECT COUNT(*) n FROM sessions WHERE token = ?', t) === 1) && runs > 1, `runs=${runs}`);
+      results.every(x => x.status === 200) && racers.every(t => count('SELECT COUNT(*) n FROM sessions WHERE token = ?', storageKey(t)) === 1) && runs > 1, `runs=${runs}`);
 
     // Concurrency (cross-process): another process writes and reads sessions in the same DB while we purge.
     const child = spawn(process.execPath, ['-e', `
       console.log = () => {};
       process.env.DB_PATH = ${JSON.stringify(TMP)};
-      const crypto = require('crypto');
       const db = require(${JSON.stringify(path.join(BE, 'db'))});
-      const { lookupSession } = require(${JSON.stringify(path.join(BE, 'utils/session'))});
+      const { lookupSession, createSession } = require(${JSON.stringify(path.join(BE, 'utils/session'))});
+      const { storageKey } = require(${JSON.stringify(path.join(BE, 'utils/sessionToken'))});
       const mine = []; let errors = 0; const end = Date.now() + 1500;
       (async () => {
         while (Date.now() < end) {
           try {
-            const t = crypto.randomBytes(16).toString('hex');
-            db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(t, ${ACT}, new Date(Date.now() + 60000).toISOString());
-            db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run('cx-' + t, ${ACT}, new Date(Date.now() - 86400000).toISOString());
-            mine.push(t);
+            const t = createSession(${ACT}, 60000).token;      // active login
+            createSession(${ACT}, -86400000);                  // an already-expired row for the parent's cleanup
+            mine.push(storageKey(t));                          // report the stored key, never the raw token
             if (!lookupSession(t)) errors++;
           } catch (e) { errors++; }
           await new Promise(r => setImmediate(r));
@@ -594,7 +618,7 @@ async function run() {
     const childRes = JSON.parse(out || '{"mine":[],"errors":-1}');
     ok('H10 cross-process: cleanup racing another process\'s logins causes no errors and removes none of its active sessions',
       childRes.errors === 0 && parentErr === 0 && childRes.mine.length > 20
-      && childRes.mine.every(t => count('SELECT COUNT(*) n FROM sessions WHERE token = ?', t) === 1), `child=${childRes.mine.length} runs=${parentRuns}`);
+      && childRes.mine.every(k => count('SELECT COUNT(*) n FROM sessions WHERE token = ?', k) === 1), `child=${childRes.mine.length} runs=${parentRuns}`);
 
     // Time zones: identical outcome in every server time zone (incl. DST-observing and non-hour offsets).
     const tzScript = (dbPath) => `
@@ -602,15 +626,20 @@ async function run() {
       process.env.DB_PATH = ${JSON.stringify('__DB__')}.replace('__DB__', ${JSON.stringify(dbPath)});
       const db = require(${JSON.stringify(path.join(BE, 'db'))});
       const { lookupSession } = require(${JSON.stringify(path.join(BE, 'utils/session'))});
+      const { newSessionToken, storageKey } = require(${JSON.stringify(path.join(BE, 'utils/sessionToken'))});
       const hk = require(${JSON.stringify(path.join(BE, 'jobs/housekeeping'))});
       const uid = db.prepare("INSERT INTO users (email, display_name) VALUES ('tz@example.test','tz')").run().lastInsertRowid;
       const iso = (ms) => new Date(Date.now() + ms).toISOString();
       const sqlUtc = (ms) => iso(ms).replace('T', ' ').slice(0, 19);
       const rows = { isoPast: iso(-120000), isoFuture: iso(120000), legacyPast: sqlUtc(-7200000), legacyFuture: sqlUtc(7200000), isoGrace: iso(-300000) };
-      for (const [k, v] of Object.entries(rows)) db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(k, uid, v);
-      const valid = Object.keys(rows).filter(k => lookupSession(k));
+      const raw = {}, label = {};                        // label -> raw token; storage key -> label
+      for (const [k, v] of Object.entries(rows)) {
+        raw[k] = newSessionToken(); label[storageKey(raw[k])] = k;
+        db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(storageKey(raw[k]), uid, v);
+      }
+      const valid = Object.keys(rows).filter(k => lookupSession(raw[k]));
       hk.purgeExpiredSessions({ graceSeconds: 60 }).then(n => {
-        const left = db.prepare('SELECT token FROM sessions ORDER BY token').all().map(r => r.token);
+        const left = db.prepare('SELECT token FROM sessions').all().map(r => label[r.token] || '(unlabelled row)').sort();
         process.stdout.write(JSON.stringify({ valid: valid.sort(), removed: n, left, offset: new Date().getTimezoneOffset() }));
       });`;
     const zones = ['UTC', 'America/New_York', 'Australia/Sydney', 'Asia/Kolkata', 'Pacific/Chatham', 'America/St_Johns'];

@@ -44,6 +44,7 @@ router.get('/', requireAuth, (req, res) => {
     }));
 
     console.log(`[Token] Voice token issued for identity: ${identity}`);
+    res.set('Cache-Control', 'no-store');   // a credential: never cached
     return res.json({ token: token.toJwt(), identity });
   } catch (err) {
     console.error('[Token] Failed to generate token:', err.message);

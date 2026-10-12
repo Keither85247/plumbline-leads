@@ -22,6 +22,17 @@ const publicRouter = express.Router();
 publicRouter.get('/', (_req, res) => res.json({ ok: true }));
 
 const ownerRouter = express.Router();
+// Diagnostics are per-request state: never cached by the browser or a proxy.
+ownerRouter.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+
+// Key of the one-time session revocation record in app_settings (counts and a
+// timestamp only — see db.js). null until that revocation has run.
+const SESSION_REVOCATION_KEY = 'session_revocation_2026_10';
+function sessionRevocationRecord() {
+  const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(SESSION_REVOCATION_KEY);
+  if (!row) return null;
+  try { return JSON.parse(row.value); } catch { return { unreadable: true }; }
+}
 
 // Env-flag diagnostic — owner only (reveals sign-up / tester-bypass settings).
 ownerRouter.get('/env', (_req, res) => {
@@ -124,7 +135,20 @@ ownerRouter.get('/push-inventory', (req, res) => {
                                  AND julianday(expires_at) > julianday('now', '-${SESSION_GRACE_SECONDS} seconds')`),
         expiredEligible:    n(`SELECT COUNT(*) AS n FROM sessions WHERE julianday(expires_at) <= julianday('now', '-${SESSION_GRACE_SECONDS} seconds')`),
         unparseable:        n('SELECT COUNT(*) AS n FROM sessions WHERE julianday(expires_at) IS NULL'),
+        // Storage form: 'h1:' = hashed (utils/sessionToken.js); anything else
+        // is a pre-hashing raw row. Counts only — no stored value is returned.
+        byFormat: {
+          hashed:    n("SELECT COUNT(*) AS n FROM sessions WHERE substr(token, 1, 3) = 'h1:'"),
+          legacyRaw: n("SELECT COUNT(*) AS n FROM sessions WHERE substr(token, 1, 3) <> 'h1:'"),
+          legacyRawActive: n("SELECT COUNT(*) AS n FROM sessions WHERE substr(token, 1, 3) <> 'h1:' AND julianday(expires_at) > julianday('now')"),
+        },
+        revocation: sessionRevocationRecord(),
       },
+      mediaTickets: {
+        live: n("SELECT COUNT(*) AS n FROM media_tickets WHERE expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"),
+      },
+      // Which commit is serving (Render sets RENDER_GIT_COMMIT); short id only.
+      build: (process.env.RENDER_GIT_COMMIT || '').slice(0, 7) || null,
       lastHousekeeping: getLastHousekeeping(),
       // Stored media references, classified server-side — COUNTS ONLY, never
       // values. credentialBearing = a query string carrying a token-like

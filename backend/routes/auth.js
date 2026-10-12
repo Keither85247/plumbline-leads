@@ -8,7 +8,7 @@ const db           = require('../db');
 const requireAuth  = require('../middleware/requireAuth');
 const { createBaseClient, syncRecentEmails } = require('../services/gmailService');
 const { revokeGoogleToken, addressInUse } = require('../utils/googleRevoke');   // disconnect only
-const { sessionCandidates, resolveSession, revokeUserSessions, ACCOUNT_DISABLED_ERROR } = require('../utils/session');
+const { sessionCandidates, createSession, findSessionRow, deleteSessionRow, resolveSession, revokeUserSessions, ACCOUNT_DISABLED_ERROR } = require('../utils/session');
 const { isDisabledRow, isAccountActive } = require('../utils/accountStatus');
 const { frontendOrigins, originAllowed, requireAppRequest } = require('../utils/appRequest');
 const { createLimiter, createRecentSet } = require('../utils/rateLimiter');
@@ -164,14 +164,11 @@ router.post('/login', express.json(), async (req, res) => {
     return res.status(403).json(ACCOUNT_DISABLED_ERROR);
   }
 
-  // Create session
+  // Create session — only its hash is stored (utils/sessionToken.js); the raw
+  // token goes to this client once, in the cookie and the response body.
   let token;
   try {
-    token           = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
-    db.prepare(
-      'INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)'
-    ).run(token, user.id, expiresAt);
+    ({ token } = createSession(user.id, SESSION_TTL_MS));
   } catch (sessionErr) {
     console.error(`[Auth] Session save failed for user id=${user.id}:`, sessionErr.message);
     return res.status(500).json({ error: 'Server error creating session' });
@@ -191,10 +188,13 @@ router.post('/login', express.json(), async (req, res) => {
   console.log(`[Auth] assignedNumber for user ${user.id}: ${phoneRow ? phoneRow.phone_number : 'none'}`);
 
   // Include token in response body for Safari ITP (blocked cross-origin cookies).
+  // Never cached: the body carries a credential.
+  res.set('Cache-Control', 'no-store');
   return res.json({
     id:            user.id,
     email:         user.email,
     display_name:  user.display_name,
+    business_name: user.business_name || '',
     is_owner:      user.is_owner,
     access_status: effectiveAccessStatus(user),
     token,
@@ -255,13 +255,10 @@ router.post('/register', express.json(), async (req, res) => {
   }
 
   // Start a session immediately so the user is logged in after signup
+  // (hash stored only; raw token returned once).
   let token;
   try {
-    token           = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
-    db.prepare(
-      'INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)'
-    ).run(token, newUserId, expiresAt);
+    ({ token } = createSession(newUserId, SESSION_TTL_MS));
   } catch (err) {
     console.error(`[Auth] Session save failed after register for user id=${newUserId}:`, err.message);
     return res.status(500).json({ error: 'Account created but could not start session' });
@@ -273,6 +270,7 @@ router.post('/register', express.json(), async (req, res) => {
   console.log(`[Auth] ✓ Register success: user id=${newUserId} (${normalizedEmail}) — SameSite=${opts.sameSite} Secure=${opts.secure}`);
 
   // New accounts never have an assigned phone number yet
+  res.set('Cache-Control', 'no-store');
   return res.status(201).json({
     id:            newUserId,
     email:         normalizedEmail,
@@ -285,35 +283,55 @@ router.post('/register', express.json(), async (req, res) => {
 });
 
 // ── POST /auth/logout ─────────────────────────────────────────────────────────
-// Deletes the session row and clears the cookie.
+// Deletes the session row and clears the cookie. Always 200, with
+// { ok, presented, ended }: `presented` = how many session credentials this
+// request carried (cookie, Bearer). A credential that matches no session is
+// already signed out on the server, so presented > 0 means the sign-out is
+// settled for it; presented === 0 means the server saw nothing to end (e.g. a
+// Safari retry after the token was cleared) and the client must not report a
+// confirmed sign-out. Counts only — never a token or key.
+//
+// A page that is being closed cannot send a Bearer header without a CORS
+// preflight, so it may instead send its token as a text/plain body
+// {"token": …} (a "simple" request). That body token is honoured HERE ONLY —
+// it can end its own session, never authenticate anything.
 
-router.post('/logout', (req, res) => {
-  const { pushEndpoint, fcmToken } = req.body || {};
-  // End every session credential this request presents (cookie and Bearer).
-  for (const { token } of sessionCandidates(req)) {
-    if (token.length > 256) continue;
+router.post('/logout', express.text({ type: 'text/plain', limit: '4kb' }), (req, res) => {
+  let body = req.body || {};
+  if (typeof body === 'string') { try { body = JSON.parse(body) || {}; } catch { body = {}; } }
+  const { pushEndpoint, fcmToken } = body;
+  // End every session credential this request presents (cookie, Bearer, or an
+  // unload-time body token).
+  const presented = sessionCandidates(req);
+  if (typeof body.token === 'string' && body.token && !presented.some(c => c.token === body.token)) {
+    presented.push({ src: 'body', token: body.token });
+  }
+  let ended = 0;
+  for (const { token } of presented) {
     // Remove THIS device's push registration so notifications stop after
     // logout. Scoped to the session's own account; other devices are kept.
     // The row is found even after it expired (housekeeping keeps expired rows
     // for a 7-day grace), so cleanup still works for an expired session.
     // Identifiers are only type/length-checked here so rows stored before
     // validation existed can still be removed; invalid ones are skipped.
-    const session = db.prepare('SELECT user_id FROM sessions WHERE token = ?').get(token);
-    if (session?.user_id) {
+    const session = findSessionRow(token);
+    if (!session) continue;
+    if (session.userId) {
       if (isDeletableIdentifier(pushEndpoint, ENDPOINT_MAX)) {
         db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?')
-          .run(pushEndpoint, session.user_id);
+          .run(pushEndpoint, session.userId);
       }
       if (isDeletableIdentifier(fcmToken, FCM_TOKEN_MAX)) {
         db.prepare('DELETE FROM fcm_subscriptions WHERE fcm_token = ? AND user_id = ?')
-          .run(fcmToken, session.user_id);
+          .run(fcmToken, session.userId);
       }
     }
-    db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+    ended += deleteSessionRow(session);
   }
   res.clearCookie('plumbline_session', clearOptions());
+  res.set('Cache-Control', 'no-store');
   console.log('[Auth] Logout');
-  return res.json({ ok: true });
+  return res.json({ ok: true, presented: presented.length, ended });
 });
 
 // ── GET /auth/me ──────────────────────────────────────────────────────────────
@@ -337,7 +355,7 @@ router.get('/me', (req, res) => {
   }
 
   const row = db.prepare(
-    'SELECT id, email, display_name, is_owner, access_status FROM users WHERE id = ?'
+    'SELECT id, email, display_name, business_name, is_owner, access_status FROM users WHERE id = ?'
   ).get(session.userId);
   if (!row) {
     res.clearCookie('plumbline_session', clearOptions());

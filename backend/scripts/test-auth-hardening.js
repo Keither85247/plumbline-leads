@@ -126,6 +126,8 @@ const cookieParser = require(path.join(BE, 'node_modules/cookie-parser'));
 const twilio       = require(path.join(BE, 'node_modules/twilio'));
 const bcrypt       = require(path.join(BE, 'node_modules/bcrypt'));
 const db           = require(path.join(BE, 'db'));
+const { createSession } = require(path.join(BE, 'utils/session'));
+const { newSessionToken, storageKey, STORAGE_KEY_RE } = require(path.join(BE, 'utils/sessionToken'));
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { (cond ? pass++ : fail++); say(`${cond ? 'PASS' : 'FAIL'}  ${name}${extra ? '  — ' + extra : ''}`); };
@@ -139,11 +141,27 @@ function mkUser(email, { owner = false, suspended = false } = {}) {
   return Number(db.prepare('INSERT INTO users (email, display_name, password_hash, is_owner, is_suspended) VALUES (?,?,?,?,?)')
     .run(email, email, HASH, owner ? 1 : 0, suspended ? 1 : 0).lastInsertRowid);
 }
+// Every RAW session token handed out in this run (fixtures and login/register
+// responses), for the "never in a log / response" audits. Never printed.
+const issuedTokens = new Set();
+// A real session through the app's own factory: only storageKey(token) is stored;
+// the raw token is kept for requests. A negative msFromNow gives an expired row.
 function mkSession(userId, msFromNow = 3600e3) {
-  const t = crypto.randomBytes(16).toString('hex');
-  db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(t, userId, new Date(Date.now() + msFromNow).toISOString());
+  const t = createSession(userId, msFromNow).token;
+  issuedTokens.add(t);
   return t;
 }
+// A well-formed session row with a specific expires_at value/format (stored as
+// its storage key, like the app does); returns the raw token for requests.
+function mkSessionRaw(userId, expiresAtSqlOrValue, { sqlExpr = false } = {}) {
+  const t = newSessionToken();
+  issuedTokens.add(t);
+  if (sqlExpr) db.prepare(`INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,${expiresAtSqlOrValue})`).run(storageKey(t), userId);
+  else db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(storageKey(t), userId, expiresAtSqlOrValue);
+  return t;
+}
+// Raw tokens issued in the run plus their stored 'h1:' keys.
+const sessionSecrets = () => [...issuedTokens].flatMap(t => [t, storageKey(t)]);
 const OWNER = mkUser('owner@example.test', { owner: true });
 const A = mkUser('a@example.test'), B = mkUser('b@example.test'), C = mkUser('c@example.test');
 const SUSP = mkUser('suspended@example.test', { suspended: true });
@@ -188,12 +206,17 @@ async function run() {
     const r = await fetch(base + p, { method, headers: h, body, redirect: 'manual' });
     const text = await r.text();
     let data = null; try { data = JSON.parse(text); } catch {}
-    return { status: r.status, text, data, headers: r.headers, setCookies: r.headers.getSetCookie?.() || [] };
+    const setCookies = r.headers.getSetCookie?.() || [];
+    // Remember session tokens the app hands out (login/register body + cookie) for the leak audits.
+    if (typeof data?.token === 'string' && data.token) issuedTokens.add(data.token);
+    const sc = cookieVal(setCookies, 'plumbline_session');
+    if (sc) issuedTokens.add(sc);
+    return { status: r.status, text, data, headers: r.headers, setCookies };
   }
-  const cookieVal = (setCookies, name) => {
+  function cookieVal(setCookies, name) {
     const c = setCookies.find(s => s.startsWith(name + '='));
     return c ? decodeURIComponent(c.split(';')[0].slice(name.length + 1)) : null;
-  };
+  }
 
   try {
     // ── A. Gmail OAuth: start → launch → callback (parked) → explicit completion ──
@@ -350,13 +373,16 @@ async function run() {
       r.status === 401 && (await complete({}, wv.handle)).status === 401 && lastFlow(C).status === 'parked');
     const extLogin = await req('POST', '/auth/login', { json: { email: 'c@example.test', password: PW }, ip: '198.51.100.40' });
     const extTok = extLogin.data?.token;
+    // Sessions are stored as storageKey(token): look the row up by that, never by the raw token.
+    const extRowBefore = typeof extTok === 'string' ? count('SELECT COUNT(*) n FROM sessions WHERE token = ?', storageKey(extTok)) : 0;
     r = await preview(bearer(extTok), wv.handle);
     const rWvWait = await attempt(bearer(tC));
     const cC = await complete(bearer(extTok), wv.handle, true);
     await req('POST', '/auth/logout', { token: extTok });
     ok('A23 Android: after signing in as the same account in the browser, preview + confirm connect Gmail; the temporary session is then removed',
       r.data?.googleEmail === 'c-mailbox@example.test' && rWvWait.data?.status === 'waiting_for_confirmation' && cC.status === 200
-      && gmailRow(C)?.email === 'c-mailbox@example.test' && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', extTok) === 0);
+      && gmailRow(C)?.email === 'c-mailbox@example.test'
+      && extRowBefore === 1 && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', storageKey(extTok)) === 0);
     ok('A24 Android: the app (WebView session) sees "connected" by polling the attempt status', (await attempt(bearer(tC))).data?.status === 'connected');
 
     // A25 return origin
@@ -624,16 +650,17 @@ async function run() {
     const ev = scrubEvent({ request: { url: `${BASE_URL}/auth/google/callback?code=SECRETCODE&state=S#frag`, cookies: { plumbline_session: tA }, headers: { authorization: `Bearer ${tA}` }, data: '{"handle":"H"}', query_string: 'code=SECRETCODE' },
       breadcrumbs: [{ data: { url: 'https://oauth2.googleapis.com/revoke?token=RTX', 'http.query': '?token=RTX' } }],
       spans: [{ description: `GET ${BASE_URL}/auth/google/launch?t=TICKETX`, data: { 'http.url': `${BASE_URL}/x?t=TICKETX`, 'url.query': 't=TICKETX' } }] });
-    ok('A64 backend Sentry events carry no cookies, headers, bodies, query strings or fragments', !/SECRETCODE|TICKETX|RTX|Bearer|"H"|#frag/.test(JSON.stringify(ev)) && !JSON.stringify(ev).includes(tA));
+    ok('A64 backend Sentry events carry no cookies, headers, bodies, query strings or fragments', !/SECRETCODE|TICKETX|RTX|Bearer|"H"|#frag/.test(JSON.stringify(ev)) && !JSON.stringify(ev).includes(tA) && !JSON.stringify(ev).includes(storageKey(tA)));
     const { scrubBreadcrumb } = require(path.join(BE, 'utils/sentryScrub'));
     const ev2 = scrubEvent({ breadcrumbs: [{ category: 'console', message: '[Poller] stored from jane@example.test' }, { category: 'http', data: { url: 'https://x/y?token=Z' } }] });
     ok('A64b console log text never reaches Sentry breadcrumbs', scrubBreadcrumb({ category: 'console', message: 'x@example.test' }) === null
       && ev2.breadcrumbs.length === 1 && !JSON.stringify(ev2).includes('jane@') && !JSON.stringify(ev2).includes('token=Z'));
 
     // A65 log audit across the whole section
-    const leaked = secrets.filter(s => s.length > 6 && logged.some(l => l.includes(s)));
+    // Includes every session token issued so far, raw AND as its stored 'h1:' key.
+    const leaked = [...secrets, ...sessionSecrets()].filter(s => s.length > 6 && logged.some(l => l.includes(s)));
     const emailsLogged = logged.filter(l => /mailbox@example\.test|@example\.test/.test(l) && /Gmail OAuth|Backfill|Poller/.test(l));
-    ok('A65 no ticket, state, nonce, handle, code, token or Google address appears in any log line', leaked.length === 0 && emailsLogged.length === 0, `${leaked.length} leaked, ${emailsLogged.length} emails`);
+    ok('A65 no ticket, state, nonce, handle, code, token (incl. session tokens, raw or stored key) or Google address appears in any log line', leaked.length === 0 && emailsLogged.length === 0, `${leaked.length} leaked, ${emailsLogged.length} emails`);
 
     // ── B. Suspension and session expiry ────────────────────────────────────
     r = await req('POST', '/auth/login', { json: { email: 'suspended@example.test', password: PW }, ip: '198.51.100.1' });
@@ -655,15 +682,13 @@ async function run() {
     const live = mkSession(A, 2000), dead = mkSession(A, -2000);
     ok('B7 session valid 2 s before expiry', (await req('GET', '/api/whoami', { token: live })).status === 200);
     ok('B8 session rejected 2 s after expiry', (await req('GET', '/api/whoami', { token: dead })).status === 401);
-    const sameDay = crypto.randomBytes(16).toString('hex');
+    // Well-formed tokens stored as their storage key, with hand-written expires_at values.
     const earlier = new Date(Date.now() - 60e3);
-    db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(sameDay, A, earlier.toISOString());
+    const sameDay = mkSessionRaw(A, earlier.toISOString());
     ok('B9 expired earlier the same UTC day → rejected (old text-compare bug)', (await req('GET', '/api/whoami', { token: sameDay })).status === 401 && (await req('GET', '/auth/me', { token: sameDay })).status === 401);
-    const spaceFmt = crypto.randomBytes(16).toString('hex');
-    db.prepare("INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,datetime('now','+1 hour'))").run(spaceFmt, A);
+    const spaceFmt = mkSessionRaw(A, "datetime('now','+1 hour')", { sqlExpr: true });
     ok('B10 legacy "YYYY-MM-DD HH:MM:SS" (UTC) expiry still honoured', (await req('GET', '/api/whoami', { token: spaceFmt })).status === 200);
-    const garbage = crypto.randomBytes(16).toString('hex');
-    db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(garbage, A, 'not-a-date');
+    const garbage = mkSessionRaw(A, 'not-a-date');
     ok('B11 unparseable expiry fails closed', (await req('GET', '/api/whoami', { token: garbage })).status === 401);
 
     const sig = (p, params) => twilio.getExpectedTwilioSignature(AUTH_TOKEN, BASE_URL + p, params);
@@ -828,7 +853,8 @@ async function run() {
     ok('D10 legacy invalid row can still be deleted by its owner', r.status === 200 && count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint = 'http://127.0.0.1:9/legacy'") === 0);
     const tL = mkSession(A);
     r = await req('POST', '/auth/logout', { token: tL, json: { pushEndpoint: 'y'.repeat(5000), fcmToken: { a: 1 } } });
-    ok('D11 logout with junk identifiers still logs out (200, session gone)', r.status === 200 && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', tL) === 0);
+    ok('D11 logout with junk identifiers still logs out (200, session gone)', r.status === 200 && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', storageKey(tL)) === 0
+      && (await req('GET', '/api/whoami', { token: tL })).status === 401);
     db.prepare("INSERT INTO fcm_subscriptions (user_id, fcm_token) VALUES (?, 'legacy bad token!')").run(A);
     r = await req('DELETE', '/api/push/fcm-subscribe', { token: tD, json: { fcmToken: 'legacy bad token!' } });
     ok('D13 legacy invalid FCM token can still be deleted by its owner', r.status === 200 && count("SELECT COUNT(*) n FROM fcm_subscriptions WHERE fcm_token = 'legacy bad token!'") === 0);
@@ -851,10 +877,14 @@ async function run() {
     const rAnon = await req('GET', '/api/health/push-inventory');
     ok('F4 inventory is owner-only (tester 403, anonymous 401)', rT.status === 403 && rAnon.status === 401);
     const sess = r.data?.sessions || {};
-    const allTokens = db.prepare('SELECT token FROM sessions').all().map(x => x.token);
-    ok('F5 inventory reports session housekeeping counts only (active / in grace / eligible / unparseable), never tokens',
+    // The column now holds storage keys ('h1:…'); check those AND every raw token issued in the run.
+    const allKeys = db.prepare('SELECT token FROM sessions').all().map(x => x.token);
+    const tokenLeak = [...allKeys, ...sessionSecrets()].some(t => r.text.includes(t)) || /h1:[0-9a-f]{64}|pl1_[A-Za-z0-9_-]{43}/.test(r.text);
+    ok('F5 inventory reports session housekeeping counts only (active / in grace / eligible / unparseable), never tokens (raw or stored key); every stored row is hashed',
       ['active', 'expiredWithinGrace', 'expiredEligible', 'unparseable'].every(k => Number.isInteger(sess[k])) && sess.active >= 1
-      && 'lastHousekeeping' in r.data && !allTokens.some(t => r.text.includes(t)));
+      && 'lastHousekeeping' in r.data && !tokenLeak
+      && allKeys.length > 0 && allKeys.every(k => STORAGE_KEY_RE.test(k))
+      && Number.isInteger(sess.byFormat?.hashed) && sess.byFormat.hashed === allKeys.length && sess.byFormat.legacyRaw === 0);
   } catch (err) {
     fail++; say('FAIL  harness error — ' + (err.stack || err.message));
   } finally {
