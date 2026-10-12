@@ -4,15 +4,18 @@
  *
  *   T. Token issue and storage: format, once-only return, hash-only storage,
  *      no raw token anywhere in the database files, indexed lookup.
- *   V. Validation: expired, malformed, unknown, stored-key replay, legacy
- *      transition rows (raw 64-hex) — and that a hashed row can never be
- *      matched by the legacy path.
+ *   V. Validation: expired, malformed, unknown, stored-key replay; the
+ *      pre-hashing raw-token path no longer exists.
  *   C. Concurrency: parallel sign-ins → distinct sessions, all valid.
  *   L. Logout: by hash, push cleanup scoped to the session, expired rows
  *      (grace), repeated logout, media tickets die with the session.
  *   I. Owner inventory: counts by storage form, no values, no-store.
  *   X. Exposure: no raw token or stored key in logs or other responses;
  *      credential responses are no-store.
+ *   RV. One-time revocation at boot (child processes): exact counts, every
+ *      row hashed and expired, media tickets deleted, nothing else changed,
+ *      no raw token left in the files, runs once, a restored pre-revocation
+ *      database is revoked again, fallback to deletion.
  *
  * Temp DB, real routers over HTTP, no network. Run:
  *   OPENAI_API_KEY=sk-test node scripts/test-sessions.js
@@ -186,8 +189,8 @@ const legacyRow = (uid, ms = 3600e3) => {
       results.storedKey === 401 && results.storedHexOnly === 401 && (await whoami(expectKey, 'cookie')).status === 401
       && session.lookupSession(expectKey) === null && session.lookupSession(expectKey.slice(3)) === null);
     r = await whoami(legacyA);
-    ok('V3 transition: an unexpired pre-hashing session (raw 64-hex row) still authenticates, so the deploy itself signs nobody out',
-      r.status === 200 && r.data?.userId === A);
+    ok('V3 the pre-hashing raw-token path no longer exists: an unexpired raw 64-hex row never authenticates (not even one restored from a backup)',
+      r.status === 401 && session.lookupSession(legacyA) === null);
     db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run('h1:' + 'ab'.repeat(32), B, iso(3600e3));
     db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run('legacy-not-hex-token-value', A, iso(3600e3));
     ok('V6 only the exact pre-hashing format (64 lowercase hex) can use the legacy path — other raw values never authenticate',
@@ -221,9 +224,15 @@ const legacyRow = (uid, ms = 3600e3) => {
     ok('L3 an expired session (still within the housekeeping grace) is found at logout so its device is cleaned up, then removed',
       r.status === 200 && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', tok.storageKey(expired)) === 0
       && count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint LIKE '%dev-a2'") === 0);
-    const legacyLogout = legacyRow(A);
-    r = await req('POST', '/auth/logout', { token: legacyLogout });
-    ok('L4 a pre-hashing (raw) session can still log out during the transition', r.status === 200 && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', legacyLogout) === 0);
+    // A device signed out by the revocation still holds its old 64-hex token;
+    // its row was stored under the same hash and expired. Logout finds it.
+    const legacyLogout = crypto.randomBytes(32).toString('hex');
+    db.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(tok.storageKey(legacyLogout), A, iso(-1000));
+    db.prepare("INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_id) VALUES (?, 'p', 'a', ?)").run('https://fcm.googleapis.com/fcm/send/dev-rev', A);
+    r = await req('POST', '/auth/logout', { token: legacyLogout, json: { pushEndpoint: 'https://fcm.googleapis.com/fcm/send/dev-rev' } });
+    ok('L4 a device signed out by the revocation can still log out with its old token: its revoked row is found by hash and its push registration removed',
+      r.status === 200 && r.data?.ended === 1 && count('SELECT COUNT(*) n FROM sessions WHERE token = ?', tok.storageKey(legacyLogout)) === 0
+      && count("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint LIKE '%dev-rev'") === 0 && (await whoami(legacyLogout)).status === 401);
     const again = await req('POST', '/auth/logout', { token: tA2 });
     const junk = await req('POST', '/auth/logout', { token: 'h1:' + 'ab'.repeat(32) });
     const none = await req('POST', '/auth/logout', {});
@@ -263,23 +272,122 @@ const legacyRow = (uid, ms = 3600e3) => {
       && fp.every(x => x !== tok.storageKey(tM) && x !== crypto.createHash('sha256').update(`session:${tM}`).digest('hex')));
     const tL = legacyRow(A);
     r = await req('POST', '/api/media/tickets', { token: tL, json: { items: [{ kind: 'greeting' }] }, headers: { Origin: 'https://app.example.test' } });
-    const s3 = await req('GET', `/api/media/stream?mt=${r.data?.tickets?.[0]}`);
-    ok('L7 transition: a pre-hashing session can still mint and play media', s3.status === 200);
+    ok('L7 a pre-hashing token can no longer mint media tickets', r.status === 401);
 
     // ── I. Owner inventory ─────────────────────────────────────────────────
     const tO = session.createSession(OWNER, 3600e3).token; issued.push(tO);
     r = await req('GET', '/api/health/push-inventory', { token: tO });
     const inv = r.data || {};
     const stored = db.prepare('SELECT token FROM sessions').all().map(x => x.token);
-    ok('I1 owner inventory counts sessions by storage form (hashed / legacy raw / legacy raw active), reports no revocation yet, live media tickets and the build',
+    ok('I1 owner inventory counts sessions by storage form (hashed / legacy raw / legacy raw active), reports the revocation record (here: a fresh database, nothing to revoke), live media tickets and the build',
       r.status === 200 && inv.sessions?.byFormat?.hashed === count("SELECT COUNT(*) n FROM sessions WHERE substr(token,1,3)='h1:'")
       && inv.sessions?.byFormat?.legacyRaw === count("SELECT COUNT(*) n FROM sessions WHERE substr(token,1,3)<>'h1:'")
-      && inv.sessions?.byFormat?.legacyRawActive >= 1 && inv.sessions?.revocation === null
+      && inv.sessions?.byFormat?.legacyRawActive >= 1 && inv.sessions?.revocation?.mode === 'expired' && inv.sessions.revocation.before?.total === 0
       && typeof inv.mediaTickets?.live === 'number' && inv.build === 'abcdef1', JSON.stringify({ byFormat: inv.sessions?.byFormat, build: inv.build }));
     ok('I2 the inventory is counts only — no raw token or stored key appears — and is never cached',
       /no-store/.test(r.headers.get('cache-control') || '') && !issued.some(t => r.text.includes(t)) && !stored.some(k => r.text.includes(k)));
     const tester = await req('GET', '/api/health/push-inventory', { token: t1b });
     ok('I3 the inventory stays owner-only (tester 403, anonymous 401)', tester.status === 403 && (await req('GET', '/api/health/push-inventory')).status === 401);
+
+    // ── RV. One-time revocation at boot (child processes, separate database) ──
+    const { execFileSync } = require('child_process');
+    const Database = require(path.join(BE, 'node_modules/better-sqlite3'));
+    const RV = path.join(os.tmpdir(), `plumbline-sessions-rv-${process.pid}.db`);
+    const REC = 'session_revocation_2026_10';
+    cleanupDb(RV);
+    const boot = (code = 'return null;') => JSON.parse(execFileSync(process.execPath, ['-e', `
+      const out = []; for (const m of ['log','warn','error','info']) console[m] = (...a) => out.push(a.map(String).join(' '));
+      require(${JSON.stringify(path.join(BE, 'db'))});
+      const session = require(${JSON.stringify(path.join(BE, 'utils/session'))});
+      const r = (() => { ${code} })();
+      process.stdout.write(JSON.stringify({ r, logs: out }));
+    `], { env: { ...process.env, DB_PATH: RV } }).toString());
+    const hex64 = () => crypto.randomBytes(32).toString('hex');
+    boot();                                              // schema exists (as on the deployed first commit)
+    let d = new Database(RV);
+    d.prepare('DELETE FROM app_settings WHERE key = ?').run(REC);       // = a database that never ran the revocation
+    const u1 = Number(d.prepare("INSERT INTO users (email, display_name, password_hash) VALUES ('rv1@example.test','rv1','x')").run().lastInsertRowid);
+    const u2 = Number(d.prepare("INSERT INTO users (email, display_name, password_hash) VALUES ('rv2@example.test','rv2','x')").run().lastInsertRowid);
+    const L1 = hex64(), L2 = hex64(), U1 = hex64(), H1 = tok.newSessionToken(), H2 = tok.newSessionToken();
+    const insS = d.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)');
+    insS.run(L1, u1, iso(3600e3));                        // pre-hashing, active
+    insS.run(L2, u1, iso(-2 * 864e5));                    // pre-hashing, expired (in grace)
+    insS.run(U1, u2, 'not-a-date');                       // pre-hashing, unparseable expiry
+    insS.run(tok.storageKey(H1), u2, iso(3600e3));        // hashed, active (signed in after the first deploy)
+    insS.run(tok.storageKey(H2), u2, iso(-3600e3));       // hashed, expired
+    const insT = d.prepare(`INSERT INTO media_tickets (ticket_hash,user_id,session_id,session_fp,kind,object_id,part,op,max_uses,uses,expires_at,created_at)
+      VALUES (?,?,1,'fp','call-recording',1,0,'play',200,0,?,?)`);
+    insT.run(hex64(), u1, iso(600e3), iso(0)); insT.run(hex64(), u2, iso(600e3), iso(0));
+    d.prepare("INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_id) VALUES ('https://fcm.googleapis.com/fcm/send/rv-dev', 'p', 'a', ?)").run(u1);
+    d.prepare("INSERT INTO fcm_subscriptions (fcm_token, user_id) VALUES ('rv-fcm-token', ?)").run(u1);
+    const tables = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('sessions','media_tickets','app_settings') AND name NOT LIKE 'sqlite_%'").all().map(x => x.name);
+    const fingerprint = (db_) => Object.fromEntries(tables.map(t => [t, crypto.createHash('sha256').update(JSON.stringify(db_.prepare(`SELECT * FROM "${t}" ORDER BY rowid`).all())).digest('hex')]));
+    const before = fingerprint(d);
+    d.close();
+
+    // While the server keeps running (no close-time checkpoint yet), the WAL
+    // must already be free of the replaced raw tokens.
+    const b1 = boot(`const fs = require('fs'); const wal = ${JSON.stringify(RV + '-wal')};
+                     const walBytes = fs.existsSync(wal) ? fs.readFileSync(wal) : Buffer.alloc(0);
+                     const mainBytes = fs.readFileSync(${JSON.stringify(RV)});
+                     return { lookups: ${JSON.stringify([L1, L2, U1, H1, H2])}.map(t => session.lookupSession(t)),
+                              found: ${JSON.stringify([L1, H1])}.map(t => !!session.findSessionRow(t)),
+                              walHasRaw: ${JSON.stringify([L1, L2, U1])}.some(t => walBytes.includes(Buffer.from(t))),
+                              mainHasRaw: ${JSON.stringify([L1, L2, U1])}.some(t => mainBytes.includes(Buffer.from(t))) };`);
+    d = new Database(RV);
+    const rows = d.prepare('SELECT token, expires_at FROM sessions').all();
+    const rec = JSON.parse(d.prepare('SELECT value FROM app_settings WHERE key = ?').get(REC)?.value || 'null');
+    ok('RV1 first boot revokes every session once: all 5 rows rewritten to the hashed form and expired, none usable',
+      rows.length === 5 && rows.every(r => tok.STORAGE_KEY_RE.test(r.token))
+      && d.prepare("SELECT COUNT(*) n FROM sessions WHERE julianday(expires_at) > julianday('now') OR julianday(expires_at) IS NULL").get().n === 0
+      && [L1, L2, U1].every(t => d.prepare('SELECT COUNT(*) n FROM sessions WHERE token = ?').get(tok.storageKey(t)).n === 1));
+    ok('RV2 the record holds exact pre-revocation counts (never values): 5 total, 2 active, 2 expired, 1 unparseable, 3 legacy raw (1 active), 2 hashed',
+      rec?.mode === 'expired' && rec.before.total === 5 && rec.before.active === 2 && rec.before.expired === 2 && rec.before.unparseable === 1
+      && rec.before.legacyRaw === 3 && rec.before.legacyRawActive === 1 && rec.before.hashed === 2 && rec.rawTokensHashed === 3
+      && rec.invalidated === 3 && rec.mediaTicketsDeleted === 2 && rec.remainingUsable === 0 && !JSON.stringify(rec).match(/[0-9a-f]{64}|pl1_/), JSON.stringify(rec));
+    ok('RV3 no revoked token authenticates afterwards — pre-hashing or hashed', b1.r.lookups.every(x => x === null));
+    ok('RV4 …but a signed-out device can still find its revoked row at logout (by hash) to remove its own push registration', b1.r.found.every(Boolean));
+    ok('RV5 media tickets (bound to sessions) are deleted', d.prepare('SELECT COUNT(*) n FROM media_tickets').get().n === 0);
+    ok('RV6 nothing else changes: users, push and FCM registrations and every other table are byte-for-byte identical',
+      JSON.stringify(fingerprint(d)) === JSON.stringify(before));
+    ok('RV7 the boot log reports counts only — no token or stored key',
+      b1.logs.some(l => /one-time revocation \(expired\): 2 active session\(s\) revoked; 5 row\(s\) retired; 2 media ticket\(s\) deleted/.test(l))
+      && ![L1, L2, U1, H1, H2].some(t => b1.logs.some(l => l.includes(t) || l.includes(tok.storageKey(t)))), b1.logs.join(' | '));
+    d.close();
+    const rvFiles = [RV, `${RV}-wal`].filter(f => fs.existsSync(f)).map(f => fs.readFileSync(f));
+    ok('RV8 the replaced raw tokens are gone from the database files — the WAL while the server is still running (checkpoint) and the main file (secure_delete)',
+      b1.r.walHasRaw === false && b1.r.mainHasRaw === false && ![L1, L2, U1].some(t => rvFiles.some(b => b.includes(Buffer.from(t)))));
+
+    // Second boot: never runs again; sessions created after the revocation survive.
+    const fresh = boot(`return session.createSession(${u1}, 3600e3).token;`).r;
+    const b2 = boot(`return { fresh: !!session.lookupSession(${JSON.stringify(fresh)}) };`);
+    d = new Database(RV);
+    const rec2 = JSON.parse(d.prepare('SELECT value FROM app_settings WHERE key = ?').get(REC).value);
+    ok('RV9 later boots do not revoke again: the record is unchanged and a session created after the revocation still works',
+      rec2.at === rec.at && b2.r.fresh === true && !b2.logs.some(l => /one-time revocation/.test(l)));
+    // A database restored from before the revocation (no record) is revoked again.
+    const L3 = hex64();
+    d.prepare('DELETE FROM app_settings WHERE key = ?').run(REC);
+    d.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(L3, u1, iso(3600e3));
+    d.close();
+    const b3 = boot(`return { l3: session.lookupSession(${JSON.stringify(L3)}), fresh: session.lookupSession(${JSON.stringify(fresh)}) };`);
+    d = new Database(RV);
+    ok('RV10 a restored pre-revocation database is revoked again on boot (a restored raw row can never authenticate)',
+      b3.r.l3 === null && b3.r.fresh === null && !!d.prepare('SELECT 1 FROM app_settings WHERE key = ?').get(REC)
+      && d.prepare('SELECT COUNT(*) n FROM sessions WHERE token = ?').get(tok.storageKey(L3)).n === 1);
+    // Fallback: if the rewrite cannot complete, every session is deleted instead.
+    d.prepare('DELETE FROM app_settings WHERE key = ?').run(REC);
+    d.prepare('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)').run(hex64(), u1, iso(3600e3));
+    d.exec("CREATE TRIGGER rv_block BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT, 'blocked'); END;");
+    d.close();
+    const b4 = boot();
+    d = new Database(RV);
+    const rec4 = JSON.parse(d.prepare('SELECT value FROM app_settings WHERE key = ?').get(REC)?.value || 'null');
+    ok('RV11 if the rewrite fails, every session is deleted instead (mode "deleted") and the server still starts',
+      rec4?.mode === 'deleted' && d.prepare('SELECT COUNT(*) n FROM sessions').get().n === 0 && b4.logs.some(l => /deleting all sessions instead/.test(l)));
+    d.exec('DROP TRIGGER rv_block');
+    d.close();
+    cleanupDb(RV);
 
     // ── X. Exposure ────────────────────────────────────────────────────────
     const vt = await req('GET', '/api/twilio/token', { token: tO });

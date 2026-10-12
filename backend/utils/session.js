@@ -6,11 +6,9 @@
  * Tokens are stored only as utils/sessionToken.storageKey() — never raw. A
  * lookup hashes the presented token and finds the row through the primary-key
  * index on sessions.token, then confirms it with a constant-time comparison.
- *
- * TRANSITION: rows created before hashing hold the raw 64-hex token. Until the
- * one-time revocation retires them, a 64-hex token is matched against raw
- * rows only (never against an 'h1:' hashed row), so no session is locked out
- * by the deploy itself.
+ * Only current-format tokens can authenticate: the pre-hashing raw-token path
+ * was removed after the one-time revocation (db.js), so an old token can never
+ * become valid again — not even if a raw row reappeared from a restored backup.
  *
  * Expiry is an absolute UTC instant: sessions.expires_at is written as an ISO
  * string (toISOString(), 'Z'). Comparing it as TEXT against CURRENT_TIMESTAMP
@@ -23,7 +21,7 @@
 
 const db = require('../db');
 const { disabledSql, ACCOUNT_DISABLED_ERROR } = require('./accountStatus');
-const { TOKEN_RE, LEGACY_TOKEN_RE, STORAGE_PREFIX, newSessionToken, storageKey, sameKey } = require('./sessionToken');
+const { TOKEN_RE, LEGACY_TOKEN_RE, newSessionToken, storageKey, sameKey } = require('./sessionToken');
 
 const SESSION_COLUMNS = `
   SELECT s.rowid   AS sessionId,
@@ -35,14 +33,6 @@ const SESSION_COLUMNS = `
 
 const lookupStmt = db.prepare(`${SESSION_COLUMNS}
   WHERE s.token = ?
-    AND julianday(s.expires_at) > julianday('now')
-`);
-
-// Transition only: a pre-hashing raw row. The prefix test keeps a hashed row
-// from ever matching here, even if someone presents its stored value.
-const legacyLookupStmt = db.prepare(`${SESSION_COLUMNS}
-  WHERE s.token = ?
-    AND substr(s.token, 1, ${STORAGE_PREFIX.length}) <> '${STORAGE_PREFIX}'
     AND julianday(s.expires_at) > julianday('now')
 `);
 
@@ -86,15 +76,10 @@ function createSession(userId, ttlMs) {
  */
 function lookupSession(token) {
   if (typeof token !== 'string' || !token || token.length > MAX_TOKEN_LEN) return null;
-  let row = null;
-  if (TOKEN_RE.test(token)) {
-    const key = storageKey(token);
-    row = lookupStmt.get(key);
-    if (row && !sameKey(row.sessionKey, key)) row = null;
-  } else if (LEGACY_TOKEN_RE.test(token)) {
-    row = legacyLookupStmt.get(token);
-  }
-  if (!row) return null;
+  if (!TOKEN_RE.test(token)) return null;
+  const key = storageKey(token);
+  const row = lookupStmt.get(key);
+  if (!row || !sameKey(row.sessionKey, key)) return null;
   return { userId: row.userId, disabled: !!row.disabled, sessionId: row.sessionId, sessionKey: row.sessionKey };
 }
 
@@ -102,17 +87,15 @@ function lookupSession(token) {
  * The stored row a presented token refers to, EXPIRED OR NOT — for /auth/logout,
  * which must still find an expired row (housekeeping keeps them for a grace
  * period) to remove this device's push registration. Never authenticates.
+ * A pre-hashing (64-hex) token is accepted HERE ONLY: the revocation stored
+ * its row under the same hash, so that device can still clean itself up.
  * @returns {{ sessionId: number, sessionKey: string, userId: number } | null}
  */
 const findAnyStmt = db.prepare('SELECT rowid AS sessionId, token AS sessionKey, user_id AS userId FROM sessions WHERE token = ?');
-const findAnyLegacyStmt = db.prepare(`SELECT rowid AS sessionId, token AS sessionKey, user_id AS userId FROM sessions
-  WHERE token = ? AND substr(token, 1, ${STORAGE_PREFIX.length}) <> '${STORAGE_PREFIX}'`);
 function findSessionRow(token) {
   if (typeof token !== 'string' || !token || token.length > MAX_TOKEN_LEN) return null;
   if (!TOKEN_RE.test(token) && !LEGACY_TOKEN_RE.test(token)) return null;
-  return findAnyStmt.get(storageKey(token))
-    || (LEGACY_TOKEN_RE.test(token) ? findAnyLegacyStmt.get(token) : null)
-    || null;
+  return findAnyStmt.get(storageKey(token)) || null;
 }
 
 // Row id AND stored key: a rowid can be reused (no AUTOINCREMENT) if another

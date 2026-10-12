@@ -14,9 +14,10 @@
  *  • The 'h1:' prefix can never be a valid presented token, so a value read
  *    from a disclosed database (or backup) cannot be replayed as a credential.
  *
- * LEGACY_TOKEN_RE describes tokens issued before hashing (64 lowercase hex,
- * stored raw). They are only recognised so a signed-out device can still
- * find its (hashed, expired) row at logout to remove its push registration.
+ * LEGACY_TOKEN_RE describes tokens issued before hashing (64 lowercase hex).
+ * They never authenticate; they are only recognised at logout so a device
+ * signed out by the one-time revocation can still find its (hashed, expired)
+ * row and remove its own push registration.
  */
 
 const crypto = require('crypto');

@@ -237,8 +237,8 @@ try { db.exec("ALTER TABLE users ADD COLUMN access_status TEXT NOT NULL DEFAULT 
 // One row per login. The `token` column holds only the session token's
 // storage key — 'h1:' + domain-separated SHA-256 (utils/sessionToken.js); the
 // raw token exists only on the client (httpOnly cookie / Bearer). Lookups hash
-// the presented token and use this primary key. Rows created before hashing
-// hold the raw 64-hex token until the one-time revocation retires them.
+// the presented token and use this primary key. Rows from before hashing were
+// rewritten to this form and expired by the one-time revocation (end of file).
 // Rows are invalidated by deleting them (logout) or by expires_at passing
 // (checked on every protected request).
 
@@ -627,5 +627,83 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
+
+// ── One-time session revocation (owner-authorized, October 2026) ──────────────
+// Retires every session that exists when this code first boots on a database —
+// including any whose raw token appeared in pre-ticket media URLs (?token=).
+// Each row is rewritten to its hashed storage form and expired, so no raw
+// token remains at rest and none can authenticate again, while a signed-out
+// device's /auth/logout can still find its row (by hash, within the
+// housekeeping grace) to remove its own push registration; housekeeping then
+// deletes the rows. Media tickets are bound to sessions and are deleted.
+// secure_delete + a WAL checkpoint keep the replaced raw values out of free
+// pages and the WAL. Runs once per database: the record (timestamp and
+// counts, never values) in app_settings makes every later boot skip it — and a
+// database restored from before the revocation (no record) is revoked again.
+// If the rewrite cannot be verified, every session is deleted instead; if even
+// that fails the server still starts (legacy raw tokens are rejected by format
+// regardless) and the missing record shows on the owner inventory.
+const SESSION_REVOCATION_KEY = 'session_revocation_2026_10';
+(function revokeAllSessionsOnce() {
+  if (db.prepare('SELECT 1 FROM app_settings WHERE key = ?').get(SESSION_REVOCATION_KEY)) return;
+  const { storageKey, STORAGE_PREFIX } = require('./utils/sessionToken');
+  const raw = `substr(token, 1, ${STORAGE_PREFIX.length}) <> '${STORAGE_PREFIX}'`;
+  const at = new Date().toISOString();
+  const expiredAt = new Date(Date.now() - 1000).toISOString();
+  const countBefore = () => db.prepare(`SELECT COUNT(*) AS total,
+      COALESCE(SUM(julianday(expires_at) > julianday('now')), 0)  AS active,
+      COALESCE(SUM(julianday(expires_at) <= julianday('now')), 0) AS expired,
+      COALESCE(SUM(julianday(expires_at) IS NULL), 0)             AS unparseable,
+      COALESCE(SUM(NOT (${raw})), 0)                               AS hashed,
+      COALESCE(SUM(${raw}), 0)                                     AS legacyRaw,
+      COALESCE(SUM((${raw}) AND julianday(expires_at) > julianday('now')), 0) AS legacyRawActive
+    FROM sessions`).get();
+  const remaining = () => db.prepare(`SELECT
+      COALESCE(SUM(julianday(expires_at) > julianday('now')), 0) AS usable,
+      COALESCE(SUM(${raw}), 0) AS raw FROM sessions`).get();
+  const save = (rec) => db.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?)')
+    .run(SESSION_REVOCATION_KEY, JSON.stringify(rec));
+
+  const prevSecureDelete = db.pragma('secure_delete', { simple: true });
+  db.pragma('secure_delete = ON');
+  let record = null;
+  try {
+    record = db.transaction(() => {
+      const before = countBefore();
+      const rows = db.prepare(`SELECT rowid AS id, token FROM sessions WHERE ${raw}`).all();
+      const rekey = db.prepare('UPDATE sessions SET token = ? WHERE rowid = ?');
+      for (const r of rows) rekey.run(storageKey(r.token), r.id);
+      const invalidated = db.prepare(`UPDATE sessions SET expires_at = ?
+        WHERE julianday(expires_at) IS NULL OR julianday(expires_at) > julianday(?)`).run(expiredAt, expiredAt).changes;
+      const mediaTicketsDeleted = db.prepare('DELETE FROM media_tickets').run().changes;
+      const left = remaining();
+      if (left.usable || left.raw) throw new Error('verification failed');
+      const rec = { at, mode: 'expired', before, rawTokensHashed: rows.length, invalidated, mediaTicketsDeleted, remainingUsable: 0 };
+      save(rec);
+      return rec;
+    })();
+  } catch (err) {
+    console.error('[Sessions] one-time revocation: rewrite failed — deleting all sessions instead', err?.code || err?.name || 'error');
+    try {
+      record = db.transaction(() => {
+        const before = countBefore();
+        const deleted = db.prepare('DELETE FROM sessions').run().changes;
+        const mediaTicketsDeleted = db.prepare('DELETE FROM media_tickets').run().changes;
+        const rec = { at, mode: 'deleted', before, deleted, mediaTicketsDeleted, remainingUsable: 0 };
+        save(rec);
+        return rec;
+      })();
+    } catch (err2) {
+      console.error('[Sessions] one-time revocation FAILED — sessions left unchanged', err2?.code || err2?.name || 'error');
+    }
+  } finally {
+    db.pragma(`secure_delete = ${prevSecureDelete ? 'ON' : 'OFF'}`);
+  }
+  if (record) {
+    try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* best effort */ }
+    console.log(`[Sessions] one-time revocation (${record.mode}): ${record.before.active} active session(s) revoked; `
+      + `${record.before.total} row(s) retired; ${record.mediaTicketsDeleted} media ticket(s) deleted`);
+  }
+})();
 
 module.exports = db;
