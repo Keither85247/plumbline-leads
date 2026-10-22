@@ -63,6 +63,11 @@ async function fetchToken() {
 
 const identityFor = (userId) => `user_${userId}`;
 
+// How long connect() may take before an outbound attempt is given up.
+export const CONNECT_TIMEOUT_MS = 30_000;
+// How long a finished call shows as 'ended' before the dialer is ready again.
+const ENDED_DISPLAY_MS = 1500;
+
 // The credential this browser signs requests with. Compared, never logged: it
 // changes only when a sign-in ends or another begins (here or in another tab).
 function storedCredential() {
@@ -79,6 +84,8 @@ function storedCredential() {
  *   'account_changed'  voice is off, or on for another account
  *   'session_changed'  the stored credential changed (another tab signed in or
  *                      out before its storage event reached this one)
+ *   'attempt_ended'    the attempt no longer holds the outbound lock (it was
+ *                      given up when connect() did not settle in time)
  *   'device_replaced'  same sign-in, but the call belongs to a Device that has
  *                      since been destroyed and rebuilt (transport recovery)
  */
@@ -86,6 +93,7 @@ export function outboundCallStaleReason(started, now) {
   if (now.generation !== started.generation) return 'voice_torn_down';
   if (started.userId == null || now.userId !== started.userId) return 'account_changed';
   if (now.credential !== started.credential) return 'session_changed';
+  if (now.attempt !== started.attempt) return 'attempt_ended';
   if (now.device !== started.device) return 'device_replaced';
   return null;
 }
@@ -104,6 +112,8 @@ export function outboundCallStaleReason(started, now) {
  * started for one sign-in can never build or update a Device after teardown.
  * An outbound call is also bound to its account, stored credential and Device:
  * one that connect() hands back after any of them changed is hung up unwired.
+ * One outbound attempt runs at a time (outboundRef); while it dials, rings or
+ * is connected, token refresh and transport recovery wait and run afterwards.
  * A 401 on the voice token calls onAuthLost (the session ended server-side).
  */
 export function useVoiceDevice({ onAuthLost } = {}) {
@@ -161,6 +171,11 @@ export function useVoiceDevice({ onAuthLost } = {}) {
     return id;
   }
 
+  function cancelLater(id) {
+    clearTimeout(id);
+    timersRef.current.delete(id);
+  }
+
   // True while a token refresh / device reinit is in flight. Used to
   // dedupe concurrent triggers (tokenWillExpire + visibilitychange + focus
   // can all fire close together when the user returns from background).
@@ -170,6 +185,53 @@ export function useVoiceDevice({ onAuthLost } = {}) {
   // the refresh helper without taking those as deps, so we never tear down
   // the Device mid-call.
   const callInFlightRef = useRef(false);
+
+  // The outbound attempt in progress, from the tap until its call ends — the
+  // lock that keeps a second tap from starting another. phase 'warmup' (backend
+  // pre-warm: the Device may still be rebuilt) → 'dialing' (connect() and the
+  // call: refresh and recovery wait for it). Only the attempt holding it can
+  // release it; teardown clears it for the next sign-in.
+  const outboundRef = useRef(null);   // { phase: 'warmup' | 'dialing' } | null
+  // Refresh / recovery that waited for an outbound call: run once it ends.
+  const deferredRef = useRef(null);   // { kind: 'refresh' | 'recover', reason } | null
+
+  // A call is up, or an outbound attempt is under way: the dialer shows that,
+  // so Device events and refreshes must not reset it to ready / registering.
+  const lineBusy = () => callInFlightRef.current || outboundRef.current !== null;
+
+  // The attempt holding the outbound lock, or null. An outbound call the SDK
+  // has closed without telling us no longer holds it (second layer behind the
+  // 'transportClose' handler in wireCallEvents).
+  function currentOutbound() {
+    const attempt = outboundRef.current;
+    if (attempt?.call?.status?.() === 'closed') attempt.onClosed?.();
+    return outboundRef.current;
+  }
+
+  // Refresh and recovery wait while a call is up or an outbound attempt is
+  // dialing/ringing (they would reset the dialer or destroy the Device under
+  // the call). What waited for the outbound call runs when it ends.
+  function deferForCall(kind, reason) {
+    const dialing = currentOutbound()?.phase === 'dialing';
+    if (!callInFlightRef.current && !dialing) return false;
+    if (dialing) {
+      deferredRef.current = { kind: kind === 'recover' || deferredRef.current?.kind === 'recover' ? 'recover' : 'refresh', reason };
+    }
+    console.log(`[VoiceDevice] call in progress — deferring ${kind}`, { reason });
+    return true;
+  }
+
+  function releaseOutbound(attempt) {
+    if (!attempt || outboundRef.current !== attempt) return;   // a stale attempt never releases a newer one
+    outboundRef.current = null;
+    const deferred = deferredRef.current;
+    deferredRef.current = null;
+    if (deferred) {
+      // After the 'ended' display, which the app watches for its call-list refresh.
+      later(() => (deferred.kind === 'recover' ? recoverVoiceTransport : refreshVoiceSession)(`after_call_${deferred.reason}`),
+        ENDED_DISPLAY_MS + 100);
+    }
+  }
 
   // True while WE are intentionally destroying the device (during transport
   // recovery, unmount, etc.). The Twilio SDK fires `unregistered` either way
@@ -267,11 +329,12 @@ export function useVoiceDevice({ onAuthLost } = {}) {
   //     of a misleading "How did it go?" prompt.
   //   - Every SDK event is logged with CallSid + timing so the call lifecycle
   //     is traceable end-to-end in production logs.
-  function wireCallEvents(call, { isInbound = false, phone = null, generation = generationRef.current } = {}) {
+  function wireCallEvents(call, { isInbound = false, phone = null, generation = generationRef.current, attempt = null } = {}) {
     const MIN_REAL_CALL_MS = 3000;
     // A call outlives nothing: once voice is torn down (sign-out or account
     // change) its late events must not log it or prompt under another account.
-    // An outbound call passes the generation its attempt began in.
+    // An outbound call passes the generation its attempt began in, and the
+    // attempt, whose lock it releases when it ends.
     const stale = () => generation !== generationRef.current;
     // Captured in closure so the disconnect handler can compute call duration
     // without racing the React state setter for `status`.
@@ -319,8 +382,13 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       setStatus('connected');
     });
 
-    call.on('disconnect', () => {
-      if (stale()) return;
+    // Runs once: on 'disconnect' or, for an outbound call, when the SDK closed
+    // it without one (see 'transportClose' below).
+    let ended = false;
+    const onDisconnect = () => {
+      if (stale() || ended) return;
+      ended = true;
+      releaseOutbound(attempt);
       const disconnectedAt = Date.now();
       const duration = acceptedAt ? disconnectedAt - acceptedAt : 0;
       const reallyConnected = acceptedAt !== null && duration >= MIN_REAL_CALL_MS;
@@ -397,12 +465,27 @@ export function useVoiceDevice({ onAuthLost } = {}) {
         }
       }
 
-      // Brief "ended" display, then back to ready
-      later(() => setStatus(deviceRef.current ? 'ready' : 'idle'), 1500);
-    });
+      // Brief "ended" display, then back to ready — unless the next call has
+      // started meanwhile.
+      later(() => setStatus(s => (s === 'ended' ? (deviceRef.current ? 'ready' : 'idle') : s)), ENDED_DISPLAY_MS);
+    };
+    call.on('disconnect', onDisconnect);
+
+    if (attempt) {
+      // When signalling drops before an outbound call is answered, the SDK
+      // marks the call closed right after 'transportClose' and emits nothing
+      // more — no 'disconnect', and hangUp() is then a no-op. Treat it as ended,
+      // or its attempt would hold the lock (and the waiting recovery) for good.
+      attempt.call = call;
+      attempt.onClosed = onDisconnect;
+      call.on('transportClose', () => {
+        Promise.resolve().then(() => { if (call.status?.() === 'closed') onDisconnect(); });
+      });
+    }
 
     call.on('cancel', () => {
       if (stale()) return;
+      releaseOutbound(attempt);
       console.log('[VoiceDevice] Event: cancel', {
         callSid: initialCallSid,
         acceptedAt,
@@ -418,6 +501,7 @@ export function useVoiceDevice({ onAuthLost } = {}) {
 
     call.on('error', (err) => {
       if (stale()) return;
+      releaseOutbound(attempt);
       stopAllAlerts();
       console.error('[VoiceDevice] Event: error', {
         callSid: initialCallSid,
@@ -465,7 +549,7 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       if (!current()) return;
       console.log('[VoiceDevice] Registered — ready for calls');
       setError(null);   // clear any stale reconnect error
-      setStatus('ready');
+      if (!lineBusy()) setStatus('ready');   // a call or dial attempt keeps its own status
     });
 
     device.on('unregistered', () => {
@@ -475,13 +559,13 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       // as part of the teardown — no recovery needed; the new device's
       // 'registered' event will set us back to 'ready'.
       if (destroyingRef.current) {
-        setStatus('idle');
+        if (!lineBusy()) setStatus('idle');
         return;
       }
       // Otherwise the transport unregistered on its own (network blip,
       // server drop). Treat it as a transport failure and recover.
       console.warn('[VoiceDevice] Unexpected unregister — initiating transport recovery');
-      setStatus('registering');
+      if (!lineBusy()) setStatus('registering');
       recoverVoiceTransport('unexpected_unregister');
     });
 
@@ -493,7 +577,7 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       if (!current()) return;
       console.warn('[VoiceDevice] Event: offline — websocket transport lost');
       if (destroyingRef.current) return;  // our own destroy fires offline too
-      setStatus('registering');
+      if (!lineBusy()) setStatus('registering');
       recoverVoiceTransport('device_offline');
     });
 
@@ -541,6 +625,7 @@ export function useVoiceDevice({ onAuthLost } = {}) {
         recoverVoiceTransport(`transport_error_${err.code}`);
         return;
       }
+      if (lineBusy()) return;   // a call's own failure arrives on the call; don't offer Retry over it
       setError(err.message);
       setStatus('failed');
     });
@@ -576,6 +661,8 @@ export function useVoiceDevice({ onAuthLost } = {}) {
     activeUserIdRef.current = null;
     refreshingRef.current = false;
     callInFlightRef.current = false;
+    outboundRef.current = null;          // an attempt of the ended sign-in can no longer release it
+    deferredRef.current = null;
     transportErrorWindowRef.current = [];
     stopAllAlerts();
     for (const id of timersRef.current) clearTimeout(id);
@@ -641,10 +728,13 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       console.log('[VoiceDevice] recover already in flight — skipping', { reason });
       return;
     }
-    if (callInFlightRef.current) {
+    // A manual Retry still goes ahead while an outbound call is only dialing
+    // (the user asked for it); nothing runs during a live call.
+    if (reason === 'manual_retry' && callInFlightRef.current) {
       console.log('[VoiceDevice] active call — deferring transport recovery', { reason });
       return;
     }
+    if (reason !== 'manual_retry' && deferForCall('recover', reason)) return;
 
     // Burst dedupe — only applies to automatic triggers, not manual retry
     if (reason !== 'manual_retry') {
@@ -670,12 +760,15 @@ export function useVoiceDevice({ onAuthLost } = {}) {
     refreshingRef.current = true;
     const generation = generationRef.current;
     console.log('[VoiceDevice] recoverVoiceTransport start', { reason });
-    setStatus('registering');
+    if (reason === 'manual_retry') deferredRef.current = null;   // this recovery replaces what waited
+    if (!lineBusy()) setStatus('registering');
 
     try {
       const { token, identity } = await fetchToken();
       if (generation !== generationRef.current) return;      // torn down meanwhile
       if (identity !== identityFor(userId)) throw new Error('Voice session belongs to another account');
+      // Started during a warm-up, the call may be dialing by now.
+      if (reason === 'manual_retry' ? callInFlightRef.current : deferForCall('recover', reason)) return;
 
       if (deviceRef.current) {
         try {
@@ -697,6 +790,7 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       if (generation !== generationRef.current) return;
       if (err instanceof VoiceAuthError) { authLost(err); return; }
       console.error('[VoiceDevice] recoverVoiceTransport failed', { reason, err: err.message });
+      if (deferForCall('recover', reason)) return;            // try again once the call ends
       setError(err.message);
       setStatus('failed');
     } finally {
@@ -721,10 +815,7 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       console.log('[VoiceDevice] refresh already in flight — skipping', { reason });
       return;
     }
-    if (callInFlightRef.current) {
-      console.log('[VoiceDevice] active call — deferring refresh', { reason });
-      return;
-    }
+    if (deferForCall('refresh', reason)) return;
 
     refreshingRef.current = true;
     console.log('[VoiceDevice] refreshVoiceSession start', { reason });
@@ -747,6 +838,7 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       const { token: newToken, identity } = await fetchToken();
       if (generation !== generationRef.current) return;      // torn down meanwhile
       if (identity !== identityFor(userId)) throw new Error('Voice session belongs to another account');
+      if (deferForCall('refresh', reason)) return;           // started during a warm-up; now dialing
 
       if (deviceRef.current && deviceUserIdRef.current !== userId) {
         // Never re-point a Device at another identity with updateToken():
@@ -763,7 +855,7 @@ export function useVoiceDevice({ onAuthLost } = {}) {
           console.log('[VoiceDevice] updateToken succeeded', { reason });
           // updateToken does not re-emit 'registered' on a Device that already
           // is: settle the dialer back to ready ourselves.
-          if (deviceRef.current.state === 'registered' && !callInFlightRef.current) setStatus('ready');
+          if (deviceRef.current.state === 'registered' && !lineBusy()) setStatus('ready');
         } catch (updateErr) {
           // If updateToken throws (device in a fatal state, destroyed, etc.),
           // recreate the Device with the fresh token.
@@ -788,6 +880,7 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       if (generation !== generationRef.current) return;
       if (err instanceof VoiceAuthError) { authLost(err); return; }
       console.error('[VoiceDevice] refreshVoiceSession failed', { reason, err: err.message });
+      if (deferForCall('refresh', reason)) return;            // try again once the call ends
       setError(err.message);
       setStatus('failed');
     } finally {
@@ -917,9 +1010,10 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       await initialize(userId);
     } else if (deviceRef.current.state !== 'registered') {
       await recoverVoiceTransport(`mic_granted_${reason}`);
-    } else if (!callInFlightRef.current) {
-      // Don't stomp 'incoming'/'connected' if a call arrived while the
-      // card was up — only settle back to ready when the line is idle.
+    } else if (!lineBusy()) {
+      // Don't stomp 'incoming'/'connected'/'dialing' if a call arrived or
+      // is being placed while the card was up — only settle back to ready
+      // when the line is idle.
       setStatus('ready');
     }
   }, [initialize, recoverVoiceTransport, teardown]);
@@ -1010,6 +1104,13 @@ export function useVoiceDevice({ onAuthLost } = {}) {
   // ── Outbound call ──────────────────────────────────────────────────────────
 
   const makeCall = useCallback(async (to) => {
+    // One outbound attempt at a time: a second tap (e.g. during the warm-up)
+    // is ignored. The lock is taken before the first await.
+    if (currentOutbound()) {
+      console.warn('[VoiceDevice] makeCall ignored — a call is already being placed');
+      return;
+    }
+    const e164 = toE164(to);   // before the lock: a bad number must not leave it held
     const device = deviceRef.current;
     const generation = generationRef.current;
     const userId = activeUserIdRef.current;
@@ -1018,6 +1119,8 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       setError('Voice device not initialized. Tap the mic button to connect.');
       return;
     }
+    const attempt = { phase: 'warmup' };
+    outboundRef.current = attempt;
 
     // Pre-warm the Render backend: retry until it responds 200 (up to 60s).
     // Render free-tier returns 502 during cold starts (~30s) and fetch() throws
@@ -1053,6 +1156,7 @@ export function useVoiceDevice({ onAuthLost } = {}) {
     if (generation !== generationRef.current) return;
     const liveDevice = deviceRef.current;
     if (!liveDevice) {
+      releaseOutbound(attempt);
       setError('Call did not connect. Please try again.');
       setStatus('failed');
       return;
@@ -1061,27 +1165,31 @@ export function useVoiceDevice({ onAuthLost } = {}) {
     // The sign-in, account, credential and Device this call belongs to. It is
     // re-checked before connect() and again the moment connect() settles:
     // teardown destroys the Device, but not a call it has not handed back yet.
-    const started = { generation, userId, credential, device: liveDevice };
+    const started = { generation, userId, credential, device: liveDevice, attempt };
     const staleReason = () => outboundCallStaleReason(started, {
       generation: generationRef.current,
       userId: activeUserIdRef.current,
       credential: storedCredential(),
       device: deviceRef.current,
+      attempt: outboundRef.current,
     });
     // Give the attempt up: hang up the call (if connect() produced one) with no
     // handler attached, so none of its later events can reach the next
-    // sign-in. disconnect() on an ended call is a no-op. The dialer is settled
-    // only while it still belongs to this sign-in (no teardown since), and
-    // never over a call that went live meanwhile (e.g. an inbound ring).
+    // sign-in. disconnect() on an ended call is a no-op. The attempt's lock is
+    // released. The dialer is settled only while it still belongs to this
+    // sign-in (no teardown since) and this attempt (it still held the lock),
+    // and never over a call that went live meanwhile (e.g. an inbound ring).
     const abandon = (call, reason) => {
       console.warn('[VoiceDevice] outbound call dropped — no longer this sign-in\'s', {
         reason,
         callSid: call?.parameters?.CallSid || null,
       });
       try { call?.disconnect(); } catch { /* already gone */ }
-      if (generation !== generationRef.current) return;
+      const owned = outboundRef.current === attempt;
+      releaseOutbound(attempt);
+      if (generation !== generationRef.current || !owned) return;
       const keepLive = (next) => (s) => (s === 'incoming' || s === 'ringing' || s === 'connected' ? s : next);
-      if (reason === 'device_replaced') {
+      if (reason === 'device_replaced' || reason === 'connect_timeout') {
         setError('Call did not connect. Please try again.');
         setStatus(keepLive('failed'));
       } else {
@@ -1092,14 +1200,20 @@ export function useVoiceDevice({ onAuthLost } = {}) {
     const before = staleReason();
     if (before) { abandon(null, before); return; }
 
-    const e164 = toE164(to);
     setRemoteIdentity(e164);
     setStatus('dialing');
     setError(null);
+    // From here refresh and recovery wait for this call (see deferForCall). If
+    // connect() never settles (the SDK can hang on a dead signalling
+    // connection), the attempt is given up so the lock and the deferred work
+    // are not held for good; a late settle is then dropped as 'attempt_ended'.
+    attempt.phase = 'dialing';
+    const watchdog = later(() => abandon(null, 'connect_timeout'), CONNECT_TIMEOUT_MS);
 
     try {
       console.log('[VoiceDevice] makeCall → device.connect', { to: e164, at: Date.now() });
       const call = await liveDevice.connect({ params: { To: e164 } });
+      cancelLater(watchdog);
       console.log('[VoiceDevice] device.connect resolved', {
         to: e164,
         callSid: call?.parameters?.CallSid || null,
@@ -1112,7 +1226,7 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       // and the re-check below drops the call. isInbound: false + phone
       // captured — disconnect will trigger the post-call note modal ONLY if
       // the call truly connected (see MIN_REAL_CALL_MS in wireCallEvents).
-      wireCallEvents(call, { isInbound: false, phone: e164, generation });
+      wireCallEvents(call, { isInbound: false, phone: e164, generation, attempt });
       setActiveCall(call);
       const late = staleReason();
       if (late) {
@@ -1120,8 +1234,9 @@ export function useVoiceDevice({ onAuthLost } = {}) {
         abandon(call, late);
       }
     } catch (err) {
-      // err can be undefined: the SDK rejects without a reason when signalling
-      // closes while connect() waits.
+      cancelLater(watchdog);
+      // err can be undefined or null: the SDK rejects without a reason when
+      // signalling closes while connect() waits.
       console.error('[VoiceDevice] makeCall failed', {
         to: e164,
         code: err?.code,
@@ -1135,6 +1250,7 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       // Mic denied while connect() was acquiring media — show the mic card,
       // not the raw error.
       if (isMicPermissionError(err)) {
+        releaseOutbound(attempt);
         reportMicBlocked('makecall', err);
         return;
       }
@@ -1144,14 +1260,18 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       // A 31009/31005/53000 here means the transport was dead when the user
       // pressed Call. The device.on('error') handler will also fire and kick
       // off recovery, but we trigger it explicitly so a slow event delivery
-      // doesn't leave the user stuck on a sticky 'failed' state.
-      if (err.code === 31009 || err.code === 31005 || err.code === 53000) {
+      // doesn't leave the user stuck on a sticky 'failed' state. It replaces
+      // whatever recovery or refresh waited for this call.
+      const transport = err?.code === 31009 || err?.code === 31005 || err?.code === 53000;
+      if (transport) deferredRef.current = null;
+      releaseOutbound(attempt);
+      if (transport) {
         console.warn('[VoiceDevice] makeCall hit transport error — initiating hard recovery');
         recoverVoiceTransport(`makecall_transport_${err.code}`);
         // status will move via the recovery path; don't pin 'failed' here
         return;
       }
-      setError(err.message);
+      setError(err?.message || 'Call did not connect. Please try again.');
       setStatus('failed');
     }
   }, [recoverVoiceTransport]);

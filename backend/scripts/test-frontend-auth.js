@@ -152,14 +152,20 @@ win.localStorage = localStorage;
 win.addEventListener = win.addEventListener.bind(win);
 
 // ── Fake Twilio Device (SDK 2.18 semantics) ────────────────────────────────
-const Fake = { devices: [], registrations: [], destroyCalls: 0, updateTokens: 0, calls: [], REJECT_UNDEFINED: Symbol('reject without a reason') };
+const Fake = { devices: [], registrations: [], destroyCalls: 0, updateTokens: 0, calls: [], REJECT_UNDEFINED: Symbol('reject without a reason'), REJECT_NULL: Symbol('reject with null') };
 class FakeCall {
-  constructor(parameters) { this.parameters = parameters; this.customParameters = new Map(); this.listeners = {}; this.disconnects = 0; this.onAttach = null; }
+  constructor(parameters) { this.parameters = parameters; this.customParameters = new Map(); this.listeners = {}; this.disconnects = 0; this.onAttach = null; this._status = 'pending'; }
+  status() { return this._status; }
   // onAttach (set by a test) runs once, inside the first handler registration.
   on(evt, fn) { (this.listeners[evt] ||= []).push(fn); const hook = this.onAttach; this.onAttach = null; hook?.(evt); return this; }
   emit(evt, ...a) { for (const fn of [...(this.listeners[evt] || [])]) fn(...a); }
   listenerTotal() { return Object.values(this.listeners).reduce((n, l) => n + l.length, 0); }
-  accept() {} reject() { events.push('call:reject'); } disconnect() { this.disconnects++; events.push('call:disconnect'); }
+  accept() {} reject() { events.push('call:reject'); }
+  // Like the SDK: hanging up an open call emits 'disconnect'; on a closed one it does nothing.
+  disconnect() { this.disconnects++; events.push('call:disconnect'); if (this._status === 'closed') return; this._status = 'closed'; this.emit('disconnect', this); }
+  // Signalling dropped before the call was answered: the SDK emits
+  // 'transportClose', marks the call closed and emits nothing else.
+  dropTransport() { this.emit('transportClose'); this._status = 'closed'; }
 }
 class FakeDevice {
   constructor(token) {
@@ -168,6 +174,7 @@ class FakeDevice {
     this.state = 'unregistered';
     this.listeners = {};
     this.destroyed = false;
+    this.handed = [];                     // calls connect() returned
     Fake.devices.push(this);
     events.push(`device:new:${this.identity}`);
   }
@@ -186,6 +193,7 @@ class FakeDevice {
     this.destroyed = true;
     Fake.destroyCalls++;
     events.push(`device:destroy:${this.identity}`);
+    for (const call of this.handed) if (call.status() !== 'closed') call.disconnect();   // like disconnectAll()
     this.state = 'destroyed';
     this.emit('unregistered');            // synchronously, like the SDK
     this.emit('destroyed');
@@ -202,10 +210,12 @@ class FakeDevice {
       const outcome = await Fake.connectGate;
       if (outcome instanceof Error) throw outcome;
       if (outcome === Fake.REJECT_UNDEFINED) throw undefined;   // like the SDK when signalling closes meanwhile
+      if (outcome === Fake.REJECT_NULL) throw null;
     }
     const call = new FakeCall({ CallSid: 'CA' + 'f'.repeat(32), To: params?.To });
     Fake.onCall?.(call);
     Fake.calls.push(call);
+    this.handed.push(call);
     return call;
   }
 }
@@ -291,6 +301,7 @@ globalThis.fetch = async (url, opts = {}) => {
     S.tokenRequests++;
     if (S.tokenGate) await S.tokenGate;
     if (S.tokenCode) return unauth(S.tokenCode);
+    if (S.tokenMode === '500') return json(500, { error: 'Failed to fetch voice token' });
     if (!uid) return unauth();
     const identity = S.tokenIdentityOverride || `user_${uid}`;
     return json(200, { token: `jwt.${identity}.${++S.n}`, identity });
@@ -1060,13 +1071,14 @@ async function main() {
     ok('H2 forced 401 sign-out while connect() is pending: the late call is hung up and unwired, its late events do nothing, "session ended" shown',
       dropped(c) && quiet(v) && v.status === 'idle' && loginPage()?.props.notice?.kind === 'expired' && !ev.includes('ensure-logged'), ev.join(','));
 
-    // Voice-token rejection: a refresh while connect() is pending gets a 401.
+    // Voice-token rejection while connect() is pending: a manual Retry (which,
+    // unlike automatic refreshes, still runs while a call is only dialing) gets a 401.
     const tH2b = seed(1);
     await freshApp({ token: tH2b });
     p = await pendingCall('5550000021');
     m = mark('H2b');
     S.sessions.delete(tH2b);
-    win.dispatchEvent(new Event('focus'));               // soft refresh → Voice token 401 → authLost
+    voiceProp().retryVoiceSession();                     // recovery → Voice token 401 → authLost
     await waitFor(() => !!loginPage());
     await settle();
     c = await lateResolve(p);
@@ -1250,7 +1262,7 @@ async function main() {
     // A late transport failure after every other way a sign-in can end (or change).
     const endings = {
       forced401: async () => { S.sessions.delete(store.get('plumbline_token')); await poll(); await waitFor(() => !!loginPage()); await settle(); },
-      voiceToken401: async () => { S.sessions.delete(store.get('plumbline_token')); win.dispatchEvent(new Event('focus')); await waitFor(() => !!loginPage()); await settle(); },
+      voiceToken401: async () => { S.sessions.delete(store.get('plumbline_token')); voiceProp().retryVoiceSession(); await waitFor(() => !!loginPage()); await settle(); },
       initializeOther: async () => { S.sessions.set(store.get('plumbline_token'), 2); await voiceProp().initialize(2); await waitFor(() => live().join() === 'user_2'); await settle(); },
       otherTabEvent: async () => { const e = new Event('storage'); e.key = 'plumbline_token'; win.dispatchEvent(e); await settle(); },
       otherTabNoEventYet: async () => { store.set('plumbline_token', seed(2)); },
@@ -1308,7 +1320,7 @@ async function main() {
     noteReason('H8', p.logN, 'voice_torn_down');
     v = voiceProp();
     ok('H8 a teardown landing while the call\'s handlers are being attached (after the final check): the call is hung up and is not left as the active call',
-      !!c && c.disconnects === 1 && v.activeCall === null && v.status === 'idle' && reloads === r0H + 1 && live().length === 0,
+      !!c && c.disconnects >= 1 && c.status() === 'closed' && v.activeCall === null && v.status === 'idle' && reloads === r0H + 1 && live().length === 0,
       JSON.stringify({ d: c?.disconnects, a: !!v.activeCall, s: v.status }));
     await lateEvents(c);
     ev = sinceMark(m);
@@ -1339,19 +1351,25 @@ async function main() {
       && v.pendingPostCallNote?.phone === '+15550000025' && v.activeCall === null && c?.disconnects === 0, JSON.stringify({ sRinging, sConnected, s: v.status }));
     v.clearPostCallNote();
     await settle(1600);
-    // A token refresh of the same Device while connect() is pending keeps the call.
+    // A token refresh while connect() is pending waits for the call, then runs.
     p = await pendingCall('5550000026');
     const devH9 = liveDevice();
     const upd0 = Fake.updateTokens;
     win.dispatchEvent(new Event('focus'));
-    await waitFor(() => Fake.updateTokens > upd0);
-    await settle(30);
+    await settle(60);
+    const sDuringRefresh = voiceProp().status, updDuring = Fake.updateTokens;
     c = await lateResolve(p);
     v = voiceProp();
-    ok('H9c a token refresh of the same Device while connect() is pending keeps the call (active, wired, not hung up)',
-      Fake.updateTokens > upd0 && liveDevice() === devH9 && !!c && v.activeCall === c && c.disconnects === 0 && c.listenerTotal() === 5);
+    const keptH9c = liveDevice() === devH9 && !!c && v.activeCall === c && c.disconnects === 0 && c.listenerTotal() === 6;
     c?.emit('disconnect');
-    await settle(1600);
+    await settle(40);
+    const sEnded = voiceProp().status, updEnded = Fake.updateTokens;
+    await waitFor(() => Fake.updateTokens > upd0, 4000);
+    await settle(60);
+    ok('H9c a token refresh while connect() is pending waits (dialer stays "dialing", no token update), keeps the call, and runs once the call has ended and shown "ended"',
+      sDuringRefresh === 'dialing' && updDuring === upd0 && keptH9c && sEnded === 'ended' && updEnded === upd0
+      && Fake.updateTokens === upd0 + 1 && voiceProp().status === 'ready' && liveDevice() === devH9,
+      JSON.stringify({ sDuringRefresh, updDuring, upd0, sEnded, now: Fake.updateTokens, s: voiceProp().status, keptH9c }));
     // A current call whose connect() fails is still reported exactly as before.
     p = await pendingCall('5550000030');
     caught = await lateReject(p, Object.assign(new Error('Call declined'), { code: 31002 }));
@@ -1396,22 +1414,453 @@ async function main() {
 
     // The decision itself: each input alone decides.
     const why = voiceHook.outboundCallStaleReason;
-    const DH = {}, DH2 = {};
-    const base = { generation: 3, userId: 1, credential: 'cred-a', device: DH };
+    const DH = {}, DH2 = {}, AT = {};
+    const base = { generation: 3, userId: 1, credential: 'cred-a', device: DH, attempt: AT };
     const decisions = [
       [{}, null],
       [{ generation: 4 }, 'voice_torn_down'],
       [{ userId: null }, 'account_changed'], [{ userId: 2 }, 'account_changed'],
       [{ credential: null }, 'session_changed'], [{ credential: 'cred-b' }, 'session_changed'],
+      [{ attempt: null }, 'attempt_ended'], [{ attempt: {} }, 'attempt_ended'],
       [{ device: null }, 'device_replaced'], [{ device: DH2 }, 'device_replaced'],
     ].map(([d, want]) => ({ d: Object.keys(d).join() || 'none', got: why(base, { ...base, ...d }), want }));
-    ok('H11 outboundCallStaleReason: generation, account, credential and Device each decide on their own; nothing changed → still current',
+    ok('H11 outboundCallStaleReason: generation, account, credential, attempt lock and Device each decide on their own; nothing changed → still current',
       decisions.every(x => x.got === x.want), JSON.stringify(decisions.filter(x => x.got !== x.want)));
     ok('H11b an attempt that began with voice off (no account) is never current', why({ ...base, userId: null }, { ...base, userId: null }) === 'account_changed');
     ok('H13 each dropped attempt\'s log line names why (torn down / session changed / Device replaced)',
       reasons.length === 8 && reasons.every(r => r.got === r.want), JSON.stringify(reasons.filter(r => r.got !== r.want)));
     ok('H12 no session token appears in any console line (incl. the dropped-call log), and no render errors',
       !logged.some(l => /pl1_[A-Za-z0-9_-]{43}/.test(l)) && R.errors.length === 0 && R.hookCountErrors === 0, String(R.errors[0] || ''));
+
+    // ── I. Outbound call state while dialing ─────────────────────────────────
+    // Refresh and recovery wait for an outbound call that is dialing, ringing
+    // or connected, and run once it ends; one attempt at a time, released only
+    // by the attempt holding the lock; connect() failures without a reason
+    // settle. Fake calls only.
+    const countEv = (list, pred) => list.filter(pred).length;
+    const ignoredSince = (n) => logged.slice(n).filter(l => l.includes('makeCall ignored')).length;
+
+    // Token refreshes while connect() is pending and while the call rings.
+    await freshApp({ token: seed(1) });
+    let devI = liveDevice();
+    const updI1 = Fake.updateTokens;
+    p = await pendingCall('5550000040');
+    m = mark('I1');
+    win.dispatchEvent(new Event('focus'));
+    devI.emit('tokenWillExpire');
+    await settle(60);
+    const sPendingI1 = voiceProp().status;
+    c = await lateResolve(p);
+    c?.emit('ringing'); await settle(10);
+    win.dispatchEvent(new Event('focus'));
+    devI.emit('error', Object.assign(new Error('AccessTokenExpired'), { code: 20104 }));
+    await settle(60);
+    ev = sinceMark(m);
+    v = voiceProp();
+    ok('I1 token refreshes (focus, tokenWillExpire, 20104) while connect() is pending or the call rings wait: the dialer keeps "dialing" then "ringing", no token is fetched or applied, the call stays up',
+      sPendingI1 === 'dialing' && v.status === 'ringing' && !!c && v.activeCall === c && c.disconnects === 0 && Fake.updateTokens === updI1
+      && !ev.includes('fetch:GET /api/twilio/token') && !ev.some(e => e.startsWith('device:')), JSON.stringify({ sPendingI1, s: v.status, ev }));
+    c?.emit('accept'); await settle(10);
+    m = mark('I1b');
+    c?.emit('disconnect'); await settle(40);
+    const sEndedI1 = voiceProp().status;
+    await waitFor(() => Fake.updateTokens > updI1, 4000);
+    await settle(80);
+    ev = sinceMark(m);
+    ok('I1b once that call has ended (and shown "ended"), the waiting refresh runs exactly once, on the same Device',
+      sEndedI1 === 'ended' && Fake.updateTokens === updI1 + 1 && countEv(ev, e => e === 'fetch:GET /api/twilio/token') === 1
+      && liveDevice() === devI && voiceProp().status === 'ready', JSON.stringify({ sEndedI1, upd: Fake.updateTokens - updI1, ev }));
+
+    // Transport-recovery triggers while connect() is pending, ringing and connected.
+    await freshApp({ token: seed(1) });
+    devI = liveDevice();
+    const updI2 = Fake.updateTokens;
+    p = await pendingCall('5550000042');
+    m = mark('I2');
+    devI.emit('offline');
+    devI.emit('unregistered');                             // not our own destroy
+    devI.emit('error', transportErr());
+    win.dispatchEvent(new Event('focus'));                 // a refresh too: the recovery covers it
+    await settle(60);
+    const sPendingI2 = voiceProp().status;
+    c = await lateResolve(p);
+    c?.emit('ringing'); await settle(10);
+    devI.emit('offline'); await settle(30);
+    const sRingingI2 = voiceProp().status;
+    c?.emit('accept'); await settle(10);
+    devI.emit('offline'); devI.emit('registered'); await settle(30);
+    const sConnectedI2 = voiceProp().status;
+    ev = sinceMark(m);
+    ok('I2 recovery triggers (offline, unexpected unregister, 31009) while connect() is pending, ringing or connected wait: no Device destroyed, no token fetched, the dialer keeps "dialing" → "ringing" → "connected", the call stays up',
+      sPendingI2 === 'dialing' && sRingingI2 === 'ringing' && sConnectedI2 === 'connected' && !!c && voiceProp().activeCall === c && c.disconnects === 0
+      && !devI.destroyed && !ev.some(e => e.startsWith('device:')) && !ev.includes('fetch:GET /api/twilio/token'),
+      JSON.stringify({ sPendingI2, sRingingI2, sConnectedI2, ev }));
+    m = mark('I2b');
+    c?.emit('disconnect'); await settle(40);
+    await waitFor(() => devI.destroyed && live().length === 1, 4000);
+    await settle(80);
+    ev = sinceMark(m);
+    ok('I2b once the call ends, the waiting recovery runs exactly once (one new Device for the same account) and no separate refresh',
+      countEv(ev, e => e === 'device:destroy:user_1') === 1 && countEv(ev, e => e.startsWith('device:new:user_1')) === 1
+      && live().join() === 'user_1' && voiceProp().status === 'ready' && Fake.updateTokens === updI2, ev.join(','));
+
+    // During the warm-up (no call yet) the Device may still be rebuilt, but the dialer stays "Connecting".
+    await freshApp({ token: seed(1) });
+    S.healthGate = new Promise(r => { releaseHealth = r; });
+    const placingI3 = voiceProp().makeCall('5550000043');
+    await settle(30);
+    const oldI3 = liveDevice();
+    voiceProp().retryVoiceSession();
+    await waitFor(() => oldI3.destroyed && live().length === 1);
+    await settle(40);
+    const sWarmI3 = voiceProp().status;
+    win.dispatchEvent(new Event('focus'));
+    await settle(60);
+    const sWarmI3b = voiceProp().status;
+    releaseHealth(); S.healthGate = null;
+    await placingI3;
+    await settle(30);
+    const cI3 = Fake.calls.at(-1);
+    ok('I3 during the warm-up a rebuilt Device or a token refresh never shows the dialer as ready (it stays "Connecting"), and the call then goes out on the live Device',
+      sWarmI3 === 'registering' && sWarmI3b === 'registering' && voiceProp().activeCall === cI3 && voiceProp().status === 'dialing' && liveDevice() !== oldI3,
+      JSON.stringify({ sWarmI3, sWarmI3b, s: voiceProp().status }));
+    cI3?.emit('disconnect');
+    await settle(1700);
+
+    // Double taps: one attempt at a time.
+    await freshApp({ token: seed(1) });
+    S.healthGate = new Promise(r => { releaseHealth = r; });
+    m = mark('I4');
+    const logI4 = logged.length;
+    const tapsI4 = [voiceProp().makeCall('5550000044'), voiceProp().makeCall('5550000044')];   // same tick
+    await settle(30);
+    tapsI4.push(voiceProp().makeCall('5550000045'));       // later, still warming up
+    await settle(10);
+    const healthDuringI4 = countEv(sinceMark(m), e => e === 'fetch:GET /api/health');
+    const settleI4 = holdConnect();
+    releaseHealth(); S.healthGate = null;
+    await waitFor(() => sinceMark(m).some(e => e.startsWith('device:connect:')));
+    tapsI4.push(voiceProp().makeCall('5550000046'));       // while connect() is pending
+    await settle(10);
+    settleI4();
+    await Promise.all(tapsI4);
+    await settle(30);
+    c = Fake.calls.at(-1);
+    c?.emit('ringing'); await settle(10);
+    await voiceProp().makeCall('5550000047');              // while it rings
+    await settle(10);
+    ev = sinceMark(m);
+    ok('I4 a double tap during the warm-up, and taps while connect() is pending or the call rings, start no second attempt: one warm-up, one connect(), one call',
+      healthDuringI4 === 1 && countEv(ev, e => e === 'fetch:GET /api/health') === 1 && countEv(ev, e => e.startsWith('device:connect:')) === 1
+      && voiceProp().activeCall === c && voiceProp().remoteIdentity === '+15550000044' && ignoredSince(logI4) === 4,
+      JSON.stringify({ healthDuringI4, ignored: ignoredSince(logI4), ev }));
+    c?.emit('disconnect');
+    await settle(40);
+    m = mark('I4b');
+    await voiceProp().makeCall('5550000048');
+    await settle(30);
+    const cI4b = Fake.calls.at(-1);
+    ok('I4b once that call has ended, the next tap places a call', countEv(sinceMark(m), e => e.startsWith('device:connect:')) === 1 && voiceProp().activeCall === cI4b && cI4b !== c);
+    await settle(1700);                                    // the previous call's "ended → ready" timer fires now
+    ev = sinceMark(m);
+    ok('I4c the previous call\'s "ended → ready" timer never resets the next call\'s dialer, and with nothing waiting no refresh or recovery runs after a call',
+      voiceProp().status === 'dialing' && voiceProp().activeCall === cI4b && !ev.includes('fetch:GET /api/twilio/token') && !ev.some(e => e.startsWith('device:new')),
+      JSON.stringify({ s: voiceProp().status, ev }));
+    cI4b?.emit('disconnect');
+    await settle(1700);
+    const endsI4 = [];
+    for (const end of ['cancel', 'error']) {
+      await voiceProp().makeCall('5550000060');
+      await settle(30);
+      const cEnd = Fake.calls.at(-1);
+      cEnd?.emit(end, ...(end === 'error' ? [Object.assign(new Error('Call failed'), { code: 31005 })] : []));
+      await settle(20);
+      m = mark(`I4d:${end}`);
+      await voiceProp().makeCall('5550000061');
+      await settle(30);
+      endsI4.push({ end, placed: countEv(sinceMark(m), e => e.startsWith('device:connect:')) === 1 });
+      Fake.calls.at(-1)?.emit('disconnect');
+      await settle(1700);
+    }
+    ok('I4d a call that ends by cancel or by error releases the lock too: the next tap places a call',
+      endsI4.every(x => x.placed), JSON.stringify(endsI4));
+
+    // Every way an attempt fails releases the lock; a reasonless rejection settles.
+    const failuresI5 = {
+      declined: Object.assign(new Error('Call declined'), { code: 31002 }),
+      micDenied: Object.assign(new Error('Permission denied'), { code: 31401, name: 'NotAllowedError' }),
+      transport: transportErr(),
+      noReason: Fake.REJECT_UNDEFINED,
+      nullReason: Fake.REJECT_NULL,
+    };
+    const releasedI5 = [];
+    for (const [name, outcome] of Object.entries(failuresI5)) {
+      await freshApp({ token: seed(1) });
+      p = await pendingCall('5550000049');
+      let threwI5 = false;
+      try { caught = await lateReject(p, outcome); } catch { threwI5 = true; caught = false; }
+      if (name === 'transport') await waitFor(() => live().length === 1 && Fake.devices.at(-2)?.destroyed);
+      await settle(30);
+      v = voiceProp();
+      const after = { s: v.status, e: v.error, mic: v.micBlocked };
+      m = mark(`I5:${name}`);
+      await voiceProp().makeCall('5550000050');
+      await settle(30);
+      const placed = countEv(sinceMark(m), e => e.startsWith('device:connect:')) === 1;
+      releasedI5.push({ name, ok: !threwI5 && caught && placed, ...after });
+      Fake.calls.at(-1)?.emit('disconnect');
+      await settle(20);
+    }
+    ok('I5 every way a dial attempt fails (declined, mic denied, transport, no reason, null reason) releases the lock: the next tap places a call',
+      releasedI5.every(x => x.ok), JSON.stringify(releasedI5.filter(x => !x.ok)));
+    await freshApp({ token: seed(1) });
+    devI = liveDevice();
+    p = await pendingCall('5550000062');
+    devI.emit('offline');                                  // a recovery now waits for the call
+    m = mark('I5b');
+    await lateReject(p, transportErr());                   // … and connect() fails on the dead transport
+    await settle(1900);                                    // past the point where a waiting recovery would replay
+    ev = sinceMark(m);
+    ok('I5b a transport failure of the dial runs one recovery, which replaces the one that was waiting (not two)',
+      countEv(ev, e => e.startsWith('device:new:user_1')) === 1 && countEv(ev, e => e === 'device:destroy:user_1') === 1 && live().join() === 'user_1', ev.join(','));
+    const reasonless = releasedI5.filter(x => x.name === 'noReason' || x.name === 'nullReason');
+    ok('I6 a current call whose connect() rejects with undefined or null settles: no throw, "Call did not connect", failed (not stuck on "dialing")',
+      reasonless.length === 2 && reasonless.every(x => x.ok && x.s === 'failed' && x.e === ERR_NOT_CONNECTED), JSON.stringify(reasonless));
+
+    // A stale attempt never releases the next sign-in's lock.
+    await freshApp({ token: seed(1) });
+    p = await pendingCall('5550000051');                   // account 1's attempt, connect() pending
+    await clickLogout();
+    await signInAs(2);
+    S.healthGate = new Promise(r => { releaseHealth = r; });
+    m = mark('I7');
+    const placingI7 = voiceProp().makeCall('5550000052');  // account 2's attempt, warming up
+    await settle(30);
+    c = await lateResolve(p);                              // account 1's attempt settles late
+    let logI7 = logged.length;
+    const extraI7 = voiceProp().makeCall('5550000053');   // not awaited: if it were let through it would wait on the held warm-up
+    await settle(10);
+    const refusedI7 = ignoredSince(logI7) === 1;
+    releaseHealth(); S.healthGate = null;
+    await Promise.all([placingI7, extraI7]);
+    await settle(30);
+    ev = sinceMark(m);
+    const cI7 = Fake.calls.at(-1);
+    ok('I7 account 1\'s attempt settling after account 2 started one never releases account 2\'s lock: another tap is still refused, and account 2\'s call goes out once on its own Device',
+      dropped(c) && refusedI7 && countEv(ev, e => e.startsWith('device:connect:')) === 1 && ev.includes('device:connect:user_2') && voiceProp().activeCall === cI7 && cI7 !== c,
+      JSON.stringify({ refusedI7, ev }));
+    cI7?.emit('disconnect');
+    await settle(1700);
+    await clickLogout();
+    await freshApp({ token: seed(1) });
+    await voiceProp().makeCall('5550000054');
+    await settle(30);
+    const cA7 = Fake.calls.at(-1);
+    cA7?.emit('accept'); await settle(10);
+    await clickLogout();
+    await signInAs(2);
+    S.healthGate = new Promise(r => { releaseHealth = r; });
+    const placingI7b = voiceProp().makeCall('5550000055');
+    await settle(30);
+    cA7?.emit('disconnect'); cA7?.emit('error', new Error('late')); cA7?.emit('cancel');
+    await settle(20);
+    logI7 = logged.length;
+    const extraI7b = voiceProp().makeCall('5550000056');
+    await settle(10);
+    const refusedI7b = ignoredSince(logI7) === 1;
+    releaseHealth(); S.healthGate = null;
+    await Promise.all([placingI7b, extraI7b]);
+    await settle(30);
+    ok('I7b account 1\'s connected call ending late (disconnect, error, cancel) never releases account 2\'s lock either',
+      refusedI7b && voiceProp().activeCall === Fake.calls.at(-1) && Fake.calls.at(-1) !== cA7, JSON.stringify({ refusedI7b }));
+    Fake.calls.at(-1)?.emit('disconnect');
+    await settle(1700);
+    await clickLogout();
+
+    // A connect() that never settles is given up, so the lock and the waiting recovery are not held for good.
+    await freshApp({ token: seed(1) });
+    devI = liveDevice();
+    const logI8 = logged.length;
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = (fn, ms, ...a) => realSetTimeout(fn, ms === voiceHook.CONNECT_TIMEOUT_MS ? 80 : ms, ...a);
+    try {
+      p = await pendingCall('5550000057');
+      devI.emit('offline');                                // recovery waits for the call
+      await settle(250);
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+    v = voiceProp();
+    const timedOutI8 = v.status === 'failed' && v.error === ERR_NOT_CONNECTED && v.activeCall === null && !devI.destroyed;
+    await waitFor(() => devI.destroyed && live().length === 1, 4000);
+    await settle(60);
+    S.healthGate = new Promise(r => { releaseHealth = r; });
+    m = mark('I8');
+    const placingI8 = voiceProp().makeCall('5550000058');  // the next tap, warming up
+    await settle(30);
+    c = await lateResolve(p);                              // the given-up connect() settles after all
+    const sAfterLateI8 = voiceProp().status;
+    const logLateI8 = logged.length;
+    const extraI8 = voiceProp().makeCall('5550000059');
+    await settle(10);
+    const stillLockedI8 = ignoredSince(logLateI8) === 1;
+    releaseHealth(); S.healthGate = null;
+    await Promise.all([placingI8, extraI8]);
+    await settle(30);
+    ev = sinceMark(m);
+    ok('I8 a connect() that does not settle within CONNECT_TIMEOUT_MS is given up: "Call did not connect", the waiting recovery then runs, and the next tap places a call',
+      timedOutI8 && live().join() === 'user_1' && countEv(ev, e => e.startsWith('device:connect:')) === 1 && voiceProp().activeCall === Fake.calls.at(-1),
+      JSON.stringify({ timedOutI8, ev }));
+    ok('I8b when that connect() settles after all, its call is hung up and unwired, and the next attempt\'s dialer and lock are left alone',
+      dropped(c) && sAfterLateI8 === 'registering' && stillLockedI8 && logged.slice(logI8).some(l => l.includes('"reason":"connect_timeout"'))
+      && logged.slice(logI8).some(l => l.includes('"reason":"attempt_ended"')), JSON.stringify({ sAfterLateI8, stillLockedI8, d: c?.disconnects, l: c?.listenerTotal() }));
+    Fake.calls.at(-1)?.emit('disconnect');
+    await settle(1700);
+
+    // An unanswered call whose signalling drops ends without any further SDK event.
+    await freshApp({ token: seed(1) });
+    devI = liveDevice();
+    await voiceProp().makeCall('5550000063');
+    await settle(30);
+    c = Fake.calls.at(-1);
+    c?.emit('ringing'); await settle(10);
+    devI.emit('unregistered');                             // a recovery waits for the call
+    await settle(20);
+    m = mark('I10');
+    c?.dropTransport();
+    await settle(40);
+    v = voiceProp();
+    const endedI10 = v.status === 'ended' && v.error === ERR_NOT_CONNECTED && v.activeCall === null;
+    await waitFor(() => devI.destroyed && live().length === 1, 4000);
+    await settle(60);
+    await voiceProp().makeCall('5550000064');
+    await settle(30);
+    ev = sinceMark(m);
+    ok('I10 an unanswered call whose signalling drops (the SDK emits only transportClose) ends: "Call did not connect", the lock is released, the waiting recovery runs, the next tap places a call',
+      endedI10 && countEv(ev, e => e.startsWith('device:new:user_1')) === 1 && countEv(ev, e => e.startsWith('device:connect:')) === 1
+      && voiceProp().activeCall === Fake.calls.at(-1), JSON.stringify({ endedI10, ev }));
+    const cSilent = Fake.calls.at(-1);
+    cSilent._status = 'closed';                            // closed with no event at all
+    m = mark('I10b');
+    await voiceProp().makeCall('5550000065');
+    await settle(30);
+    ok('I10b a call the SDK closed without any event no longer holds the lock: the next tap places a call',
+      countEv(sinceMark(m), e => e.startsWith('device:connect:')) === 1 && voiceProp().activeCall === Fake.calls.at(-1) && Fake.calls.at(-1) !== cSilent);
+    Fake.calls.at(-1)?.emit('disconnect');
+    await settle(1700);
+    await voiceProp().makeCall('5550000071');
+    await settle(30);
+    c = Fake.calls.at(-1);
+    c?.emit('accept');
+    await sleep(3100);
+    m = mark('I10c');
+    c?.disconnect();                                       // hung up: closed, 'disconnect'
+    c?.emit('transportClose');                             // … and then the signalling goes too
+    await settle(60);
+    ev = sinceMark(m);
+    ok('I10c a call that already ended is not ended a second time by a later transportClose (one call log, one note prompt)',
+      countEv(ev, e => e === 'ensure-logged') === 1 && voiceProp().pendingPostCallNote?.phone === '+15550000071', ev.join(','));
+    voiceProp().clearPostCallNote();
+    await settle(1700);
+
+    // A recovery that started during the warm-up resumes while the call rings.
+    await freshApp({ token: seed(1) });
+    devI = liveDevice();
+    S.healthGate = new Promise(r => { releaseHealth = r; });
+    const placingI11 = voiceProp().makeCall('5550000067');
+    await settle(30);
+    let releaseTokI11; S.tokenGate = new Promise(r => { releaseTokI11 = r; });
+    devI.emit('unregistered');                             // allowed in the warm-up; its token request is held
+    await settle(20);
+    releaseHealth(); S.healthGate = null;
+    await placingI11;
+    await settle(20);
+    c = Fake.calls.at(-1);
+    c?.emit('ringing'); await settle(10);
+    m = mark('I11');
+    releaseTokI11(); S.tokenGate = null;
+    await settle(80);
+    ev = sinceMark(m);
+    v = voiceProp();
+    ok('I11 a recovery that started during the warm-up and resumes while the call rings waits instead of destroying the Device (and the call) under it',
+      !devI.destroyed && !ev.some(e => e.startsWith('device:')) && v.status === 'ringing' && !!c && v.activeCall === c && c.status() !== 'closed', ev.join(','));
+    m = mark('I11b');
+    c?.emit('disconnect'); await settle(40);
+    await waitFor(() => devI.destroyed && live().length === 1, 4000);
+    await settle(60);
+    ok('I11b … and runs once the call has ended', countEv(sinceMark(m), e => e.startsWith('device:new:user_1')) === 1 && voiceProp().status === 'ready');
+    // Refresh / recovery that started in the warm-up and settle (fail, or succeed) while the call rings.
+    const resumedI11 = [];
+    for (const [kind, mode] of [['refresh', '500'], ['recover', '500'], ['refresh', 'ok']]) {
+      await freshApp({ token: seed(1) });
+      const devK = liveDevice();
+      const updK = Fake.updateTokens;
+      S.healthGate = new Promise(r => { releaseHealth = r; });
+      const placingK = voiceProp().makeCall('5550000068');
+      await settle(30);
+      let releaseTokK; S.tokenGate = new Promise(r => { releaseTokK = r; });
+      if (mode === '500') S.tokenMode = '500';
+      if (kind === 'refresh') win.dispatchEvent(new Event('focus')); else devK.emit('unregistered');
+      await settle(20);
+      releaseHealth(); S.healthGate = null;
+      await placingK;
+      await settle(20);
+      const cK = Fake.calls.at(-1);
+      cK?.emit('ringing'); await settle(10);
+      releaseTokK(); S.tokenGate = null;
+      await settle(80);
+      S.tokenMode = null;
+      v = voiceProp();
+      const during = { s: v.status, e: v.error, active: !!cK && v.activeCall === cK, upd: Fake.updateTokens - updK, destroyed: devK.destroyed };
+      cK?.emit('disconnect'); await settle(40);
+      await waitFor(() => (kind === 'refresh' ? Fake.updateTokens > updK : devK.destroyed && live().length === 1), 4000);
+      await settle(60);
+      const after = { upd: Fake.updateTokens - updK, rebuilt: devK.destroyed && live().length === 1, s: voiceProp().status };
+      resumedI11.push({ kind, mode, during, after,
+        ok: during.s === 'ringing' && during.e === null && during.active && during.upd === 0 && !during.destroyed
+          && after.s === 'ready' && (kind === 'refresh' ? after.upd === 1 : after.rebuilt) });
+    }
+    ok('I11c a refresh or recovery that started in the warm-up and fails (or a refresh that succeeds) while the call rings changes nothing over the call — no failure, no Retry, no token update — and is tried again once the call has ended',
+      resumedI11.every(x => x.ok), JSON.stringify(resumedI11.filter(x => !x.ok)));
+
+    // A manual Retry while only dialing, with a recovery already waiting.
+    await freshApp({ token: seed(1) });
+    devI = liveDevice();
+    p = await pendingCall('5550000069');
+    devI.emit('offline');
+    await settle(20);
+    m = mark('I12');
+    voiceProp().retryVoiceSession();
+    await waitFor(() => devI.destroyed && live().length === 1);
+    await settle(30);
+    const sAfterRetryI12 = voiceProp().status;
+    c = await lateResolve(p);
+    await settle(1900);                                    // past the point where the waiting recovery would replay
+    ev = sinceMark(m);
+    v = voiceProp();
+    ok('I12 a manual Retry while a call is only dialing rebuilds the Device once (replacing the waiting recovery), the dialer keeps "dialing" meanwhile, and the attempt is then reported as not connected',
+      sAfterRetryI12 === 'dialing' && countEv(ev, e => e.startsWith('device:new:user_1')) === 1 && dropped(c) && v.status === 'failed' && v.error === ERR_NOT_CONNECTED,
+      JSON.stringify({ sAfterRetryI12, s: v.status, ev }));
+
+    // An invalid number fails before the lock is taken; a Device error never replaces a ringing call.
+    await freshApp({ token: seed(1) });
+    let threwI13 = false;
+    try { await voiceProp().makeCall(null); } catch { threwI13 = true; }
+    m = mark('I13');
+    await voiceProp().makeCall('5550000070');
+    await settle(30);
+    ok('I13 an invalid number fails before the lock is taken: the next tap places a call', threwI13 && countEv(sinceMark(m), e => e.startsWith('device:connect:')) === 1);
+    c = Fake.calls.at(-1);
+    c?.emit('ringing'); await settle(10);
+    liveDevice().emit('error', Object.assign(new Error('Device error'), { code: 31000 }));
+    await settle(20);
+    ok('I14 a Device error while an outbound call rings does not replace it with a failure (or a Retry over it)',
+      voiceProp().status === 'ringing' && voiceProp().error === null && voiceProp().activeCall === c);
+    c?.emit('disconnect');
+    await settle(1700);
+    if (R.root) unmount();
+    ok('I9 no render errors, and no session token in any log line', R.errors.length === 0 && R.hookCountErrors === 0
+      && !logged.some(l => /pl1_[A-Za-z0-9_-]{43}/.test(l)), String(R.errors[0] || ''));
 
     // ── U. Real LoginPage and real useCapacitorPush ─────────────────────────
     const units = require(OUT2);
