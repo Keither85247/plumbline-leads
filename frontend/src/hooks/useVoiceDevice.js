@@ -63,6 +63,33 @@ async function fetchToken() {
 
 const identityFor = (userId) => `user_${userId}`;
 
+// The credential this browser signs requests with. Compared, never logged: it
+// changes only when a sign-in ends or another begins (here or in another tab).
+function storedCredential() {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage.getItem('plumbline_token') : null;
+  } catch { return null; }
+}
+
+/**
+ * Why an outbound call attempt may no longer go ahead, or null while it may.
+ * `started` is what the attempt began under; `now` is read after an await.
+ *   'voice_torn_down'  teardown ran (logout, forced sign-out, Voice-token 401,
+ *                      account change, another tab, unmount)
+ *   'account_changed'  voice is off, or on for another account
+ *   'session_changed'  the stored credential changed (another tab signed in or
+ *                      out before its storage event reached this one)
+ *   'device_replaced'  same sign-in, but the call belongs to a Device that has
+ *                      since been destroyed and rebuilt (transport recovery)
+ */
+export function outboundCallStaleReason(started, now) {
+  if (now.generation !== started.generation) return 'voice_torn_down';
+  if (started.userId == null || now.userId !== started.userId) return 'account_changed';
+  if (now.credential !== started.credential) return 'session_changed';
+  if (now.device !== started.device) return 'device_replaced';
+  return null;
+}
+
 /**
  * Twilio Voice for the signed-in account.
  *
@@ -75,6 +102,8 @@ const identityFor = (userId) => `user_${userId}`;
  *     safe at any point, including mid-initialization.
  * Every async path re-checks a generation counter after each await, so work
  * started for one sign-in can never build or update a Device after teardown.
+ * An outbound call is also bound to its account, stored credential and Device:
+ * one that connect() hands back after any of them changed is hung up unwired.
  * A 401 on the voice token calls onAuthLost (the session ended server-side).
  */
 export function useVoiceDevice({ onAuthLost } = {}) {
@@ -238,11 +267,11 @@ export function useVoiceDevice({ onAuthLost } = {}) {
   //     of a misleading "How did it go?" prompt.
   //   - Every SDK event is logged with CallSid + timing so the call lifecycle
   //     is traceable end-to-end in production logs.
-  function wireCallEvents(call, { isInbound = false, phone = null } = {}) {
+  function wireCallEvents(call, { isInbound = false, phone = null, generation = generationRef.current } = {}) {
     const MIN_REAL_CALL_MS = 3000;
     // A call outlives nothing: once voice is torn down (sign-out or account
     // change) its late events must not log it or prompt under another account.
-    const generation = generationRef.current;
+    // An outbound call passes the generation its attempt began in.
     const stale = () => generation !== generationRef.current;
     // Captured in closure so the disconnect handler can compute call duration
     // without racing the React state setter for `status`.
@@ -983,6 +1012,8 @@ export function useVoiceDevice({ onAuthLost } = {}) {
   const makeCall = useCallback(async (to) => {
     const device = deviceRef.current;
     const generation = generationRef.current;
+    const userId = activeUserIdRef.current;
+    const credential = storedCredential();
     if (!device) {
       setError('Voice device not initialized. Tap the mic button to connect.');
       return;
@@ -1027,6 +1058,40 @@ export function useVoiceDevice({ onAuthLost } = {}) {
       return;
     }
 
+    // The sign-in, account, credential and Device this call belongs to. It is
+    // re-checked before connect() and again the moment connect() settles:
+    // teardown destroys the Device, but not a call it has not handed back yet.
+    const started = { generation, userId, credential, device: liveDevice };
+    const staleReason = () => outboundCallStaleReason(started, {
+      generation: generationRef.current,
+      userId: activeUserIdRef.current,
+      credential: storedCredential(),
+      device: deviceRef.current,
+    });
+    // Give the attempt up: hang up the call (if connect() produced one) with no
+    // handler attached, so none of its later events can reach the next
+    // sign-in. disconnect() on an ended call is a no-op. The dialer is settled
+    // only while it still belongs to this sign-in (no teardown since), and
+    // never over a call that went live meanwhile (e.g. an inbound ring).
+    const abandon = (call, reason) => {
+      console.warn('[VoiceDevice] outbound call dropped — no longer this sign-in\'s', {
+        reason,
+        callSid: call?.parameters?.CallSid || null,
+      });
+      try { call?.disconnect(); } catch { /* already gone */ }
+      if (generation !== generationRef.current) return;
+      const keepLive = (next) => (s) => (s === 'incoming' || s === 'ringing' || s === 'connected' ? s : next);
+      if (reason === 'device_replaced') {
+        setError('Call did not connect. Please try again.');
+        setStatus(keepLive('failed'));
+      } else {
+        setStatus(keepLive(deviceRef.current ? 'ready' : 'idle'));
+      }
+    };
+
+    const before = staleReason();
+    if (before) { abandon(null, before); return; }
+
     const e164 = toE164(to);
     setRemoteIdentity(e164);
     setStatus('dialing');
@@ -1040,23 +1105,42 @@ export function useVoiceDevice({ onAuthLost } = {}) {
         callSid: call?.parameters?.CallSid || null,
         at: Date.now(),
       });
+      const stale = staleReason();
+      if (stale) { abandon(call, stale); return; }
+      // The handlers are bound to this attempt's generation: a teardown that
+      // lands while they are attached or the state is set leaves them inert,
+      // and the re-check below drops the call. isInbound: false + phone
+      // captured — disconnect will trigger the post-call note modal ONLY if
+      // the call truly connected (see MIN_REAL_CALL_MS in wireCallEvents).
+      wireCallEvents(call, { isInbound: false, phone: e164, generation });
       setActiveCall(call);
-      // isInbound: false + phone captured — disconnect will trigger post-call note
-      // modal ONLY if the call truly connected (see MIN_REAL_CALL_MS in wireCallEvents).
-      wireCallEvents(call, { isInbound: false, phone: e164 });
+      const late = staleReason();
+      if (late) {
+        setActiveCall(c => (c === call ? null : c));
+        abandon(call, late);
+      }
     } catch (err) {
+      // err can be undefined: the SDK rejects without a reason when signalling
+      // closes while connect() waits.
       console.error('[VoiceDevice] makeCall failed', {
         to: e164,
-        code: err.code,
-        message: err.message,
-        twilioError: err.twilioError,
+        code: err?.code,
+        message: err?.message,
+        twilioError: err?.twilioError,
       });
+      // A failure that settles after this sign-in ended is not the next one's:
+      // no mic card, error or recovery there.
+      const stale = staleReason();
+      if (stale && stale !== 'device_replaced') { abandon(null, stale); return; }
       // Mic denied while connect() was acquiring media — show the mic card,
       // not the raw error.
       if (isMicPermissionError(err)) {
         reportMicBlocked('makecall', err);
         return;
       }
+      // The Device it was placed on has been rebuilt for this sign-in since:
+      // the new one is healthy, so report the attempt without a recovery.
+      if (stale) { abandon(null, stale); return; }
       // A 31009/31005/53000 here means the transport was dead when the user
       // pressed Call. The device.on('error') handler will also fire and kick
       // off recovery, but we trigger it explicitly so a slow event delivery
